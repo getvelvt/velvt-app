@@ -659,15 +659,78 @@ async fn malformed_refresh_success_transitions_to_needs_reauth() {
     assert_eq!(state.current(), AuthState::NeedsReauth);
 }
 
+/// A rate limit is not a verdict on the session. A refresh it refused used
+/// to end the session, and with it the person's sign-in and Keychain.
 #[tokio::test]
-async fn refresh_rate_limit_is_typed_and_transitions_to_needs_reauth() {
+async fn a_rate_limited_refresh_is_typed_and_keeps_the_session() {
+    let store = Arc::new(FakeTokenStore::default());
+    let expired = token_pair(Duration::seconds(-1), "access", "refresh");
+    store.store_pair(expired.clone()).unwrap();
+    let http = Arc::new(FakeHttpClient::with_responses(vec![response(
+        429,
+        Some("rate_limited"),
+        None,
+    )]));
+    let state = Arc::new(AuthStateMachine::new(AuthState::Authenticated {
+        device_id: "device-1".into(),
+    }));
+    let manager = AuthManager::new(
+        Arc::clone(&store),
+        http,
+        Arc::clone(&state),
+        Duration::zero(),
+    );
+
+    assert!(matches!(
+        manager
+            .send_authenticated(HttpRequest::get("/v1/events"))
+            .await,
+        Err(AuthError::RateLimited)
+    ));
+    assert!(matches!(state.current(), AuthState::Authenticated { .. }));
+    assert_eq!(store.load_tokens().unwrap(), Some(expired));
+}
+
+/// A refresh answered by an outage (here a Cloudflare 522 with no JSON) keeps
+/// the session, and the token in hand, for the next attempt.
+#[tokio::test]
+async fn a_refresh_answered_by_an_outage_keeps_the_session() {
+    let store = Arc::new(FakeTokenStore::default());
+    let expired = token_pair(Duration::seconds(-1), "access", "refresh");
+    store.store_pair(expired.clone()).unwrap();
+    let http = Arc::new(FakeHttpClient::with_responses(vec![response(
+        522, None, None,
+    )]));
+    let state = Arc::new(AuthStateMachine::new(AuthState::Authenticated {
+        device_id: "device-1".into(),
+    }));
+    let manager = AuthManager::new(
+        Arc::clone(&store),
+        http,
+        Arc::clone(&state),
+        Duration::zero(),
+    );
+
+    assert!(matches!(
+        manager
+            .send_authenticated(HttpRequest::get("/v1/events"))
+            .await,
+        Err(AuthError::Transport)
+    ));
+    assert!(matches!(state.current(), AuthState::Authenticated { .. }));
+    assert_eq!(store.load_tokens().unwrap(), Some(expired));
+}
+
+/// A refresh the cloud refuses with a session code still ends the session.
+#[tokio::test]
+async fn a_refresh_refused_with_a_session_code_needs_reauthentication() {
     let store = Arc::new(FakeTokenStore::default());
     store
         .store_pair(token_pair(Duration::seconds(-1), "access", "refresh"))
         .unwrap();
     let http = Arc::new(FakeHttpClient::with_responses(vec![response(
-        429,
-        Some("rate_limited"),
+        401,
+        Some("invalid_token"),
         None,
     )]));
     let state = Arc::new(AuthStateMachine::new(AuthState::Authenticated {
@@ -679,7 +742,7 @@ async fn refresh_rate_limit_is_typed_and_transitions_to_needs_reauth() {
         manager
             .send_authenticated(HttpRequest::get("/v1/events"))
             .await,
-        Err(AuthError::RateLimited)
+        Err(AuthError::NeedsReauth)
     ));
     assert_eq!(state.current(), AuthState::NeedsReauth);
 }
@@ -857,15 +920,55 @@ async fn failed_device_token_reissue_preserves_existing_credentials() {
         Duration::zero(),
     );
 
+    // A reissue that failed on the server is not a verdict on the session:
+    // the next request tries again.
     assert!(matches!(
         manager
             .send_authenticated(HttpRequest::get("/v1/events"))
             .await,
-        Err(AuthError::NeedsReauth)
+        Err(AuthError::Transport)
     ));
     assert_eq!(http.requests().len(), 2);
     assert_eq!(store.load_tokens().unwrap(), Some(original));
-    assert_eq!(state.current(), AuthState::NeedsReauth);
+    assert!(matches!(state.current(), AuthState::Authenticated { .. }));
+}
+
+/// Reissue answers a revoked device with `403 device_inactive`, which is the
+/// same verdict as `device_revoked`.
+#[tokio::test]
+async fn device_inactive_during_token_reissue_is_terminal() {
+    let store = Arc::new(FakeTokenStore::default());
+    store
+        .store_pair(token_pair(Duration::hours(1), "access", "refresh"))
+        .unwrap();
+    store
+        .store_user_pair(token_pair(
+            Duration::hours(1),
+            "user-access",
+            "user-refresh",
+        ))
+        .unwrap();
+    let http = Arc::new(FakeHttpClient::with_responses(vec![
+        response(403, Some("device_token_revoked"), None),
+        response(403, Some("device_inactive"), None),
+    ]));
+    let state = Arc::new(AuthStateMachine::new(AuthState::Authenticated {
+        device_id: "device-1".into(),
+    }));
+    let manager = AuthManager::new(
+        store,
+        Arc::clone(&http),
+        Arc::clone(&state),
+        Duration::zero(),
+    );
+
+    assert!(matches!(
+        manager
+            .send_authenticated(HttpRequest::get("/v1/events"))
+            .await,
+        Err(AuthError::DeviceRevoked)
+    ));
+    assert_eq!(state.current(), AuthState::DeviceRevoked);
 }
 
 #[tokio::test]
@@ -949,15 +1052,98 @@ async fn rate_limit_is_returned_without_changing_authenticated_state() {
     assert!(matches!(state.current(), AuthState::Authenticated { .. }));
 }
 
+/// critic-04. One 403 from Cloudflare (WAF, Bot Fight Mode, a challenge:
+/// "error code: 1020", no JSON) signed the tester out, wiped the Keychain and
+/// stopped the insight poll, with nothing to recover it. Only a code the cloud
+/// attributes to the session may end it; anything else goes back to the caller
+/// as the status it is, and the caller backs off.
 #[tokio::test]
-async fn forbidden_device_request_requires_reauthentication() {
+async fn a_403_without_a_session_code_keeps_the_session() {
+    for code in [None, Some("policy_denied")] {
+        let store = Arc::new(FakeTokenStore::default());
+        let current = token_pair(Duration::hours(1), "access", "refresh");
+        store.store_pair(current.clone()).unwrap();
+        let http = Arc::new(FakeHttpClient::with_responses(vec![response(
+            403, code, None,
+        )]));
+        let state = Arc::new(AuthStateMachine::new(AuthState::Authenticated {
+            device_id: "device-1".into(),
+        }));
+        let manager = AuthManager::new(
+            Arc::clone(&store),
+            http,
+            Arc::clone(&state),
+            Duration::zero(),
+        );
+
+        let answer = manager
+            .send_authenticated(HttpRequest::get("/v1/events"))
+            .await;
+
+        assert!(
+            matches!(answer, Ok(ref response) if response.status == 403),
+            "{code:?}: the caller gets the status, not a sign-out"
+        );
+        assert!(matches!(state.current(), AuthState::Authenticated { .. }));
+        assert_eq!(store.load_tokens().unwrap(), Some(current));
+    }
+}
+
+/// `401 account_deleted` is the cloud saying the account is gone: the session
+/// ends as deleted, which the service answers by destroying what it queued
+/// for that account (`ipc::end_deleted_account_session`).
+#[tokio::test]
+async fn account_deleted_ends_the_session_as_deleted() {
     let store = Arc::new(FakeTokenStore::default());
     store
         .store_pair(token_pair(Duration::hours(1), "access", "refresh"))
         .unwrap();
     let http = Arc::new(FakeHttpClient::with_responses(vec![response(
-        403,
-        Some("policy_denied"),
+        401,
+        Some("account_deleted"),
+        None,
+    )]));
+    let state = Arc::new(AuthStateMachine::new(AuthState::Authenticated {
+        device_id: "device-1".into(),
+    }));
+    let manager = AuthManager::new(
+        store,
+        Arc::clone(&http),
+        Arc::clone(&state),
+        Duration::zero(),
+    );
+
+    assert!(matches!(
+        manager
+            .send_authenticated(HttpRequest::get("/v1/events"))
+            .await,
+        Err(AuthError::AccountDeleted)
+    ));
+    assert_eq!(state.current(), AuthState::AccountDeleted);
+    assert_eq!(
+        http.requests().len(),
+        1,
+        "a deleted account is not one refresh away from working"
+    );
+    assert!(matches!(
+        manager
+            .send_authenticated(HttpRequest::get("/v1/events"))
+            .await,
+        Err(AuthError::AccountDeleted)
+    ));
+    assert_eq!(http.requests().len(), 1, "and nothing more is sent for it");
+}
+
+/// The same verdict on a refresh.
+#[tokio::test]
+async fn account_deleted_on_refresh_ends_the_session_as_deleted() {
+    let store = Arc::new(FakeTokenStore::default());
+    store
+        .store_pair(token_pair(Duration::seconds(-1), "access", "refresh"))
+        .unwrap();
+    let http = Arc::new(FakeHttpClient::with_responses(vec![response(
+        401,
+        Some("account_deleted"),
         None,
     )]));
     let state = Arc::new(AuthStateMachine::new(AuthState::Authenticated {
@@ -969,9 +1155,31 @@ async fn forbidden_device_request_requires_reauthentication() {
         manager
             .send_authenticated(HttpRequest::get("/v1/events"))
             .await,
-        Err(AuthError::NeedsReauth)
+        Err(AuthError::AccountDeleted)
     ));
-    assert_eq!(state.current(), AuthState::NeedsReauth);
+    assert_eq!(state.current(), AuthState::AccountDeleted);
+}
+
+/// A restored session whose client named no account takes it from the
+/// cloud's answer to the validation, so its queue is owned from then on.
+#[tokio::test]
+async fn validating_a_session_keeps_the_account_the_cloud_names() {
+    let store = Arc::new(FakeTokenStore::default());
+    store
+        .store_pair(token_pair(Duration::hours(1), "access", "refresh"))
+        .unwrap();
+    let http = Arc::new(FakeHttpClient::with_responses(vec![HttpResponse {
+        user_id: Some("account-7".into()),
+        ..response(200, None, None)
+    }]));
+    let state = Arc::new(AuthStateMachine::new(AuthState::Authenticated {
+        device_id: "device-1".into(),
+    }));
+    let manager = AuthManager::new(Arc::clone(&store), http, state, Duration::zero());
+
+    manager.validate_session().await.unwrap();
+
+    assert_eq!(store.load_user_id().unwrap().as_deref(), Some("account-7"));
 }
 
 /// What `AccountAuthService::log_out` does to the local session, without

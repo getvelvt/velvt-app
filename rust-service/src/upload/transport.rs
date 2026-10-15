@@ -95,7 +95,7 @@ where
             request.json_body =
                 Some(serde_json::to_value(batch).map_err(|_| BatchUploadError::Transport)?);
             let response = self.http.send(request).await.map_err(|error| match error {
-                AuthError::NeedsReauth | AuthError::DeviceRevoked | AuthError::Forbidden => {
+                AuthError::NeedsReauth | AuthError::DeviceRevoked | AuthError::AccountDeleted => {
                     BatchUploadError::AuthenticationRequired
                 }
                 _ => BatchUploadError::Transport,

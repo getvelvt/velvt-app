@@ -149,6 +149,62 @@ final class AccountStateManagerTests: XCTestCase {
         XCTAssertEqual(session.accessToken, "stored-access")
         XCTAssertEqual(session.refreshToken, "stored-refresh")
         XCTAssertEqual(session.expiresAt.timeIntervalSince1970, expiresAt.timeIntervalSince1970, accuracy: 0.001)
+        // Stored before 1.0.14, the session names no account; the snapshot
+        // does, and the service needs it to know whose queue is whose.
+        XCTAssertEqual(session.userId, "u123")
+    }
+
+    func testAuthSuccessStoresTheSessionUnderItsAccount() async throws {
+        let client = FakeIPCClient()
+        let keychain = FakeKeychain()
+        let sut = AccountStateManager(keychain: keychain)
+        sut.startListening(to: client)
+        sut.transition(to: .loggingIn)
+
+        client.inject(
+            .authSuccess(
+                AuthSuccess(
+                    userId: "u123",
+                    deviceId: "device-1",
+                    accessToken: "device-access",
+                    refreshToken: "device-refresh",
+                    expiresAt: Date(timeIntervalSinceNow: 3600)
+                )))
+        try await Task.sleep(nanoseconds: 10_000_000)
+
+        let snapshot = try XCTUnwrap(decodeSnapshot(from: keychain))
+        XCTAssertEqual(snapshot.session.userId, "u123")
+    }
+
+    /// helper-backend-06: an `auth_success` with no device used to be stored
+    /// as a sign-in. Nothing uploaded under it, and handed back after a
+    /// restart it signed the person out.
+    func testAuthSuccessWithoutADeviceIsRefused() async throws {
+        let client = FakeIPCClient()
+        let keychain = FakeKeychain()
+        let sut = AccountStateManager(keychain: keychain)
+        sut.startListening(to: client)
+        XCTAssertTrue(sut.beginAuthentication(email: "a@example.test"))
+        var failures: [AuthFailure] = []
+        let cancellable = sut.serverMessages.sink { message in
+            if case .authFailure(let failure) = message { failures.append(failure) }
+        }
+        defer { cancellable.cancel() }
+
+        client.inject(
+            .authSuccess(
+                AuthSuccess(
+                    userId: "u123",
+                    deviceId: "",
+                    accessToken: "user-access",
+                    refreshToken: "user-refresh",
+                    expiresAt: Date(timeIntervalSinceNow: 3600)
+                )))
+        try await Task.sleep(nanoseconds: 20_000_000)
+
+        XCTAssertEqual(sut.accountState, .loggedOut)
+        XCTAssertTrue(keychain.isEmpty, "nothing is stored for a session with no device")
+        XCTAssertEqual(failures.map(\.message), ["This Mac could not be registered. Please try again."])
     }
 
     func testStoredAuthSessionIsNotSentBeforeIPCConnect() async throws {
@@ -444,6 +500,29 @@ final class AccountStateManagerTests: XCTestCase {
         XCTAssertEqual(sut.accountState, .loggedOut)
         XCTAssertTrue(keychain.isEmpty)
         XCTAssertTrue(sut.requiresReauthentication)
+    }
+
+    /// An account deleted on another Mac is gone, not expired: the app clears
+    /// the session but does not ask the person to sign in to it again.
+    func testAccountDeletedElsewhereSignsOutWithoutAskingToSignInAgain() async {
+        let client = FakeIPCClient()
+        let keychain = FakeKeychain()
+        let sut = makeLoggedInManager(keychain: keychain, client: client)
+
+        let settled = expectation(description: "loggedOut")
+        var cancellable: AnyCancellable?
+        cancellable = sut.$accountState.dropFirst().sink { state in
+            if case .loggedOut = state {
+                settled.fulfill()
+                cancellable?.cancel()
+            }
+        }
+
+        client.inject(.needsReauth(NeedsReauth(reason: "account_deleted")))
+
+        await fulfillment(of: [settled], timeout: 1)
+        XCTAssertTrue(keychain.isEmpty)
+        XCTAssertFalse(sut.requiresReauthentication)
     }
 
     // MARK: Server push: DeviceRevoked

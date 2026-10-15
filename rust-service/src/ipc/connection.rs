@@ -382,6 +382,7 @@ fn auth_status_message(state: AuthState) -> ServerMessage {
             (ServiceState::AuthRequired, Some("needs_reauth"))
         }
         AuthState::DeviceRevoked => (ServiceState::UploadPaused, Some("device_revoked")),
+        AuthState::AccountDeleted => (ServiceState::AuthRequired, Some("account_deleted")),
     };
     ServerMessage::ServiceStatus(ServiceStatus {
         state,

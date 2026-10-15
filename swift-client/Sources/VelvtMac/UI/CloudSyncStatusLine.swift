@@ -28,7 +28,9 @@ public struct CloudSyncStatusPresentation: Equatable {
         case signedOut
         /// The server ended the session (`needs_reauth`).
         case signInAgain
-        /// Signed in; the first `menu_status` has not arrived.
+        /// Signed in; the first `menu_status` has not arrived, or the service
+        /// has not yet had an answer from the server's readiness check
+        /// (`checking`) or the session this app handed it (`signed_out`).
         case checking
         /// Signed in; the server's readiness probe did not answer.
         case offline
@@ -128,6 +130,11 @@ public struct CloudSyncStatusPresentation: Equatable {
         case .loggedIn: break
         }
         guard let status else { return .checking }
+        // Both clear within a moment of a start or a sign-in. `checking` used
+        // to arrive as `network_unavailable` and read as "Offline".
+        if status.uploadStatus == "checking" || status.uploadStatus == "signed_out" {
+            return .checking
+        }
         if !status.cloudReady { return .offline }
         // `last_upload_error_code`, which picks `auth_required` and
         // `rate_limited`, can come from a batch that has already been

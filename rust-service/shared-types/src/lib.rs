@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 /// Current breaking-change version of the local IPC contract.
-pub const PROTOCOL_VERSION: u32 = 33;
+pub const PROTOCOL_VERSION: u32 = 34;
 
 /// Client-to-server messages accepted by the Rust service.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -2138,6 +2138,12 @@ pub struct AuthSession {
     pub user_refresh_token: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub user_expires_at: Option<DateTime<Utc>>,
+    /// The account this session belongs to (protocol 34), as `auth_success`
+    /// named it. Rust stamps it on every event it queues for upload, so a
+    /// queue recorded under one account is never sent under another's token.
+    /// Absent from a client that predates it, which leaves the owner unknown.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user_id: Option<String>,
 }
 
 impl std::fmt::Debug for AuthSession {
@@ -2157,6 +2163,7 @@ impl std::fmt::Debug for AuthSession {
                 &self.user_refresh_token.as_ref().map(|_| "[redacted]"),
             )
             .field("user_expires_at", &self.user_expires_at)
+            .field("user_id", &self.user_id)
             .finish()
     }
 }
@@ -2311,7 +2318,7 @@ mod v28_demotion_receipts_probe_contract {
 
     #[test]
     fn protocol_version_is_current() {
-        assert_eq!(PROTOCOL_VERSION, 33);
+        assert_eq!(PROTOCOL_VERSION, 34);
     }
 
     #[test]
@@ -2765,6 +2772,38 @@ mod v26_focus_contract {
 mod v6_auth_contract {
     use super::*;
 
+    /// Protocol 34: `auth_session` names the account, so the queue can be
+    /// stamped with it from the moment the session is handed over. A client
+    /// that predates the field still decodes, with no owner.
+    #[test]
+    fn auth_session_carries_its_account_and_tolerates_its_absence() {
+        let session = AuthSession {
+            device_id: "device-1".into(),
+            access_token: "access".into(),
+            refresh_token: "refresh".into(),
+            expires_at: "2026-10-14T12:00:00Z".parse().unwrap(),
+            user_access_token: None,
+            user_refresh_token: None,
+            user_expires_at: None,
+            user_id: Some("account-1".into()),
+        };
+        let encoded = serde_json::to_string(&ClientMessage::AuthSession(session.clone())).unwrap();
+        assert_eq!(
+            encoded,
+            r#"{"type":"auth_session","payload":{"device_id":"device-1","access_token":"access","refresh_token":"refresh","expires_at":"2026-10-14T12:00:00Z","user_id":"account-1"}}"#
+        );
+        assert_eq!(
+            serde_json::from_str::<ClientMessage>(&encoded).unwrap(),
+            ClientMessage::AuthSession(session)
+        );
+
+        let older = r#"{"type":"auth_session","payload":{"device_id":"device-1","access_token":"access","refresh_token":"refresh","expires_at":"2026-10-14T12:00:00Z"}}"#;
+        let ClientMessage::AuthSession(decoded) = serde_json::from_str(older).unwrap() else {
+            panic!("an auth_session without user_id must still decode");
+        };
+        assert_eq!(decoded.user_id, None);
+    }
+
     #[test]
     fn protocol_version_is_at_least_six() {
         let version = PROTOCOL_VERSION;
@@ -2901,7 +2940,7 @@ mod v30_classification_contract {
 
     #[test]
     fn protocol_version_is_current() {
-        assert_eq!(PROTOCOL_VERSION, 33);
+        assert_eq!(PROTOCOL_VERSION, 34);
     }
 
     /// A v29 raw event — no declared metadata at all — must decode, and must
@@ -3224,7 +3263,7 @@ mod v32_in_progress_contract {
 
     #[test]
     fn protocol_version_is_current() {
-        assert_eq!(PROTOCOL_VERSION, 33);
+        assert_eq!(PROTOCOL_VERSION, 34);
     }
 
     /// A closed dwell is the only thing a pre-32 client ever sent, and it has
@@ -3270,7 +3309,7 @@ mod v33_needs_a_category_contract {
 
     #[test]
     fn protocol_version_is_current() {
-        assert_eq!(PROTOCOL_VERSION, 33);
+        assert_eq!(PROTOCOL_VERSION, 34);
     }
 
     /// Both kinds on one list, in the exact wire shape: `kind` and

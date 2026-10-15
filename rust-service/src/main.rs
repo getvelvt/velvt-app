@@ -215,8 +215,8 @@ async fn main() {
             WorkBlockIntentionRetentionTarget,
         };
         use velvt_service::upload::{
-            BatchAssembler, EventIngestor, HttpBatchUploader, SharedUploadBatcher, UploadBatcher,
-            UploadCoordinator,
+            BatchAssembler, BatchOwnershipPolicy, EventIngestor, HttpBatchUploader,
+            SessionOwnership, SharedUploadBatcher, UploadBatcher, UploadCoordinator,
         };
         use velvt_service::work_block::{run_deadline_scheduler, WorkBlockManager};
 
@@ -457,20 +457,30 @@ async fn main() {
         );
         let poll_task = tokio::spawn(async move { poll_scheduler.run().await });
 
+        // Every send path asks this whose token may send a batch: only the
+        // account it was recorded under, and nobody's while no session is
+        // usable.
+        let upload_ownership: Arc<dyn BatchOwnershipPolicy> = Arc::new(SessionOwnership::new(
+            Arc::clone(&token_store) as Arc<dyn TokenStore>,
+            auth_state.subscribe(),
+        ));
         let uploader = HttpBatchUploader::new(Arc::clone(&authenticated_http));
         let upload_coordinator = UploadCoordinator::new(
             Arc::clone(&upload_batch_repo),
             uploader,
             PushAdapterAlertSink::new(Arc::clone(&push_adapter)),
         )
-        .with_host(upload_host.clone());
+        .with_host(upload_host.clone())
+        .with_ownership_policy(Arc::clone(&upload_ownership));
         let retry_scan_interval = config.upload_retry_scan_interval;
         let upload_shutdown = token.subscribe();
+        let upload_session = auth_state.subscribe();
         let recovery_task = tokio::spawn(async move {
             upload_coordinator
                 .run_retry_loop(
                     retry_scan_interval,
                     upload_shutdown,
+                    Some(upload_session),
                     "1",
                     velvt_service::build_info::SERVICE_VERSION,
                 )
@@ -485,12 +495,11 @@ async fn main() {
         // persisted per-host backoff state in SQLite is what actually gates
         // concurrent senders, so two in-memory backoff trackers do not risk
         // a correctness issue, only a minor heuristic duplication.
-        // Fixed for this process's lifetime: if this is the very first login
-        // (no device_id persisted yet), registration happens later via
-        // AccountAuthService and events batched before the next restart are
-        // tagged "unregistered-device". They still upload successfully; the
-        // service is restarted alongside the menu bar app often enough
-        // (login is a rare, early-session event) that this is acceptable.
+        // Fixed for this process's lifetime, and only an input to the batch
+        // id: the token store is empty at startup, so in practice every batch
+        // id is hashed with "unregistered-device". Ownership does not rest on
+        // it: each batch carries the account it was recorded under
+        // (`owner_user_id`), which `SessionOwnership` decides by.
         let device_id_for_batching = device_id
             .clone()
             .unwrap_or_else(|| "unregistered-device".into());
@@ -499,7 +508,8 @@ async fn main() {
             HttpBatchUploader::new(Arc::clone(&authenticated_http)),
             PushAdapterAlertSink::new(Arc::clone(&push_adapter)),
         )
-        .with_host(upload_host);
+        .with_host(upload_host)
+        .with_ownership_policy(upload_ownership);
         let mut upload_batcher = UploadBatcher::new(
             BatchAssembler::from_config(device_id_for_batching, &config),
             ingestion_coordinator,
@@ -530,6 +540,72 @@ async fn main() {
             Arc::clone(&token_store) as Arc<dyn TokenStore>,
             Arc::clone(&auth_state),
         ));
+
+        // The menu's cloud readiness, asked at start rather than at the first
+        // status request, and again whenever a session becomes usable.
+        let menu_status = Arc::new(
+            MenuStatusProvider::new(
+                Arc::clone(&raw_http) as Arc<dyn HttpClient>,
+                Arc::clone(&token_store) as Arc<dyn TokenStore>,
+                Arc::clone(&upload_batch_repo),
+                Arc::clone(&raw_event_repo),
+                persistence.abstraction_map_repo(),
+            )
+            .with_auth_state(auth_state.subscribe()),
+        );
+        menu_status.probe_readiness();
+
+        // A deletion made on another Mac reaches this one as `401
+        // account_deleted` on its next request. What this Mac queued for that
+        // account is destroyed, the session is cleared, and the app is told
+        // why, so it can say the account was deleted rather than that the
+        // session expired.
+        {
+            let mut auth_changes = auth_state.subscribe();
+            let mut shutdown = token.subscribe();
+            let account_service = Arc::clone(&account_service);
+            let ingestor = Arc::clone(&shared_batcher);
+            let batches = Arc::clone(&upload_batch_repo);
+            let raw_events = Arc::clone(&raw_event_repo);
+            let push_adapter = Arc::clone(&push_adapter);
+            let menu_status = Arc::clone(&menu_status);
+            tokio::spawn(async move {
+                let mut was_usable = false;
+                loop {
+                    tokio::select! {
+                        changed = auth_changes.changed() => {
+                            if changed.is_err() {
+                                return;
+                            }
+                            let current = auth_changes.borrow_and_update().clone();
+                            let usable = matches!(
+                                current,
+                                AuthState::Authenticated { .. } | AuthState::RefreshInFlight
+                            );
+                            if usable && !was_usable {
+                                menu_status.probe_readiness();
+                            }
+                            was_usable = usable;
+                            if current == AuthState::AccountDeleted {
+                                velvt_service::ipc::end_deleted_account_session(
+                                    &account_service,
+                                    ingestor.as_ref(),
+                                    batches.as_ref(),
+                                    raw_events.as_ref(),
+                                    &push_adapter,
+                                )
+                                .await;
+                            }
+                        }
+                        _ = shutdown.changed() => {
+                            if *shutdown.borrow() {
+                                return;
+                            }
+                        }
+                    }
+                }
+            });
+        }
 
         // Periodic age-based flush: count-based flush happens inline on
         // ingest, but events that never reach the batch-size threshold must
@@ -685,13 +761,7 @@ async fn main() {
             .with_category_prompt(Arc::clone(&category_prompt))
             .with_auth_state(auth_state.subscribe())
             .with_delivery_push(Arc::clone(&push_adapter))
-            .with_menu_status(Arc::new(MenuStatusProvider::new(
-                Arc::clone(&raw_http) as Arc<dyn HttpClient>,
-                Arc::clone(&token_store) as Arc<dyn TokenStore>,
-                Arc::clone(&upload_batch_repo),
-                Arc::clone(&raw_event_repo),
-                persistence.abstraction_map_repo(),
-            ))),
+            .with_menu_status(menu_status),
         )
         .with_auth_state(auth_state.subscribe())
         .with_reconnect_tracker(reconnect_tracker, config.push_write_timeout)

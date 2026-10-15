@@ -1,37 +1,29 @@
-//! Finding E5: what deleting an account destroys on this Mac, and what it does
-//! not.
+//! Finding E5, and cross-device-03: what deleting an account destroys on this
+//! Mac, and whose token may send what was queued.
 //!
-//! `upload_batch` records no owner. `resumable_batches` selects on status and
-//! schedule and on nothing about who queued the row, and `BatchPayload` carries
-//! no device or user identifier either, so the cloud
-//! attributes a batch by whichever bearer token the retry loop holds when it
-//! next runs. Deleting the account clears the stored device id, so the next
-//! sign-up on the same Mac registers a *new* device — and the ingestion service
-//! scopes duplicate detection by device id, so batches queued under the deleted
-//! account arrive as new work and are stored against the account that replaces
-//! it. On the development device on 2026-08-31 the queue held 181 failed and 1
-//! pending batch carrying 2,771 `batch_event` rows, all of them from a single
-//! outage between 2026-08-28 21:53 and 2026-08-29 06:32 UTC.
+//! Every queued batch carries the account it was recorded under
+//! (`upload_batch.owner_user_id`, migration 0042). The service's
+//! `SessionOwnership` policy sends a batch only under that account's session,
+//! holds everything while no session is usable, and discards a batch once
+//! another account is signed in. Before owners existed, the cloud attributed a
+//! batch to whichever bearer token the retry loop held when it next ran: after
+//! Log Out and a sign-in to another account, or after the account was deleted
+//! on another Mac, the queue was stored in the next account. On the
+//! development device on 2026-08-31 the queue held 181 failed and 1 pending
+//! batch carrying 2,771 `batch_event` rows.
 //!
-//! The router now deletes that queue when the cloud accepts the deletion.
-//! `a_queue_survives_a_refused_deletion` is the other half: a deletion the
-//! cloud turned down leaves the user signed in, and the queue is theirs.
-//!
-//! The last two tests are about the other half of the finding — resuming a
-//! queue that is not yours — and they are the two that most need reading
-//! carefully. The service ships no ownership rule: it constructs its
-//! coordinator with `KeepAllBatches` and calls `with_retention_policy` nowhere
-//! in `src/`. What those tests show is that the input such a rule needs is
-//! already on every device's disk, because `BatchAssembler` derives the batch id
-//! as a hash over the device id and the event ids. They do not show that the
-//! binary uses it.
+//! The router also destroys the whole queue when the cloud accepts a deletion
+//! from this Mac. `a_queue_survives_a_refused_deletion` is the other half: a
+//! deletion the cloud turned down leaves the user signed in, and the queue is
+//! theirs. `tests/account_switch.rs` drives the same rules end to end through a
+//! sign-in to a second account.
 //!
 //! What this file does *not* claim: the rest of the database survives account
-//! deletion. `raw_event_buffer`, `abstraction_map`, both override tables, the
-//! prototype and embedding stores, and the terminal (`sent`, `rejected`,
-//! `abandoned`) batch rows are all untouched by it. The deletion dialog says so
-//! in those words, and `PRIVACY.md`'s removal procedure is the only complete
-//! path.
+//! deletion. `raw_event_buffer` (its rows become local-only, not deleted),
+//! `abstraction_map`, both override tables, the prototype and embedding
+//! stores, and the terminal (`sent`, `rejected`, `abandoned`) batch rows are
+//! all untouched by it. The deletion dialog says so in those words, and
+//! `PRIVACY.md`'s removal procedure is the only complete path.
 
 use std::future::Future;
 use std::path::{Path, PathBuf};
@@ -45,14 +37,14 @@ use uuid::Uuid;
 use velvt_service::abstraction::AbstractionEngine;
 use velvt_service::auth::{
     AccountAuthService, AuthError, AuthState, AuthStateMachine, FakeTokenStore, HttpClient,
-    HttpRequest, HttpResponse,
+    HttpRequest, HttpResponse, TokenStore,
 };
 use velvt_service::delivery::FakeCacheManager;
 use velvt_service::ipc::{MessageRouter, R7Router};
-use velvt_service::persistence::{BatchEvent, NewUploadBatch, SqlitePersistence, UploadBatch};
+use velvt_service::persistence::{BatchEvent, NewUploadBatch, RawEventEntry, SqlitePersistence};
 use velvt_service::upload::{
-    BatchAssembler, BatchEventPayload, BatchPayload, BatchRetentionPolicy, EventIngestor,
-    FakeBatchUploader, FakePrivacyAlertSink, SharedUploadBatcher, UploadBatcher, UploadCoordinator,
+    BatchAssembler, BatchEventPayload, BatchPayload, EventIngestor, FakeBatchUploader,
+    FakePrivacyAlertSink, SessionOwnership, SharedUploadBatcher, UploadBatcher, UploadCoordinator,
     UploadOutcome,
 };
 use velvt_shared_types::{ClientMessage, DeleteAccount, ServerMessage};
@@ -195,90 +187,112 @@ async fn a_queue_survives_a_refused_deletion() {
     assert_eq!(batch_event_count(&scratch.path), 6);
 }
 
-/// The queue is not as ownerless as it looks.
+/// A destroyed queue must stay destroyed across a restart.
 ///
-/// `upload_batch` has no `device_id` column and `BatchPayload` carries no
-/// device identifier, which is what leaves the cloud attributing a batch purely
-/// by bearer token. But `BatchAssembler` derives the batch id as SHA-256 over
-/// the device id and the event ids in order, so the id already commits to the
-/// device that minted it: the same device and the same events reproduce it, and
-/// a different device holding those same events cannot.
-///
-/// That is the whole input an ownership rule needs, and every shipped device
-/// already has it on disk — no column, no migration, and no backfill decision
-/// about the rows that predate one. This pins the property so a later change to
-/// the derivation cannot quietly remove it.
+/// Deleting a batch left its events upload-eligible and in no batch, and
+/// `recover_unbatched` re-queues exactly those at the next start, before any
+/// session exists, to be sent under whoever signs in. The same went for an
+/// event acked but not yet batched when the deletion arrived.
+#[tokio::test]
+async fn a_destroyed_queue_does_not_come_back_at_the_next_start() {
+    let scratch = ScratchDatabase::new();
+    let persistence = SqlitePersistence::open(&scratch.path).unwrap();
+    let raw_events = persistence.raw_event_repo();
+    for event_id in ["queued-1", "queued-2", "unbatched-1"] {
+        raw_events.insert(&eligible_raw_event(event_id)).unwrap();
+    }
+    persist(
+        &persistence,
+        &mint(
+            &[payload_event("queued-1"), payload_event("queued-2")],
+            "device-e5",
+        ),
+    );
+    assert_eq!(raw_events.unbatched_events(10).unwrap().len(), 1);
+
+    let router = router_answering_deletion_with(&persistence, 202);
+    router
+        .route(ClientMessage::DeleteAccount(DeleteAccount {}))
+        .await
+        .unwrap();
+
+    assert!(raw_events.unbatched_events(10).unwrap().is_empty());
+    let mut restarted = UploadBatcher::new(
+        BatchAssembler::new("device-next", 1, StdDuration::from_secs(0)),
+        UploadCoordinator::new(
+            persistence.upload_batch_repo(),
+            FakeBatchUploader::default(),
+            FakePrivacyAlertSink::default(),
+        ),
+    );
+    let recovered = restarted
+        .recover_unbatched(raw_events.as_ref(), 100, Utc::now())
+        .await
+        .unwrap();
+    assert_eq!(
+        recovered, 0,
+        "the deleted account's events must not be re-queued for the next account"
+    );
+    assert!(batch_ids(&scratch.path).is_empty());
+}
+
+/// Batch ids are derived from the device id and the event ids, so the same
+/// device and the same events reproduce one: a retry after a crash is the
+/// same batch, which the cloud answers as a duplicate.
 #[test]
-fn a_batch_id_commits_to_the_device_that_minted_it() {
+fn a_batch_id_is_stable_for_the_device_and_events_that_minted_it() {
     let events = [payload_event("event-1"), payload_event("event-2")];
 
     let mine = mint(&events, "device-a").batch_id;
     let mine_again = mint(&events, "device-a").batch_id;
     let theirs = mint(&events, "device-b").batch_id;
 
-    assert_eq!(
-        mine, mine_again,
-        "the device that minted a batch can recompute its id from the events"
-    );
-    assert_ne!(
-        mine, theirs,
-        "another device holding the same events cannot"
-    );
+    assert_eq!(mine, mine_again);
+    assert_ne!(mine, theirs);
 }
 
-/// The ownership rule the finding asks for, built out of that commitment: a
-/// batch minted by device A is deleted rather than uploaded once this device is
-/// B, and B's own batch is left alone.
-///
-/// Read what this does and does not show. The policy is defined in this file.
-/// The shipped service constructs its coordinator with `KeepAllBatches` and
-/// calls `with_retention_policy` nowhere in `src/`, so no such rule runs in the
-/// binary today. This shows that the mechanism works and that the data it needs
-/// is already persisted — not that the product uses it.
+/// The ownership rule on the retry loop: signed in as B, B's batch and a batch
+/// from before owners existed are sent, and A's is deleted, events and all,
+/// rather than sent under B's token.
 #[tokio::test]
-async fn a_policy_that_recomputes_the_batch_id_separates_two_devices_queues() {
+async fn the_retry_loop_sends_only_the_signed_in_accounts_batches() {
     let scratch = ScratchDatabase::new();
     let persistence = SqlitePersistence::open(&scratch.path).unwrap();
-    let batches = persistence.upload_batch_repo();
-    // Distinct event sets, because `batch_event.event_id` is UNIQUE and two
-    // devices never hold the same events. Test 1 above is where "same events,
-    // different device" is checked.
-    let theirs = mint(
-        &[payload_event("their-1"), payload_event("their-2")],
-        "device-a",
-    );
-    let mine = mint(&[payload_event("my-1"), payload_event("my-2")], "device-b");
+    let raw_events = persistence.raw_event_repo();
+    for event_id in ["their-1", "their-2"] {
+        raw_events.insert(&eligible_raw_event(event_id)).unwrap();
+    }
+    let theirs = owned(&["their-1", "their-2"], "account-a");
+    let mine = owned(&["my-1", "my-2"], "account-b");
+    let legacy = mint(&[payload_event("old-1")], "device-old");
     persist(&persistence, &theirs);
     persist(&persistence, &mine);
+    persist(&persistence, &legacy);
 
-    let uploader = FakeBatchUploader::with_outcomes(vec![UploadOutcome::Accepted]);
-    let resumed = UploadCoordinator::new(
-        batches.clone(),
+    let uploader =
+        FakeBatchUploader::with_outcomes(vec![UploadOutcome::Accepted, UploadOutcome::Accepted]);
+    UploadCoordinator::new(
+        persistence.upload_batch_repo(),
         uploader.clone(),
         FakePrivacyAlertSink::default(),
     )
-    .with_retention_policy(Arc::new(MintedByThisDevice {
-        device_id: "device-b".into(),
-    }))
+    .with_ownership_policy(Arc::new(signed_in_as("account-b")))
     .resume_pending(SCHEMA_VERSION, CLIENT_VERSION)
     .await
     .unwrap();
 
-    assert_eq!(resumed, 2, "both batches were read off the queue");
     assert_eq!(
         uploader.upload_count(),
-        1,
-        "only one of them may be POSTed under this device's token"
-    );
-    assert_eq!(
-        batch_ids(&scratch.path),
-        vec![mine.batch_id.clone()],
-        "the other device's batch is deleted, not skipped and left to retry"
-    );
-    assert_eq!(
-        batch_event_count(&scratch.path),
         2,
-        "and its events go with it"
+        "B's batch and the ownerless one may be POSTed under B's token; A's may not"
+    );
+    assert!(
+        !batch_ids(&scratch.path).contains(&theirs.batch_id),
+        "A's batch is deleted, not skipped and left to retry"
+    );
+    assert!(
+        raw_events.unbatched_events(10).unwrap().is_empty(),
+        "and its events are local-only, so no restart re-queues them"
     );
 }
 
@@ -287,17 +301,14 @@ async fn a_policy_that_recomputes_the_batch_id_separates_two_devices_queues() {
 /// `resume_pending` is the retry loop. `flush_all_pending` is what the menu
 /// bar's "Send all now" reaches through `FlushUploadQueue`, and it additionally
 /// ignores `next_attempt_at` and the host backoff — so it is the fastest way to
-/// push a queue out, and it consulted no retention policy at all until this
-/// change. A rule enforced on the loop but not the button is not a rule.
+/// push a queue out. A rule enforced on the loop but not the button is not a
+/// rule.
 #[tokio::test]
 async fn the_user_facing_flush_obeys_the_same_ownership_rule() {
     let scratch = ScratchDatabase::new();
     let persistence = SqlitePersistence::open(&scratch.path).unwrap();
-    let theirs = mint(
-        &[payload_event("their-1"), payload_event("their-2")],
-        "device-a",
-    );
-    let mine = mint(&[payload_event("my-1"), payload_event("my-2")], "device-b");
+    let theirs = owned(&["their-1", "their-2"], "account-a");
+    let mine = owned(&["my-1", "my-2"], "account-b");
     persist(&persistence, &theirs);
     persist(&persistence, &mine);
 
@@ -307,9 +318,7 @@ async fn the_user_facing_flush_obeys_the_same_ownership_rule() {
         uploader.clone(),
         FakePrivacyAlertSink::default(),
     )
-    .with_retention_policy(Arc::new(MintedByThisDevice {
-        device_id: "device-b".into(),
-    }))
+    .with_ownership_policy(Arc::new(signed_in_as("account-b")))
     .flush_all_pending(SCHEMA_VERSION, CLIENT_VERSION)
     .await
     .unwrap();
@@ -317,45 +326,132 @@ async fn the_user_facing_flush_obeys_the_same_ownership_rule() {
     assert_eq!(
         uploader.upload_count(),
         1,
-        "\"Send all now\" must not send another device's queue"
+        "\"Send all now\" must not send another account's queue"
     );
     assert_eq!(batch_ids(&scratch.path), vec![mine.batch_id.clone()]);
+}
+
+/// Signed out, nothing is sent and nothing is spent: every batch keeps its
+/// owner, its attempts and its schedule for when its account signs in again.
+#[tokio::test]
+async fn nothing_is_sent_or_put_off_while_signed_out() {
+    let scratch = ScratchDatabase::new();
+    let persistence = SqlitePersistence::open(&scratch.path).unwrap();
+    let mine = owned(&["my-1"], "account-a");
+    let legacy = mint(&[payload_event("old-1")], "device-old");
+    persist(&persistence, &mine);
+    persist(&persistence, &legacy);
+
+    let tokens = Arc::new(FakeTokenStore::default());
+    tokens.store_user_id("account-a").unwrap();
+    let (_auth, auth_state) = tokio::sync::watch::channel(AuthState::Unauthenticated);
+    let uploader = FakeBatchUploader::with_outcomes(vec![UploadOutcome::Accepted]);
+    let coordinator = UploadCoordinator::new(
+        persistence.upload_batch_repo(),
+        uploader.clone(),
+        FakePrivacyAlertSink::default(),
+    )
+    .with_ownership_policy(Arc::new(SessionOwnership::new(tokens, auth_state)));
+    coordinator
+        .resume_pending(SCHEMA_VERSION, CLIENT_VERSION)
+        .await
+        .unwrap();
+    coordinator
+        .flush_all_pending(SCHEMA_VERSION, CLIENT_VERSION)
+        .await
+        .unwrap();
+
+    assert_eq!(uploader.upload_count(), 0);
+    let queued = persistence.upload_batch_repo().pending_batches().unwrap();
+    assert_eq!(queued.len(), 2, "held, not discarded");
+    assert!(
+        queued.iter().all(|batch| batch.attempt_count == 0),
+        "a batch held for want of a session spends no attempt"
+    );
+    assert_eq!(
+        persistence
+            .upload_batch_repo()
+            .queue_diagnostics()
+            .unwrap()
+            .last_error_code,
+        None,
+        "and is not marked authentication_required"
+    );
+}
+
+/// Signed in under an account the service was not told, whose a batch is
+/// cannot be decided: an owned batch is held, not sent and not deleted.
+#[tokio::test]
+async fn an_owned_batch_is_held_while_the_signed_in_account_is_unknown() {
+    let scratch = ScratchDatabase::new();
+    let persistence = SqlitePersistence::open(&scratch.path).unwrap();
+    persist(&persistence, &owned(&["my-1"], "account-a"));
+
+    let (_auth, auth_state) = tokio::sync::watch::channel(AuthState::Authenticated {
+        device_id: "device-1".into(),
+    });
+    let uploader = FakeBatchUploader::with_outcomes(vec![UploadOutcome::Accepted]);
+    UploadCoordinator::new(
+        persistence.upload_batch_repo(),
+        uploader.clone(),
+        FakePrivacyAlertSink::default(),
+    )
+    .with_ownership_policy(Arc::new(SessionOwnership::new(
+        Arc::new(FakeTokenStore::default()),
+        auth_state,
+    )))
+    .resume_pending(SCHEMA_VERSION, CLIENT_VERSION)
+    .await
+    .unwrap();
+
+    assert_eq!(uploader.upload_count(), 0);
+    assert_eq!(batch_ids(&scratch.path).len(), 1);
 }
 
 // ---------------------------------------------------------------------------
 // Fixtures
 // ---------------------------------------------------------------------------
 
-/// Ownership recomputed rather than stored: re-derives the batch id from this
-/// device's identity and the event ids the row already holds, and discards
-/// anything that does not match. `BatchAssembler` is the only minting path in
-/// `src/`, so re-running it is the same derivation rather than a second copy of
-/// it.
-///
-/// One case this does not decide: `main.rs` mints under `"unregistered-device"`
-/// when no device id is on disk yet, so a policy wired for real has to accept
-/// that identity too or it deletes the first session's own queue.
-struct MintedByThisDevice {
-    device_id: String,
+/// The service's ownership policy, signed in as `account`.
+fn signed_in_as(account: &str) -> SessionOwnership {
+    let tokens = Arc::new(FakeTokenStore::default());
+    tokens.store_user_id(account).unwrap();
+    let (_auth, auth_state) = tokio::sync::watch::channel(AuthState::Authenticated {
+        device_id: format!("device-of-{account}"),
+    });
+    SessionOwnership::new(tokens, auth_state)
 }
 
-impl BatchRetentionPolicy for MintedByThisDevice {
-    fn should_discard(&self, batch: &UploadBatch) -> bool {
-        let events = batch
-            .events
-            .iter()
-            .map(|event| BatchEventPayload {
-                event_id: event.event_id.clone(),
-                stable_id: event.stable_id.clone(),
-                label: event.label.clone(),
-                category: event.category.clone(),
-                taxonomy_version: event.taxonomy_version.clone(),
-                classification_tier: event.classification_tier.clone(),
-                occurred_at: event.occurred_at,
-                duration_seconds: event.duration_seconds,
-            })
-            .collect::<Vec<_>>();
-        mint(&events, &self.device_id).batch_id != batch.batch_id
+/// A batch of `event_ids` recorded under `account`.
+fn owned(event_ids: &[&str], account: &str) -> BatchPayload {
+    let events = event_ids
+        .iter()
+        .map(|event_id| payload_event(event_id))
+        .collect::<Vec<_>>();
+    mint(&events, "device-shared").owned_by(Some(account.into()))
+}
+
+/// An upload-eligible row in `raw_event_buffer`, as the router writes one for
+/// an event acked while signed in.
+fn eligible_raw_event(event_id: &str) -> RawEventEntry {
+    RawEventEntry {
+        event_id: event_id.into(),
+        stable_id: "abs_e5".into(),
+        label: "document:edit".into(),
+        local_display_label: None,
+        local_name_suggestion: None,
+        category: "FOCUS_WORK".into(),
+        taxonomy_version: "mvp-1".into(),
+        classification_tier: "fallback".into(),
+        classification_status: "classified".into(),
+        classification_confidence: "high".into(),
+        classification_source: "fallback".into(),
+        occurred_at: Utc::now() - Duration::hours(2),
+        duration_seconds: 30,
+        upload_eligible: true,
+        app_stable_id: None,
+        app_scope_eligible: false,
+        site_stable_id: None,
     }
 }
 
@@ -385,9 +481,8 @@ fn payload_event(event_id: &str) -> BatchEventPayload {
     }
 }
 
-/// Copies the payload to disk the way `persist_batch` does — event ids
-/// verbatim and in order. The ownership check below reads them back and rehashes
-/// them, so a store that rewrote or reordered an event id would break it.
+/// Copies the payload to disk the way `persist_batch` does: event ids
+/// verbatim and in order, under the batch's owner.
 fn persist(persistence: &SqlitePersistence, batch: &BatchPayload) {
     let events = batch
         .events
@@ -408,6 +503,7 @@ fn persist(persistence: &SqlitePersistence, batch: &BatchPayload) {
         .insert_batch_with_events(
             &NewUploadBatch {
                 batch_id: batch.batch_id.clone(),
+                owner_user_id: batch.owner_user_id.clone(),
             },
             &events,
         )
@@ -443,6 +539,7 @@ fn seed_queue(persistence: &SqlitePersistence) {
             .insert_batch_with_events(
                 &NewUploadBatch {
                     batch_id: batch_id.into(),
+                    owner_user_id: None,
                 },
                 &events,
             )

@@ -29,8 +29,8 @@ use crate::delivery::{shaper, CacheManager, PushAdapter};
 use crate::focus::FocusManager;
 use crate::initiation::InitiationManager;
 use crate::persistence::{
-    AbstractionMapRepo, DeclaredAppMetadata, PersistenceError, RawEventEntry, RawEventRepo,
-    UploadBatchRepo, UploadQueueDiagnostics, MAX_REPORTED_DWELL_SECONDS, TRIAGE_MAX_LOOKBACK_DAYS,
+    AbstractionMapRepo, DeclaredAppMetadata, RawEventEntry, RawEventRepo, UploadBatchRepo,
+    UploadQueueDiagnostics, MAX_REPORTED_DWELL_SECONDS, TRIAGE_MAX_LOOKBACK_DAYS,
 };
 use crate::receipts::ReceiptsManager;
 use crate::upload::EventIngestor;
@@ -64,6 +64,7 @@ pub struct MenuStatusProvider {
     raw_events: Arc<dyn RawEventRepo>,
     abstraction_map: Arc<dyn AbstractionMapRepo>,
     readiness: Arc<Mutex<Readiness>>,
+    auth_state: Option<tokio::sync::watch::Receiver<AuthState>>,
 }
 
 /// What `/v1/ready` last answered, and whether a probe is asking it now.
@@ -91,10 +92,47 @@ impl MenuStatusProvider {
             raw_events,
             abstraction_map,
             readiness: Arc::default(),
+            auth_state: None,
         }
     }
 
-    /// The last readiness answer, `false` until there is one, starting a
+    /// Folds the session into `upload_status`: signed out, or a session the
+    /// cloud ended, says so, whatever the queue's last error was.
+    pub fn with_auth_state(mut self, auth_state: tokio::sync::watch::Receiver<AuthState>) -> Self {
+        self.auth_state = Some(auth_state);
+        self
+    }
+
+    /// Asks `/v1/ready` now, in the background, unless a probe is already
+    /// running.
+    ///
+    /// Called at service start and whenever a session becomes usable. The
+    /// probe used to start only when a status was asked for, and the app asks
+    /// once a minute, so the first status after every start said "Network
+    /// unavailable" whatever the network was doing.
+    pub fn probe_readiness(&self) {
+        if let Ok(mut readiness) = self.readiness.lock() {
+            self.start_probe(&mut readiness);
+        }
+    }
+
+    fn start_probe(&self, readiness: &mut Readiness) {
+        if readiness.probing {
+            return;
+        }
+        readiness.probing = true;
+        let http = Arc::clone(&self.http);
+        let shared = Arc::clone(&self.readiness);
+        tokio::spawn(async move {
+            let ready = matches!(http.send(HttpRequest::get("/v1/ready")).await, Ok(response) if response.status / 100 == 2 && response.raw_body.as_ref().and_then(|body| body.get("status")).and_then(|value| value.as_str()) == Some("ready"));
+            if let Ok(mut readiness) = shared.lock() {
+                readiness.checked = Some((Instant::now(), ready));
+                readiness.probing = false;
+            }
+        });
+    }
+
+    /// The last readiness answer, `None` until there is one, starting a
     /// probe in the background when the answer is missing or older than
     /// `READINESS_TTL` and no probe is running.
     ///
@@ -102,34 +140,77 @@ impl MenuStatusProvider {
     /// connection that carries every raw event, and a probe of a cloud that
     /// accepts the connection and never answers held it for the 10-second
     /// HTTP timeout about once a minute.
-    fn cloud_ready(&self) -> bool {
+    fn cloud_ready(&self) -> Option<bool> {
         let Ok(mut readiness) = self.readiness.lock() else {
-            return false;
+            return Some(false);
         };
         let (ready, fresh) = match readiness.checked {
-            Some((checked_at, ready)) => (ready, checked_at.elapsed() < READINESS_TTL),
-            None => (false, false),
+            Some((checked_at, ready)) => (Some(ready), checked_at.elapsed() < READINESS_TTL),
+            None => (None, false),
         };
-        if !fresh && !readiness.probing {
-            readiness.probing = true;
-            let http = Arc::clone(&self.http);
-            let shared = Arc::clone(&self.readiness);
-            tokio::spawn(async move {
-                let ready = matches!(http.send(HttpRequest::get("/v1/ready")).await, Ok(response) if response.status / 100 == 2 && response.raw_body.as_ref().and_then(|body| body.get("status")).and_then(|value| value.as_str()) == Some("ready"));
-                if let Ok(mut readiness) = shared.lock() {
-                    readiness.checked = Some((Instant::now(), ready));
-                    readiness.probing = false;
-                }
-            });
+        if !fresh {
+            self.start_probe(&mut readiness);
         }
         ready
+    }
+
+    fn session(&self) -> Option<SessionStatus> {
+        self.auth_state
+            .as_ref()
+            .map(|state| SessionStatus::of(&state.borrow()))
+    }
+}
+
+/// Ends the session of an account the cloud reported deleted (`401
+/// account_deleted`), for a deletion made on another Mac or anywhere else.
+///
+/// What this Mac queued for the account is destroyed as a deletion from this
+/// Mac destroys it ([`crate::upload::destroy_upload_queue`]), the session and
+/// device id are cleared, and the app is told `needs_reauth` with the reason
+/// `account_deleted`, so it says the account was deleted rather than that the
+/// session expired, and does not ask the person to sign in to it again.
+pub async fn end_deleted_account_session(
+    account: &AccountAuthService,
+    ingestor: &dyn EventIngestor,
+    batches: &dyn UploadBatchRepo,
+    raw_events: &dyn RawEventRepo,
+    push: &PushAdapter,
+) {
+    crate::upload::destroy_upload_queue(ingestor, Some(batches), raw_events).await;
+    account.forget_deleted_account();
+    push.push_needs_reauth(ACCOUNT_DELETED_REASON).await;
+}
+
+/// The `needs_reauth` reason for an account the cloud reported deleted.
+pub const ACCOUNT_DELETED_REASON: &str = "account_deleted";
+
+/// Where the session stands, as the menu's upload status reports it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SessionStatus {
+    SignedIn,
+    SignedOut,
+    /// The cloud ended the session: it needs reauthentication, the device was
+    /// revoked, or the account was deleted.
+    SignInRequired,
+}
+
+impl SessionStatus {
+    fn of(state: &AuthState) -> Self {
+        match state {
+            AuthState::Authenticated { .. } | AuthState::RefreshInFlight => Self::SignedIn,
+            AuthState::Unauthenticated => Self::SignedOut,
+            AuthState::NeedsReauth | AuthState::DeviceRevoked | AuthState::AccountDeleted => {
+                Self::SignInRequired
+            }
+        }
     }
 }
 
 impl MenuStatusProviding for MenuStatusProvider {
     fn snapshot<'a>(&'a self) -> Pin<Box<dyn Future<Output = MenuStatus> + Send + 'a>> {
         Box::pin(async move {
-            let cloud_ready = self.cloud_ready();
+            let readiness = self.cloud_ready();
+            let cloud_ready = readiness == Some(true);
             let (queued_event_count, events) =
                 self.batches.queued_batch_events(10).unwrap_or_default();
             let event_ids = events
@@ -208,7 +289,8 @@ impl MenuStatusProviding for MenuStatusProvider {
                     last_successful_sync_at: None,
                 }
             });
-            let upload_status = upload_status_for(cloud_ready, &diagnostics).to_owned();
+            let upload_status =
+                upload_status_for(self.session(), readiness, &diagnostics).to_owned();
             let correction_history = self
                 .abstraction_map
                 .personal_overrides(25)
@@ -265,12 +347,31 @@ impl MenuStatusProviding for EmptyMenuStatusProvider {
     }
 }
 
-fn upload_status_for(cloud_ready: bool, diagnostics: &UploadQueueDiagnostics) -> &'static str {
+/// The menu's `upload_status`.
+///
+/// The session decides first: nothing uploads while signed out or while the
+/// cloud has ended the session, whatever the queue holds, and "Ready" said
+/// otherwise. A queue's `authentication_required` is a batch put off before a
+/// session was usable; with one usable now it says nothing about the present
+/// and is not reported as "Sign in required". `checking` is the time before
+/// the first readiness answer, which used to read as `network_unavailable`.
+/// `session` is `None` only for a provider given no auth state.
+fn upload_status_for(
+    session: Option<SessionStatus>,
+    readiness: Option<bool>,
+    diagnostics: &UploadQueueDiagnostics,
+) -> &'static str {
+    match session {
+        Some(SessionStatus::SignedOut) => return "signed_out",
+        Some(SessionStatus::SignInRequired) => return "auth_required",
+        Some(SessionStatus::SignedIn) | None => {}
+    }
     match diagnostics.last_error_code.as_deref() {
-        Some("authentication_required") => "auth_required",
+        Some("authentication_required") if session.is_none() => "auth_required",
         Some("raw_field_rejected") => "privacy_rejected",
         Some("rate_limited") => "rate_limited",
-        _ if !cloud_ready => "network_unavailable",
+        _ if readiness.is_none() => "checking",
+        _ if readiness == Some(false) => "network_unavailable",
         _ if diagnostics.failed_batch_count > 0 => "retrying",
         _ if diagnostics.pending_batch_count > 0 => "pending",
         _ if diagnostics.rejected_batch_count > 0 => "privacy_rejected",
@@ -429,7 +530,10 @@ mod tests {
                 .await
                 .expect("the status waited on the probe");
             assert!(!status.cloud_ready);
-            assert_eq!(status.upload_status, "network_unavailable");
+            assert_eq!(
+                status.upload_status, "checking",
+                "no answer yet is not an answer that the network is down"
+            );
         }
         eventually("the probe was sent", || {
             http.sent.load(Ordering::SeqCst) == 1
@@ -441,6 +545,108 @@ mod tests {
             http.sent.load(Ordering::SeqCst),
             1,
             "a second probe started while the first was outstanding"
+        );
+    }
+
+    /// helper-backend-11: the probe started only when a status was asked
+    /// for, and the app asks once a minute, so the first status after every
+    /// start said "Network unavailable". The service asks at start.
+    #[tokio::test]
+    async fn readiness_is_asked_at_start_without_waiting_for_a_status() {
+        let persistence = SqlitePersistence::open_in_memory().unwrap();
+        let http = Arc::new(BlackHoleHttp::default());
+        let provider = MenuStatusProvider::new(
+            Arc::clone(&http) as Arc<dyn HttpClient>,
+            Arc::new(FakeTokenStore::default()) as Arc<dyn TokenStore>,
+            persistence.upload_batch_repo(),
+            persistence.raw_event_repo(),
+            persistence.abstraction_map_repo(),
+        );
+
+        provider.probe_readiness();
+
+        eventually("the probe was sent before any status", || {
+            http.sent.load(Ordering::SeqCst) == 1
+        })
+        .await;
+        provider.probe_readiness();
+        provider.snapshot().await;
+        tokio::task::yield_now().await;
+        assert_eq!(
+            http.sent.load(Ordering::SeqCst),
+            1,
+            "one probe at a time, however it was started"
+        );
+    }
+
+    /// The session decides the upload status before the queue does: "Ready"
+    /// while nothing can upload was the second half of helper-backend-11.
+    #[tokio::test]
+    async fn the_upload_status_folds_in_the_session() {
+        let persistence = SqlitePersistence::open_in_memory().unwrap();
+        let (auth, auth_state) = tokio::sync::watch::channel(AuthState::Unauthenticated);
+        let provider = MenuStatusProvider::new(
+            Arc::new(ReadyHttp) as Arc<dyn HttpClient>,
+            Arc::new(FakeTokenStore::default()) as Arc<dyn TokenStore>,
+            persistence.upload_batch_repo(),
+            persistence.raw_event_repo(),
+            persistence.abstraction_map_repo(),
+        )
+        .with_auth_state(auth_state);
+        provider.probe_readiness();
+        let readiness = Arc::clone(&provider.readiness);
+        eventually("the probe answered", || {
+            readiness.lock().unwrap().checked.is_some()
+        })
+        .await;
+
+        assert_eq!(provider.snapshot().await.upload_status, "signed_out");
+        for ended in [
+            AuthState::NeedsReauth,
+            AuthState::DeviceRevoked,
+            AuthState::AccountDeleted,
+        ] {
+            auth.send_replace(ended.clone());
+            assert_eq!(
+                provider.snapshot().await.upload_status,
+                "auth_required",
+                "{ended:?}"
+            );
+        }
+        auth.send_replace(AuthState::Authenticated {
+            device_id: "device-1".into(),
+        });
+        assert_eq!(provider.snapshot().await.upload_status, "ready");
+    }
+
+    /// helper-backend-02: a batch put off before the session was handed over
+    /// keeps `authentication_required` until its next attempt. With a session
+    /// in hand that code is history, and the menu said "Sign in required"
+    /// over it for fifteen minutes while new uploads went through.
+    #[test]
+    fn a_stale_authentication_code_is_not_reported_while_signed_in() {
+        let diagnostics = UploadQueueDiagnostics {
+            pending_batch_count: 0,
+            failed_batch_count: 1,
+            rejected_batch_count: 0,
+            next_attempt_at: None,
+            last_error_code: Some("authentication_required".into()),
+            last_successful_sync_at: None,
+        };
+
+        assert_eq!(
+            upload_status_for(Some(SessionStatus::SignedIn), Some(true), &diagnostics),
+            "retrying"
+        );
+        assert_eq!(
+            upload_status_for(None, Some(true), &diagnostics),
+            "auth_required",
+            "a provider told nothing about the session reads the queue as before"
+        );
+        assert_eq!(
+            upload_status_for(Some(SessionStatus::SignedIn), None, &diagnostics),
+            "checking",
+            "before the first readiness answer"
         );
     }
 
@@ -495,6 +701,7 @@ mod tests {
                 .insert_batch_with_events(
                     &crate::persistence::NewUploadBatch {
                         batch_id: format!("batch-{batch}"),
+                        owner_user_id: None,
                     },
                     &events,
                 )
@@ -3025,6 +3232,16 @@ impl MessageRouter for R7Router {
                 // expires invitation state).
                 self.expire_open_invitation();
                 self.forget_cloud_outages();
+                // What the departing account recorded leaves memory as its
+                // own batches before the session goes. They are sent if it
+                // signs in again and discarded if another account does.
+                if let Err(error) = self.ingestor.persist_open().await {
+                    tracing::error!(
+                        error_code = "logout_upload_drain_failed",
+                        error = %error,
+                        "buffered activity was not queued at log out"
+                    );
+                }
                 self.account.log_out();
                 Ok(None)
             }
@@ -3035,7 +3252,12 @@ impl MessageRouter for R7Router {
                 // After acceptance, not before: a deletion the cloud refused
                 // leaves the user signed in and the queue theirs.
                 if matches!(outcome, ServerMessage::AccountDeletionAccepted(_)) {
-                    self.destroy_resumable_upload_queue();
+                    crate::upload::destroy_upload_queue(
+                        self.ingestor.as_ref(),
+                        self.upload_batches.as_deref(),
+                        self.raw_event_repo.as_ref(),
+                    )
+                    .await;
                 }
                 Ok(Some(outcome))
             }
@@ -4320,93 +4542,6 @@ impl R7Router {
         )
     }
 
-    /// Deletes every upload batch that can still be sent, and the events
-    /// inside them, once the cloud has accepted the account deletion.
-    ///
-    /// The queue has no owner. `resumable_batches` selects on status and
-    /// schedule and on nothing about who queued the row, and neither
-    /// `upload_batch` nor `BatchPayload` carries a device or user identifier, so
-    /// the cloud attributes a batch purely by whichever bearer
-    /// token the retry loop is holding when it next runs. Account deletion
-    /// clears the device id along with the tokens
-    /// (`AccountAuthService::clear_local_session`), so the next sign-up on this
-    /// Mac registers a new device — and the backend scopes duplicate detection
-    /// by device id, so batches minted under the deleted account are not
-    /// refused as duplicates there. They are stored against the new account.
-    /// The likeliest person on the other end of that is the same one, deleting
-    /// and re-registering, which restores the history they asked to destroy.
-    ///
-    /// `SqliteUploadBatchRepo::pending_batches` is `resumable_batches` at an
-    /// unbounded horizon, which is the horizon this needs: on the development
-    /// device every one of the 182 queued batches carried the same
-    /// `next_attempt_at`, and all of them were scheduled past the moment the
-    /// service last ran. A purge on the retry loop's own horizon would have
-    /// left every one of them behind.
-    ///
-    /// It reaches `pending` and `failed` and nothing else, because those are
-    /// the two statuses `resumable_batches` returns: `sent`, `rejected` and
-    /// `abandoned` are terminal and no code path uploads them. Those rows stay
-    /// on disk with the rest of the local database, and the deletion dialog
-    /// says so rather than implying a purge that does not happen.
-    ///
-    /// A process that dies between the cloud's acceptance and this call leaves
-    /// the queue behind, and this is the only place ownership is enforced. The
-    /// standing check that would also cover it belongs in `resume_pending` —
-    /// `BatchAssembler` derives a batch id by hashing the device id with the
-    /// event ids, so a resumed batch can be tested against the device holding
-    /// it. `tests/account_deletion.rs` pins that property and shows the rule
-    /// working; nothing in `src/` installs it.
-    fn destroy_resumable_upload_queue(&self) {
-        let Some(batches) = &self.upload_batches else {
-            tracing::error!(
-                error_code = "account_deletion_queue_unreachable",
-                "no upload queue was attached, so queued activity was not destroyed"
-            );
-            return;
-        };
-        let queued = match batches.pending_batches() {
-            Ok(queued) => queued,
-            Err(error) => {
-                tracing::error!(
-                    error_code = "account_deletion_queue_read_failed",
-                    error = %error,
-                    "queued activity was not destroyed with the account"
-                );
-                return;
-            }
-        };
-        let mut destroyed = 0usize;
-        let mut surviving = 0usize;
-        for batch in &queued {
-            match batches.discard_batch(&batch.batch_id) {
-                // A row already gone is the outcome this wants.
-                Ok(()) | Err(PersistenceError::NotFound { .. }) => destroyed += 1,
-                Err(error) => {
-                    surviving += 1;
-                    tracing::error!(
-                        error_code = "account_deletion_batch_delete_failed",
-                        error = %error,
-                        "a queued batch survived account deletion"
-                    );
-                }
-            }
-        }
-        if surviving == 0 {
-            tracing::info!(
-                message_type = "delete_account",
-                destroyed_batches = destroyed,
-                "queued activity was destroyed with the account"
-            );
-        } else {
-            tracing::error!(
-                error_code = "account_deletion_queue_purge_incomplete",
-                destroyed_batches = destroyed,
-                surviving_batches = surviving,
-                "queued activity survived account deletion"
-            );
-        }
-    }
-
     /// Expires the live invitation, if any, at an account boundary. Never
     /// fails the surrounding auth flow.
     fn expire_open_invitation(&self) {
@@ -4479,6 +4614,11 @@ impl R7Router {
             .duration_seconds
             .min(u64::from(MAX_REPORTED_DWELL_SECONDS));
         let upload_eligible = self.upload_eligible();
+        // Read once, with eligibility: the row and the batch it joins name the
+        // same account, the one signed in when the event arrived.
+        let upload_owner = upload_eligible
+            .then(|| self.account.current_owner())
+            .flatten();
         clear_declared_metadata_beyond_bounds(&mut event);
         if event.in_progress {
             return self.observe_dwell_in_progress(event).await;
@@ -4537,10 +4677,11 @@ impl R7Router {
                     app_scope_eligible: abstracted.app_scope_eligible(),
                     site_stable_id: abstracted.site_stable_id().map(str::to_owned),
                 };
-                if let Err(err) = self
-                    .raw_event_repo
-                    .insert_with_declared_metadata(&entry, &declared_metadata)
-                {
+                if let Err(err) = self.raw_event_repo.insert_with_upload_owner(
+                    &entry,
+                    &declared_metadata,
+                    upload_owner.as_deref(),
+                ) {
                     tracing::error!(
                         error_code = "raw_event_persist_failed",
                         error = %err,
@@ -4575,11 +4716,12 @@ impl R7Router {
                 if upload_eligible {
                     if let Err(err) = self
                         .ingestor
-                        .ingest(
+                        .ingest_owned(
                             event_id.to_string(),
                             &abstracted,
                             duration_seconds,
                             Utc::now(),
+                            upload_owner.clone(),
                         )
                         .await
                     {

@@ -236,6 +236,7 @@ async fn no_cloud_request_holds_back_a_raw_event() {
                 user_access_token: None,
                 user_refresh_token: None,
                 user_expires_at: None,
+                user_id: Some("account-black-hole".into()),
             },
         ))
         .await;

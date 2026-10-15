@@ -80,6 +80,7 @@ fn batch_events(db: &SqlitePersistence, batch_id: &str, ids: std::ops::Range<u64
     repo.insert_batch_with_events(
         &NewUploadBatch {
             batch_id: batch_id.to_owned(),
+            owner_user_id: None,
         },
         &events,
     )
@@ -277,6 +278,7 @@ fn upload_batch_retention_deletes_sent_batches_after_window() {
     for n in 0..3u64 {
         let batch = NewUploadBatch {
             batch_id: format!("batch-sent-{n}"),
+            owner_user_id: None,
         };
         repo.insert_batch(&batch).unwrap();
         repo.mark_sent(&batch.batch_id).unwrap();
@@ -315,6 +317,7 @@ fn upload_batch_retention_deletes_rejected_batches_after_audit_period() {
     for n in 0..3u64 {
         let batch = NewUploadBatch {
             batch_id: format!("batch-rej-{n}"),
+            owner_user_id: None,
         };
         repo.insert_batch(&batch).unwrap();
         repo.mark_rejected(&batch.batch_id, "server_rejected")
@@ -359,6 +362,7 @@ fn upload_batch_retention_expires_queued_batches_past_the_sent_horizon() {
     for n in 0..3u64 {
         repo.insert_batch(&NewUploadBatch {
             batch_id: format!("batch-pend-{n}"),
+            owner_user_id: None,
         })
         .unwrap();
     }
@@ -375,6 +379,7 @@ fn upload_batch_retention_expires_queued_batches_past_the_sent_horizon() {
     // The batch the assembler is still filling, created now.
     repo.insert_batch(&NewUploadBatch {
         batch_id: "batch-in-progress".into(),
+        owner_user_id: None,
     })
     .unwrap();
 
@@ -421,6 +426,7 @@ fn a_batch_retried_past_its_ceiling_becomes_terminal() {
     let repo = db.upload_batch_repo();
     repo.insert_batch(&NewUploadBatch {
         batch_id: "batch-doomed".into(),
+        owner_user_id: None,
     })
     .unwrap();
 

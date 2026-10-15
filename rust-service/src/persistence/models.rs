@@ -367,6 +367,9 @@ impl std::fmt::Debug for UnclassifiedSiteEntry {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NewUploadBatch {
     pub batch_id: String,
+    /// The account the batch was recorded under (migration 0042), or `None`
+    /// when the service did not know it. Decides whose token may send it.
+    pub owner_user_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -445,6 +448,8 @@ pub struct UploadBatch {
     pub attempt_count: u32,
     pub next_attempt_at: DateTime<Utc>,
     pub events: Vec<BatchEvent>,
+    /// See [`NewUploadBatch::owner_user_id`].
+    pub owner_user_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -100,6 +100,13 @@ pub struct BatchPayload {
     pub supported_abstraction_types: Vec<String>,
     pub category_taxonomy_version: String,
     pub events: Vec<BatchEventPayload>,
+    /// The account the batch was recorded under (migration 0042), which
+    /// decides whose token may send it. Never part of the body: the cloud
+    /// knows the account from the token, and
+    /// `serialized_batch_holds_exactly_the_documented_keys` holds the wire
+    /// shut.
+    #[serde(skip)]
+    pub owner_user_id: Option<String>,
 }
 
 impl BatchPayload {
@@ -125,7 +132,14 @@ impl BatchPayload {
             supported_abstraction_types,
             category_taxonomy_version: category_taxonomy_version.into(),
             events,
+            owner_user_id: None,
         }
+    }
+
+    /// The same batch, recorded under `owner_user_id`.
+    pub fn owned_by(mut self, owner_user_id: Option<String>) -> Self {
+        self.owner_user_id = owner_user_id;
+        self
     }
 }
 
@@ -240,9 +254,14 @@ mod tests {
                 sample_event("document:code", "FOCUS_WORK"),
                 sample_event("communication:slack", "COMMUNICATION"),
             ],
-        );
+        )
+        .owned_by(Some("account-owner-7".into()));
 
         let value = serde_json::to_value(&batch).unwrap();
+        assert!(
+            !value.to_string().contains("account-owner-7"),
+            "the owner decides whose token sends a batch and is never sent itself"
+        );
         let mut found = BTreeSet::new();
         collect_key_paths(&value, "", &mut found);
 

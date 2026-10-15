@@ -25,7 +25,8 @@ pub struct AuthManager<S, H> {
     state: Arc<AuthStateMachine>,
     refresh_buffer: Duration,
     refresh_lock: Mutex<()>,
-    /// When a refresh last failed in transport, until one gets a response.
+    /// When a refresh last failed in transport or got no verdict on the
+    /// session, until one gets one.
     refresh_transport_failed_at: std::sync::Mutex<Option<Instant>>,
     refresh_transport_retry_after: std::time::Duration,
 }
@@ -63,19 +64,15 @@ where
         &self,
         mut request: HttpRequest,
     ) -> Result<HttpResponse, AuthError> {
-        if self.state.current() == AuthState::DeviceRevoked {
-            return Err(AuthError::DeviceRevoked);
+        match self.state.current() {
+            AuthState::DeviceRevoked => return Err(AuthError::DeviceRevoked),
+            AuthState::AccountDeleted => return Err(AuthError::AccountDeleted),
+            _ => {}
         }
         let tokens = self.tokens_for_request().await?;
         request.authorization = Some(tokens.access_token().clone());
         let response = self.http.send(request.clone()).await?;
-        if matches!(
-            (response.status, response.error_code.as_deref()),
-            (
-                401,
-                Some("invalid_credentials" | "invalid_token" | "token_expired")
-            )
-        ) {
+        if refusal(&response) == Refusal::SessionRejected {
             let fresh = self.refresh_tokens(true).await?;
             request.authorization = Some(fresh.access_token().clone());
             let retried = self.http.send(request.clone()).await?;
@@ -84,12 +81,21 @@ where
         self.handle_response(response, request).await
     }
 
+    /// Asks the cloud whether the restored session still stands, and keeps
+    /// the account id it answers with when the client did not hand one over.
     pub async fn validate_session(&self) -> Result<(), AuthError> {
         let response = self
             .send_authenticated(HttpRequest::get("/v1/auth/session"))
             .await?;
         match response.status {
-            200..=299 => Ok(()),
+            200..=299 => {
+                if let Some(user_id) = response.user_id.as_deref() {
+                    if self.store.load_user_id()?.is_none() {
+                        self.store.store_user_id(user_id)?;
+                    }
+                }
+                Ok(())
+            }
             429 => Err(AuthError::RateLimited),
             _ => Err(AuthError::InvalidResponse),
         }
@@ -117,7 +123,9 @@ where
             };
         }
         match self.refresh_tokens(false).await {
-            Err(AuthError::Transport) if still_valid(&tokens) => Ok(tokens),
+            Err(AuthError::Transport | AuthError::RateLimited) if still_valid(&tokens) => {
+                Ok(tokens)
+            }
             result => result,
         }
     }
@@ -156,6 +164,7 @@ where
             AuthState::Authenticated { device_id } => device_id,
             AuthState::RefreshInFlight => return Err(AuthError::NeedsReauth),
             AuthState::DeviceRevoked => return Err(AuthError::DeviceRevoked),
+            AuthState::AccountDeleted => return Err(AuthError::AccountDeleted),
             AuthState::Unauthenticated | AuthState::NeedsReauth => {
                 return Err(AuthError::NeedsReauth)
             }
@@ -199,24 +208,42 @@ where
                 .transition(AuthState::Authenticated { device_id })?;
             return Ok(fresh);
         }
-        if matches!(
-            (response.status, response.error_code.as_deref()),
-            (403, Some("device_revoked"))
-        ) {
-            self.state.transition(AuthState::DeviceRevoked)?;
-            return Err(AuthError::DeviceRevoked);
-        }
-        if device_token_revoked(response.status, response.error_code.as_deref()) {
-            self.state
-                .transition(AuthState::Authenticated { device_id })?;
-            drop(_guard);
-            return self.reissue_device_tokens().await;
-        }
-        self.state.transition(AuthState::NeedsReauth)?;
-        match response.status {
-            403 => Err(AuthError::Forbidden),
-            429 => Err(AuthError::RateLimited),
-            _ => Err(AuthError::NeedsReauth),
+        match refusal(&response) {
+            Refusal::DeviceRevoked => {
+                self.state.transition(AuthState::DeviceRevoked)?;
+                Err(AuthError::DeviceRevoked)
+            }
+            Refusal::AccountDeleted => {
+                self.state.transition(AuthState::AccountDeleted)?;
+                Err(AuthError::AccountDeleted)
+            }
+            Refusal::DeviceTokenRevoked => {
+                self.state
+                    .transition(AuthState::Authenticated { device_id })?;
+                drop(_guard);
+                self.reissue_device_tokens().await
+            }
+            Refusal::SessionRejected => {
+                self.state.transition(AuthState::NeedsReauth)?;
+                Err(AuthError::NeedsReauth)
+            }
+            // An edge, an outage or a rate limit answered instead of the
+            // cloud's auth service. The session stands: an unexpired token
+            // goes on being used, and the refresh is tried again after
+            // `refresh_transport_retry_after`, as after a transport failure.
+            Refusal::Unattributed => {
+                self.record_refresh_transport(true);
+                if token_unusable {
+                    self.state
+                        .transition(AuthState::Authenticated { device_id })?;
+                }
+                tracing::warn!(
+                    error_code = "token_refresh_unattributed_refusal",
+                    status = response.status,
+                    "token refresh was refused without a session error code; kept the session"
+                );
+                Err(transient_error(response.status))
+            }
         }
     }
 
@@ -246,46 +273,52 @@ where
         response: HttpResponse,
         mut request: HttpRequest,
     ) -> Result<HttpResponse, AuthError> {
-        match (response.status, response.error_code.as_deref()) {
-            (403, Some("device_revoked")) => {
-                self.state.transition(AuthState::DeviceRevoked)?;
-                Err(AuthError::DeviceRevoked)
-            }
-            (status, Some("device_token_revoked")) if status == 401 || status == 403 => {
+        match refusal(&response) {
+            Refusal::DeviceTokenRevoked => {
                 let fresh = self.reissue_device_tokens().await?;
                 request.authorization = Some(fresh.access_token().clone());
                 let retried = self.http.send(request).await?;
-                match (retried.status, retried.error_code.as_deref()) {
-                    (403, Some("device_revoked")) => {
-                        self.state.transition(AuthState::DeviceRevoked)?;
-                        Err(AuthError::DeviceRevoked)
-                    }
-                    (status, Some("device_token_revoked")) if status == 401 || status == 403 => {
-                        self.state.transition(AuthState::NeedsReauth)?;
-                        Err(AuthError::NeedsReauth)
-                    }
-                    (401, Some("invalid_credentials" | "invalid_token" | "token_expired")) => {
-                        self.state.transition(AuthState::NeedsReauth)?;
-                        Err(AuthError::NeedsReauth)
-                    }
-                    (403, _) => {
-                        self.state.transition(AuthState::NeedsReauth)?;
-                        Err(AuthError::NeedsReauth)
-                    }
-                    (429, _) => Err(AuthError::RateLimited),
-                    _ => Ok(retried),
+                let verdict = refusal(&retried);
+                self.settle(retried, verdict)
+            }
+            verdict => self.settle(response, verdict),
+        }
+    }
+
+    /// Ends the session only on an error code the cloud attributes to it.
+    ///
+    /// Everything else goes back to the caller as the response it is: a 403
+    /// with no code is a Cloudflare WAF rule, Bot Fight Mode or a challenge,
+    /// and a 5xx is an outage. Each caller already backs off on a status it
+    /// cannot use. Ending the session there signed the person out and wiped
+    /// the Keychain on one edge response, with nothing to recover it.
+    fn settle(&self, response: HttpResponse, verdict: Refusal) -> Result<HttpResponse, AuthError> {
+        match verdict {
+            Refusal::DeviceRevoked => {
+                self.state.transition(AuthState::DeviceRevoked)?;
+                Err(AuthError::DeviceRevoked)
+            }
+            Refusal::AccountDeleted => {
+                self.state.transition(AuthState::AccountDeleted)?;
+                Err(AuthError::AccountDeleted)
+            }
+            // A token rejected again straight after a refresh or a reissue
+            // is not one more refresh away from working.
+            Refusal::SessionRejected | Refusal::DeviceTokenRevoked => {
+                self.state.transition(AuthState::NeedsReauth)?;
+                Err(AuthError::NeedsReauth)
+            }
+            Refusal::Unattributed if response.status == 429 => Err(AuthError::RateLimited),
+            Refusal::Unattributed => {
+                if response.status == 401 || response.status == 403 {
+                    tracing::warn!(
+                        error_code = "unattributed_auth_refusal",
+                        status = response.status,
+                        "a request was refused without a session error code; kept the session"
+                    );
                 }
+                Ok(response)
             }
-            (401, Some("invalid_credentials" | "invalid_token" | "token_expired")) => {
-                self.state.transition(AuthState::NeedsReauth)?;
-                Err(AuthError::NeedsReauth)
-            }
-            (403, _) => {
-                self.state.transition(AuthState::NeedsReauth)?;
-                Err(AuthError::NeedsReauth)
-            }
-            (429, _) => Err(AuthError::RateLimited),
-            _ => Ok(response),
         }
     }
 
@@ -293,6 +326,11 @@ where
         let _guard = self.refresh_lock.lock().await;
         let user_tokens = match self.user_tokens_for_reissue().await {
             Ok(tokens) => tokens,
+            // No verdict on the session: the user-token refresh could not be
+            // made, or was answered for the cloud by something else.
+            Err(error @ (AuthError::Transport | AuthError::RateLimited)) => return Err(error),
+            // `refresh_user_tokens` has already moved the state.
+            Err(error @ AuthError::AccountDeleted) => return Err(error),
             Err(error) => {
                 self.state.transition(AuthState::NeedsReauth)?;
                 return Err(error);
@@ -301,6 +339,7 @@ where
         let device_id = match self.state.current() {
             AuthState::Authenticated { device_id } => device_id,
             AuthState::DeviceRevoked => return Err(AuthError::DeviceRevoked),
+            AuthState::AccountDeleted => return Err(AuthError::AccountDeleted),
             AuthState::Unauthenticated | AuthState::NeedsReauth | AuthState::RefreshInFlight => {
                 return Err(AuthError::NeedsReauth);
             }
@@ -340,18 +379,33 @@ where
                 .transition(AuthState::Authenticated { device_id })?;
             return Ok(fresh);
         }
-        if matches!(
-            (response.status, response.error_code.as_deref()),
-            (403, Some("device_revoked"))
-        ) {
-            self.state.transition(AuthState::DeviceRevoked)?;
-            return Err(AuthError::DeviceRevoked);
-        }
-        self.state.transition(AuthState::NeedsReauth)?;
-        match response.status {
-            403 => Err(AuthError::Forbidden),
-            429 => Err(AuthError::RateLimited),
-            _ => Err(AuthError::NeedsReauth),
+        match refusal(&response) {
+            Refusal::DeviceRevoked => {
+                self.state.transition(AuthState::DeviceRevoked)?;
+                Err(AuthError::DeviceRevoked)
+            }
+            Refusal::AccountDeleted => {
+                self.state.transition(AuthState::AccountDeleted)?;
+                Err(AuthError::AccountDeleted)
+            }
+            Refusal::SessionRejected | Refusal::DeviceTokenRevoked => {
+                self.state.transition(AuthState::NeedsReauth)?;
+                Err(AuthError::NeedsReauth)
+            }
+            // The device row is not this account's any more: a sign-in
+            // registers a new one (`AccountAuthService::reissue_device_tokens`).
+            Refusal::Unattributed
+                if response.status == 404
+                    && response.error_code.as_deref() == Some("device_not_found") =>
+            {
+                self.state.transition(AuthState::NeedsReauth)?;
+                Err(AuthError::NeedsReauth)
+            }
+            Refusal::Unattributed => {
+                self.state
+                    .transition(AuthState::Authenticated { device_id })?;
+                Err(transient_error(response.status))
+            }
         }
     }
 
@@ -385,11 +439,16 @@ where
             }
             return Ok(fresh);
         }
-        self.state.transition(AuthState::NeedsReauth)?;
-        match response.status {
-            403 => Err(AuthError::Forbidden),
-            429 => Err(AuthError::RateLimited),
-            _ => Err(AuthError::NeedsReauth),
+        match refusal(&response) {
+            Refusal::AccountDeleted => {
+                self.state.transition(AuthState::AccountDeleted)?;
+                Err(AuthError::AccountDeleted)
+            }
+            Refusal::SessionRejected | Refusal::DeviceTokenRevoked | Refusal::DeviceRevoked => {
+                self.state.transition(AuthState::NeedsReauth)?;
+                Err(AuthError::NeedsReauth)
+            }
+            Refusal::Unattributed => Err(transient_error(response.status)),
         }
     }
 }
@@ -427,20 +486,62 @@ pub enum AuthError {
     NeedsReauth,
     #[error("device revoked")]
     DeviceRevoked,
-    #[error("request forbidden")]
-    Forbidden,
     #[error("request rate limited")]
     RateLimited,
     #[error("authentication transport unavailable")]
     Transport,
     #[error("authentication response invalid")]
     InvalidResponse,
+    #[error("account deleted")]
+    AccountDeleted,
     #[error(transparent)]
     TokenStore(#[from] TokenStoreError),
     #[error(transparent)]
     Transition(#[from] AuthTransitionError),
 }
 
-fn device_token_revoked(status: u16, code: Option<&str>) -> bool {
-    matches!((status, code), (401 | 403, Some("device_token_revoked")))
+/// What a refused request says about the session, read only from the error
+/// code velvt-core puts on it.
+///
+/// A status alone says nothing about the session. A 403 with no code is what
+/// Cloudflare's WAF, Bot Fight Mode or a challenge answers with, and a 5xx or a
+/// 429 is an outage or a limit; none of them is the cloud refusing this
+/// session.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Refusal {
+    /// `403 device_revoked`, or `403 device_inactive` from a reissue: this
+    /// device's row was revoked.
+    DeviceRevoked,
+    /// `401 account_deleted`: the account is gone.
+    AccountDeleted,
+    /// `401|403 device_token_revoked`: a reissue under the user session
+    /// can recover.
+    DeviceTokenRevoked,
+    /// The cloud rejected the token itself.
+    SessionRejected,
+    /// No session error code: an edge, an outage or a rate limit, or a
+    /// response that is not a refusal at all.
+    Unattributed,
+}
+
+fn refusal(response: &HttpResponse) -> Refusal {
+    match (response.status, response.error_code.as_deref()) {
+        (403, Some("device_revoked" | "device_inactive")) => Refusal::DeviceRevoked,
+        (401, Some("account_deleted")) => Refusal::AccountDeleted,
+        (401 | 403, Some("device_token_revoked")) => Refusal::DeviceTokenRevoked,
+        (
+            401,
+            Some("invalid_credentials" | "invalid_token" | "token_expired" | "missing_token"),
+        ) => Refusal::SessionRejected,
+        _ => Refusal::Unattributed,
+    }
+}
+
+/// The error a request that got no verdict on the session fails with.
+fn transient_error(status: u16) -> AuthError {
+    if status == 429 {
+        AuthError::RateLimited
+    } else {
+        AuthError::Transport
+    }
 }

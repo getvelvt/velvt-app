@@ -2347,11 +2347,22 @@ impl RawEventRepo for SqliteRawEventRepo {
         event: &RawEventEntry,
         metadata: &DeclaredAppMetadata,
     ) -> Result<(), PersistenceError> {
+        self.insert_with_upload_owner(event, metadata, None)
+    }
+
+    fn insert_with_upload_owner(
+        &self,
+        event: &RawEventEntry,
+        metadata: &DeclaredAppMetadata,
+        upload_owner_user_id: Option<&str>,
+    ) -> Result<(), PersistenceError> {
+        // Only an event that may be uploaded has an owner to upload it under.
+        let upload_owner_user_id = upload_owner_user_id.filter(|_| event.upload_eligible);
         let connection = self.0.connection()?;
         connection.execute(
             "INSERT INTO raw_event_buffer(
-                event_id, stable_id, label, local_display_label, local_name_suggestion, category, taxonomy_version, classification_tier, classification_status, classification_confidence, classification_source, occurred_at, duration_seconds, upload_eligible, app_stable_id, app_scope_eligible, app_bundle_stable_id, declared_app_category, document_type_ids, site_stable_id
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)",
+                event_id, stable_id, label, local_display_label, local_name_suggestion, category, taxonomy_version, classification_tier, classification_status, classification_confidence, classification_source, occurred_at, duration_seconds, upload_eligible, app_stable_id, app_scope_eligible, app_bundle_stable_id, declared_app_category, document_type_ids, site_stable_id, upload_owner_user_id
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21)",
             params![
                 event.event_id,
                 event.stable_id,
@@ -2373,9 +2384,43 @@ impl RawEventRepo for SqliteRawEventRepo {
                 metadata.declared_app_category,
                 encode_document_type_ids(&metadata.document_type_ids),
                 event.site_stable_id,
+                upload_owner_user_id,
             ],
         )?;
         Ok(())
+    }
+
+    fn upload_owners(
+        &self,
+        event_ids: &[String],
+    ) -> Result<HashMap<String, String>, PersistenceError> {
+        let connection = self.0.connection()?;
+        let mut statement = connection.prepare(
+            "SELECT upload_owner_user_id FROM raw_event_buffer
+             WHERE event_id = ?1 AND upload_owner_user_id IS NOT NULL",
+        )?;
+        let mut owners = HashMap::new();
+        for event_id in event_ids {
+            if let Some(owner) = statement
+                .query_row([event_id], |row| row.get::<_, String>(0))
+                .optional()?
+            {
+                owners.insert(event_id.clone(), owner);
+            }
+        }
+        Ok(owners)
+    }
+
+    fn withdraw_unbatched_uploads(&self) -> Result<u64, PersistenceError> {
+        let connection = self.0.connection()?;
+        let withdrawn = connection.execute(
+            "UPDATE raw_event_buffer
+             SET upload_eligible = 0, upload_owner_user_id = NULL
+             WHERE upload_eligible = 1
+               AND NOT EXISTS (SELECT 1 FROM batch_event WHERE batch_event.event_id = raw_event_buffer.event_id)",
+            [],
+        )?;
+        Ok(withdrawn as u64)
     }
 
     fn unbatched_events(&self, limit: usize) -> Result<Vec<RawEventEntry>, PersistenceError> {
@@ -2791,7 +2836,7 @@ impl UploadBatchRepo for SqliteUploadBatchRepo {
     fn resumable_batches(&self, now: DateTime<Utc>) -> Result<Vec<UploadBatch>, PersistenceError> {
         let connection = self.0.connection()?;
         let mut batch_statement = connection.prepare(
-            "SELECT batch_id, status, attempt_count, next_attempt_at
+            "SELECT batch_id, status, attempt_count, next_attempt_at, owner_user_id
              FROM upload_batch
              WHERE status IN ('pending', 'failed') AND next_attempt_at <= ?1
              ORDER BY created_at, id",
@@ -2803,11 +2848,12 @@ impl UploadBatchRepo for SqliteUploadBatchRepo {
                     upload_status_from_str(&row.get::<_, String>(1)?)?,
                     row.get::<_, u32>(2)?,
                     timestamp_from_row(row, 3)?,
+                    row.get::<_, Option<String>>(4)?,
                 ))
             })?
             .collect::<Result<Vec<_>, _>>()?;
         let mut batches = Vec::with_capacity(batch_ids.len());
-        for (batch_id, status, attempt_count, next_attempt_at) in batch_ids {
+        for (batch_id, status, attempt_count, next_attempt_at, owner_user_id) in batch_ids {
             let mut event_statement = connection.prepare(
                 "SELECT event_id, stable_id, label, category, taxonomy_version, classification_tier, occurred_at, duration_seconds
                  FROM batch_event WHERE batch_id = ?1 ORDER BY id",
@@ -2821,6 +2867,7 @@ impl UploadBatchRepo for SqliteUploadBatchRepo {
                 attempt_count,
                 next_attempt_at,
                 events,
+                owner_user_id,
             });
         }
         Ok(batches)
@@ -2941,16 +2988,38 @@ impl UploadBatchRepo for SqliteUploadBatchRepo {
     }
 
     fn discard_batch(&self, batch_id: &str) -> Result<(), PersistenceError> {
-        let connection = self.0.connection()?;
+        let mut connection = self.0.connection()?;
+        let transaction = connection.transaction()?;
+        transaction.execute(
+            "UPDATE raw_event_buffer
+             SET upload_eligible = 0, upload_owner_user_id = NULL
+             WHERE event_id IN (SELECT event_id FROM batch_event WHERE batch_id = ?1)",
+            [batch_id],
+        )?;
         let deleted =
-            connection.execute("DELETE FROM upload_batch WHERE batch_id = ?1", [batch_id])?;
+            transaction.execute("DELETE FROM upload_batch WHERE batch_id = ?1", [batch_id])?;
         if deleted == 0 {
-            Err(PersistenceError::NotFound {
+            return Err(PersistenceError::NotFound {
                 entity: "upload_batch",
-            })
-        } else {
-            Ok(())
+            });
         }
+        transaction.commit()?;
+        Ok(())
+    }
+
+    fn reschedule_authentication_required(
+        &self,
+        now: DateTime<Utc>,
+    ) -> Result<u64, PersistenceError> {
+        let connection = self.0.connection()?;
+        let rescheduled = connection.execute(
+            "UPDATE upload_batch SET next_attempt_at = ?1
+             WHERE status IN ('pending', 'failed')
+               AND last_error_code = 'authentication_required'
+               AND next_attempt_at > ?1",
+            [now.timestamp()],
+        )?;
+        Ok(rescheduled as u64)
     }
 
     fn batch_status(&self, batch_id: &str) -> Result<UploadBatchStatus, PersistenceError> {
@@ -4929,8 +4998,8 @@ fn focus_transition_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<FocusT
 
 fn insert_batch(connection: &Connection, batch: &NewUploadBatch) -> Result<(), PersistenceError> {
     connection.execute(
-        "INSERT INTO upload_batch(batch_id) VALUES (?1)",
-        [&batch.batch_id],
+        "INSERT INTO upload_batch(batch_id, owner_user_id) VALUES (?1, ?2)",
+        params![batch.batch_id, batch.owner_user_id],
     )?;
     Ok(())
 }

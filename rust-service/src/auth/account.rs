@@ -53,18 +53,44 @@ impl AccountAuthService {
 
     pub async fn sign_up(&self, email: String, password: String) -> ServerMessage {
         self.finish_pending_logout().await;
+        self.leave_ended_session();
         let message = self
             .credential_flow("/v1/auth/signup", 201, email, password)
             .await;
-        self.ensure_device_registered(message).await
+        self.ensure_device_registered(message, CredentialFlow::SignUp)
+            .await
     }
 
     pub async fn log_in(&self, email: String, password: String) -> ServerMessage {
         self.finish_pending_logout().await;
+        self.leave_ended_session();
         let message = self
             .credential_flow("/v1/auth/login", 200, email, password)
             .await;
-        self.ensure_device_registered(message).await
+        self.ensure_device_registered(message, CredentialFlow::LogIn)
+            .await
+    }
+
+    /// Clears a session the cloud ended for good before a new sign-in starts.
+    ///
+    /// `DeviceRevoked` and `AccountDeleted` are terminal: no transition leads
+    /// from either to `Authenticated`, so a sign-in that registered a new
+    /// device from one was refused by the state machine and the service kept
+    /// answering `device_revoked` until it was relaunched. The revoked device
+    /// id goes too: reissuing it can only be refused again.
+    fn leave_ended_session(&self) {
+        if matches!(
+            self.auth_state.current(),
+            AuthState::DeviceRevoked | AuthState::AccountDeleted
+        ) {
+            self.clear_local_session(true);
+        }
+    }
+
+    /// The account an event recorded now belongs to, when the service knows
+    /// it: the one the current session was issued for.
+    pub fn current_owner(&self) -> Option<String> {
+        self.token_store.load_user_id().ok().flatten()
     }
 
     pub fn apply_session(&self, session: velvt_shared_types::AuthSession) {
@@ -84,6 +110,14 @@ impl AccountAuthService {
             (None, None, None) => true,
             _ => false,
         };
+        // A client that predates protocol 34 names no account. The owner is
+        // then unknown rather than left over from an earlier session, and
+        // `validate_session` fills it in from the cloud's answer.
+        let owner_stored = match session.user_id.as_deref() {
+            Some(user_id) if !user_id.is_empty() => self.token_store.store_user_id(user_id),
+            _ => self.token_store.clear_user_id(),
+        }
+        .is_ok();
         if self
             .token_store
             .store_tokens(
@@ -94,6 +128,7 @@ impl AccountAuthService {
             .is_ok()
             && self.token_store.store_device_id(&session.device_id).is_ok()
             && user_tokens_stored
+            && owner_stored
         {
             let _ = self.auth_state.transition(AuthState::Authenticated {
                 device_id: session.device_id,
@@ -107,7 +142,11 @@ impl AccountAuthService {
     /// successful sign-up or login — never speculatively at service startup.
     /// A device_id already on disk means a prior login already registered
     /// it, so this is a no-op on every subsequent app launch.
-    async fn ensure_device_registered(&self, outcome: ServerMessage) -> ServerMessage {
+    async fn ensure_device_registered(
+        &self,
+        outcome: ServerMessage,
+        flow: CredentialFlow,
+    ) -> ServerMessage {
         let ServerMessage::AuthSuccess(success) = outcome else {
             return outcome;
         };
@@ -120,24 +159,32 @@ impl AccountAuthService {
                 );
                 let _ = self.token_store.store_user_pair(user_tokens.clone());
                 return self
-                    .reissue_device_tokens(success.user_id, user_tokens, device_id)
+                    .reissue_device_tokens(success.user_id, user_tokens, device_id, flow)
                     .await;
             }
             Err(error) => {
                 tracing::error!(
                     error_code = "device_id_load_failed",
                     error = %error,
-                    "failed to read stored device identifier; skipping device registration"
+                    "failed to read stored device identifier; this Mac was not registered"
                 );
-                return ServerMessage::AuthSuccess(success);
+                return registration_failure(flow, AuthFailureCode::ServerError);
             }
             Ok(None) => {}
         }
 
-        self.register_device(success).await
+        self.register_device(success, flow).await
     }
 
-    async fn register_device(&self, success: AuthSuccess) -> ServerMessage {
+    /// Registers this Mac and, only once a device exists to upload as,
+    /// answers `auth_success`.
+    ///
+    /// A registration that fails answers `auth_failure`. It used to answer
+    /// `auth_success` with an empty device id and no device tokens: the app
+    /// showed the person signed in, nothing they did was ever queued for
+    /// upload, and the next restart handed that empty session back and
+    /// signed them out.
+    async fn register_device(&self, success: AuthSuccess, flow: CredentialFlow) -> ServerMessage {
         let mut request = HttpRequest::post("/v1/devices");
         request.authorization = Some(RedactedString::new(success.access_token.clone()));
         request.json_body =
@@ -150,7 +197,7 @@ impl AccountAuthService {
                     status = response.status,
                     "device registration was rejected by the server"
                 );
-                return ServerMessage::AuthSuccess(success);
+                return registration_failure(flow, AuthFailureCode::ServerError);
             }
             Err(error) => {
                 tracing::error!(
@@ -158,7 +205,7 @@ impl AccountAuthService {
                     error = %error,
                     "device registration request failed"
                 );
-                return ServerMessage::AuthSuccess(success);
+                return registration_failure(flow, AuthFailureCode::NetworkError);
             }
         };
         let (Some(device_id), Some(tokens)) = (response.device_id, response.tokens) else {
@@ -166,23 +213,28 @@ impl AccountAuthService {
                 error_code = "device_registration_invalid_response",
                 "device registration response was missing tokens or a device id"
             );
-            return ServerMessage::AuthSuccess(success);
+            return registration_failure(flow, AuthFailureCode::ServerError);
         };
-        if let Err(error) = self.token_store.store_pair(tokens.clone()) {
+        if device_id.is_empty() {
             tracing::error!(
-                error_code = "device_registration_persist_failed",
-                error = %error,
-                "failed to persist device tokens after registration"
+                error_code = "device_registration_invalid_response",
+                "device registration response carried an empty device id"
             );
-            return ServerMessage::AuthSuccess(success);
+            return registration_failure(flow, AuthFailureCode::ServerError);
         }
-        if let Err(error) = self.token_store.store_device_id(&device_id) {
+        if let Err(error) = self
+            .token_store
+            .store_pair(tokens.clone())
+            .and_then(|()| self.token_store.store_device_id(&device_id))
+            .and_then(|()| self.token_store.store_user_id(&success.user_id))
+        {
             tracing::error!(
                 error_code = "device_registration_persist_failed",
                 error = %error,
-                "failed to persist device id after registration"
+                "failed to keep the session after registration"
             );
-            return ServerMessage::AuthSuccess(success);
+            self.clear_local_session(false);
+            return registration_failure(flow, AuthFailureCode::ServerError);
         }
         if let Err(error) = self.auth_state.transition(AuthState::Authenticated {
             device_id: device_id.clone(),
@@ -207,16 +259,30 @@ impl AccountAuthService {
         user_id: String,
         user_tokens: TokenPair,
         device_id: String,
+        flow: CredentialFlow,
     ) -> ServerMessage {
         let mut request = HttpRequest::post("/v1/auth/devices/reissue");
         request.authorization = Some(user_tokens.access_token().clone());
         request.json_body = Some(serde_json::json!({ "device_id": device_id }));
         let response = match self.raw_http.send(request).await {
             Ok(response) if response.status == 200 => response,
-            Ok(response) if response.status == 404 => {
+            // The stored device is not this account's (404), or it was
+            // revoked (403 `device_inactive` from reissue, `device_revoked`
+            // elsewhere): either way it can never be reissued, and this Mac
+            // registers as a new device. Only 404 used to, so a Mac removed
+            // from the account could not sign in again until relaunched.
+            Ok(response)
+                if response.status == 404
+                    || (response.status == 403
+                        && matches!(
+                            response.error_code.as_deref(),
+                            Some("device_inactive" | "device_revoked")
+                        )) =>
+            {
                 tracing::warn!(
-                    error_code = "stored_device_id_not_found",
-                    "stored device id was not found by the server; registering a new device"
+                    error_code = "stored_device_id_unusable",
+                    status = response.status,
+                    "stored device id cannot be reissued; registering a new device"
                 );
                 if let Err(error) = self.token_store.clear_device_id() {
                     tracing::error!(
@@ -226,16 +292,19 @@ impl AccountAuthService {
                     );
                 }
                 return self
-                    .register_device(AuthSuccess {
-                        user_id,
-                        device_id: String::new(),
-                        access_token: user_tokens.access_token().expose().to_owned(),
-                        refresh_token: user_tokens.refresh_token().expose().to_owned(),
-                        expires_at: user_tokens.expires_at(),
-                        user_access_token: None,
-                        user_refresh_token: None,
-                        user_expires_at: None,
-                    })
+                    .register_device(
+                        AuthSuccess {
+                            user_id,
+                            device_id: String::new(),
+                            access_token: user_tokens.access_token().expose().to_owned(),
+                            refresh_token: user_tokens.refresh_token().expose().to_owned(),
+                            expires_at: user_tokens.expires_at(),
+                            user_access_token: None,
+                            user_refresh_token: None,
+                            user_expires_at: None,
+                        },
+                        flow,
+                    )
                     .await;
             }
             Ok(response) => {
@@ -272,12 +341,17 @@ impl AccountAuthService {
                 message: "The server response was invalid.".into(),
             });
         };
-        if let Err(error) = self.token_store.store_pair(tokens.clone()) {
+        if let Err(error) = self
+            .token_store
+            .store_pair(tokens.clone())
+            .and_then(|()| self.token_store.store_user_id(&user_id))
+        {
             tracing::error!(
                 error_code = "device_token_reissue_persist_failed",
                 error = %error,
                 "failed to persist reissued device tokens"
             );
+            self.clear_local_session(false);
             return ServerMessage::AuthFailure(AuthFailure {
                 code: AuthFailureCode::ServerError,
                 message: "Unable to save this device session.".into(),
@@ -380,6 +454,13 @@ impl AccountAuthService {
         }
     }
 
+    /// Clears the session of an account the cloud reported deleted (`401
+    /// account_deleted`), with its device id: the device row went with the
+    /// account. Leaves the service signed out.
+    pub fn forget_deleted_account(&self) {
+        self.clear_local_session(true);
+    }
+
     fn clear_local_session(&self, clear_device_id: bool) {
         if let Err(error) = self.token_store.clear_tokens() {
             tracing::error!(
@@ -393,6 +474,13 @@ impl AccountAuthService {
                 error_code = "user_tokens_clear_failed",
                 error = %error,
                 "failed to clear local user tokens"
+            );
+        }
+        if let Err(error) = self.token_store.clear_user_id() {
+            tracing::error!(
+                error_code = "user_id_clear_failed",
+                error = %error,
+                "failed to clear the signed-in account id"
             );
         }
         if clear_device_id {
@@ -442,6 +530,39 @@ impl AccountAuthService {
             }),
         }
     }
+}
+
+/// Which credential request a device registration finishes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CredentialFlow {
+    SignUp,
+    LogIn,
+}
+
+/// The answer to a sign-up or login whose credentials the cloud accepted but
+/// whose device registration failed. Nothing is kept, so the person stays
+/// signed out and nothing is queued under a session with no device.
+///
+/// A sign-up has created the account by then, and signing up again would be
+/// refused as an email already registered, so it says to log in.
+fn registration_failure(flow: CredentialFlow, code: AuthFailureCode) -> ServerMessage {
+    let message = match (flow, code) {
+        (CredentialFlow::SignUp, AuthFailureCode::NetworkError) => {
+            "Your account was created, but this Mac could not reach the server to register. \
+             Check your connection, then log in."
+        }
+        (CredentialFlow::SignUp, _) => {
+            "Your account was created, but this Mac could not be registered. Log in to try again."
+        }
+        (CredentialFlow::LogIn, AuthFailureCode::NetworkError) => {
+            "Could not reach the server. Check your connection and try again."
+        }
+        (CredentialFlow::LogIn, _) => "This Mac could not be registered. Please try again.",
+    };
+    ServerMessage::AuthFailure(AuthFailure {
+        code,
+        message: message.into(),
+    })
 }
 
 /// Prefers the cloud API's own `error.message` (e.g. "Email is already
@@ -698,6 +819,198 @@ mod tests {
         );
         let stored = token_store.load_tokens().unwrap().unwrap();
         assert_eq!(stored.access_token().expose(), "device-access");
+    }
+
+    /// cross-device-13: reissue answers a revoked device with `403
+    /// device_inactive` (`device_revoked` elsewhere). Only 404 fell through to
+    /// registering, so a Mac removed from the account answered every sign-in
+    /// with "Unable to register this device." until it was relaunched.
+    #[tokio::test]
+    async fn a_device_refused_at_reissue_as_revoked_registers_again() {
+        for code in ["device_inactive", "device_revoked"] {
+            let raw_http = Arc::new(FakeHttpClient::with_responses(vec![
+                HttpResponse {
+                    status: 200,
+                    ..signup_response()
+                },
+                HttpResponse {
+                    status: 403,
+                    error_code: Some(code.into()),
+                    tokens: None,
+                    device_id: None,
+                    ..device_response()
+                },
+                device_response(),
+            ]));
+            let (service, token_store) = service(Arc::clone(&raw_http));
+            token_store.store_device_id("removed-device").unwrap();
+
+            let outcome = service
+                .log_in("a@example.test".into(), "password".into())
+                .await;
+
+            assert!(
+                matches!(outcome, ServerMessage::AuthSuccess(ref success) if success.device_id == "device-1"),
+                "{code}: a removed Mac must be able to sign in again: {outcome:?}"
+            );
+            assert_eq!(raw_http.requests()[1].path, "/v1/auth/devices/reissue");
+            assert_eq!(raw_http.requests()[2].path, "/v1/devices");
+            assert_eq!(
+                token_store.load_device_id().unwrap(),
+                Some("device-1".into())
+            );
+        }
+    }
+
+    /// After the service has seen the revocation, `DeviceRevoked` is
+    /// terminal: no transition leads from it to `Authenticated`, so the new
+    /// device's session was refused by the state machine even when the
+    /// registration succeeded. A sign-in leaves it first, and drops the
+    /// revoked device id rather than asking to reissue it.
+    #[tokio::test]
+    async fn a_sign_in_after_revocation_registers_and_is_authenticated() {
+        let raw_http = Arc::new(FakeHttpClient::with_responses(vec![
+            HttpResponse {
+                status: 200,
+                ..signup_response()
+            },
+            device_response(),
+        ]));
+        let token_store = Arc::new(FakeTokenStore::default());
+        token_store.store_device_id("revoked-device").unwrap();
+        let auth_state = Arc::new(AuthStateMachine::new(AuthState::DeviceRevoked));
+        let service = AccountAuthService::new(
+            Arc::clone(&raw_http) as Arc<dyn HttpClient>,
+            Arc::new(FakeHttpClient::default()),
+            Arc::clone(&token_store) as Arc<dyn TokenStore>,
+            Arc::clone(&auth_state),
+        );
+
+        let outcome = service
+            .log_in("a@example.test".into(), "password".into())
+            .await;
+
+        assert!(
+            matches!(outcome, ServerMessage::AuthSuccess(_)),
+            "{outcome:?}"
+        );
+        let paths = raw_http
+            .requests()
+            .into_iter()
+            .map(|request| request.path)
+            .collect::<Vec<_>>();
+        assert_eq!(paths, vec!["/v1/auth/login", "/v1/devices"]);
+        assert_eq!(
+            auth_state.current(),
+            AuthState::Authenticated {
+                device_id: "device-1".into()
+            }
+        );
+    }
+
+    /// helper-backend-06: a registration that fails answers `auth_failure`
+    /// and keeps nothing. It answered `auth_success` with an empty device id.
+    #[tokio::test]
+    async fn a_failed_registration_answers_auth_failure_and_keeps_no_session() {
+        for (flow, registration, expected_code, expected_message) in [
+            (
+                "sign_up",
+                Some(HttpResponse {
+                    status: 503,
+                    tokens: None,
+                    device_id: None,
+                    ..device_response()
+                }),
+                AuthFailureCode::ServerError,
+                "Your account was created, but this Mac could not be registered. Log in to try again.",
+            ),
+            (
+                "sign_up",
+                None,
+                AuthFailureCode::NetworkError,
+                "Your account was created, but this Mac could not reach the server to register. Check your connection, then log in.",
+            ),
+            (
+                "log_in",
+                Some(HttpResponse {
+                    status: 201,
+                    device_id: None,
+                    ..device_response()
+                }),
+                AuthFailureCode::ServerError,
+                "This Mac could not be registered. Please try again.",
+            ),
+        ] {
+            let mut responses = vec![HttpResponse {
+                status: if flow == "sign_up" { 201 } else { 200 },
+                ..signup_response()
+            }];
+            responses.extend(registration);
+            let raw_http = Arc::new(FakeHttpClient::with_responses(responses));
+            let (service, token_store) = service(Arc::clone(&raw_http));
+
+            let outcome = if flow == "sign_up" {
+                service.sign_up("a@example.test".into(), "password".into()).await
+            } else {
+                service.log_in("a@example.test".into(), "password".into()).await
+            };
+
+            let ServerMessage::AuthFailure(failure) = outcome else {
+                panic!("{flow}: a sign-in with no device must not succeed: {outcome:?}");
+            };
+            assert_eq!(failure.code, expected_code, "{flow}");
+            assert_eq!(failure.message, expected_message, "{flow}");
+            assert!(token_store.load_tokens().unwrap().is_none(), "{flow}");
+            assert!(token_store.load_user_tokens().unwrap().is_none(), "{flow}");
+            assert_eq!(token_store.load_user_id().unwrap(), None, "{flow}");
+            assert_eq!(token_store.load_device_id().unwrap(), None, "{flow}");
+        }
+    }
+
+    /// The account a session belongs to is what the upload queue is stamped
+    /// with: kept on a successful sign-in, cleared on log out.
+    #[tokio::test]
+    async fn a_sign_in_keeps_its_account_and_a_log_out_clears_it() {
+        let raw_http = Arc::new(FakeHttpClient::with_responses(vec![
+            signup_response(),
+            device_response(),
+        ]));
+        let (service, token_store) = service(Arc::clone(&raw_http));
+
+        service
+            .sign_up("a@example.test".into(), "password".into())
+            .await;
+        assert_eq!(service.current_owner().as_deref(), Some("user-1"));
+
+        service.log_out();
+        assert_eq!(service.current_owner(), None);
+        assert_eq!(token_store.load_user_id().unwrap(), None);
+    }
+
+    /// `auth_session` names its account (protocol 34); one from a client that
+    /// predates the field leaves the owner unknown, not left over.
+    #[tokio::test]
+    async fn a_handed_over_session_names_the_owner_or_clears_it() {
+        let (service, token_store) = service(Arc::new(FakeHttpClient::default()));
+        let session = |user_id: Option<&str>| velvt_shared_types::AuthSession {
+            device_id: "device-1".into(),
+            access_token: "access".into(),
+            refresh_token: "refresh".into(),
+            expires_at: Utc::now() + Duration::hours(1),
+            user_access_token: None,
+            user_refresh_token: None,
+            user_expires_at: None,
+            user_id: user_id.map(str::to_owned),
+        };
+
+        service.apply_session(session(Some("user-7")));
+        assert_eq!(
+            token_store.load_user_id().unwrap().as_deref(),
+            Some("user-7")
+        );
+
+        service.apply_session(session(None));
+        assert_eq!(token_store.load_user_id().unwrap(), None);
     }
 
     #[tokio::test]

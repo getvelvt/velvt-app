@@ -166,11 +166,21 @@ impl ReqwestHttpClient {
             client: reqwest::Client::builder()
                 .timeout(std::time::Duration::from_secs(10))
                 .redirect(reqwest::redirect::Policy::none())
+                .user_agent(user_agent())
                 .build()
                 .unwrap_or_default(),
             ledger,
         }
     }
+}
+
+/// Sent on every request. reqwest sends no `User-Agent` of its own, and a
+/// request without one is what Cloudflare's bot rules challenge: a tester on a
+/// VPN or a shared address could be answered by the edge instead of the cloud.
+/// The release version and the platform are all it says; the version already
+/// travels in every batch and device registration.
+pub fn user_agent() -> String {
+    format!("Velvt/{} (macOS)", crate::build_info::SERVICE_VERSION)
 }
 
 impl HttpClient for ReqwestHttpClient {

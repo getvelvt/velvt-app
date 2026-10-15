@@ -35,6 +35,8 @@
             "pending",
             "retrying",
             "auth_required",
+            "signed_out",
+            "checking",
             "network_unavailable",
             "rate_limited",
             "privacy_rejected"

@@ -498,6 +498,17 @@ where they belong. Headers were `accept`, `host`, `content-type` and
 requests; no user agent. The classification sync
 body is `{"category": ...}`; the typed name was not in it.
 
+*Changed after this audit, 2026-10-14 (protocol 34):* every request now also
+carries `User-Agent: Velvt/<app version> (macOS)`, because a request with no
+user agent is what Cloudflare's bot rules challenge, and one such 403 used to
+sign the tester out (critic-04). The version already travels in every batch
+body and in device registration. `egress_ledger::every_request_names_velvt_and_its_version`
+pins the header. The same change adds the cloud's opaque account id to two
+device-local columns (`upload_batch.owner_user_id`,
+`raw_event_buffer.upload_owner_user_id`, migration 0042), which decide whose
+session may send a queued batch; no outbound body carries it
+(`serialized_batch_holds_exactly_the_documented_keys`).
+
 `PRIVACY.md`'s list of what leaves the device was wrong in both directions: it
 named `/v1/auth/account/delete`, which nothing sends, and omitted
 `DELETE /v1/account`, `GET /v1/auth/session`, `GET /v1/insights/poll`,

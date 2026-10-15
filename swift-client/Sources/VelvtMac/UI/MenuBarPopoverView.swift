@@ -3010,6 +3010,10 @@ public struct MenuBarPopoverView: View {
             return retryDescription(status)
         case "auth_required":
             return withNextUploadAttempt("Sign in required", status)
+        case "signed_out":
+            return "Signed out"
+        case "checking":
+            return "Checking…"
         case "network_unavailable":
             return withNextUploadAttempt("Network unavailable", status)
         case "rate_limited":

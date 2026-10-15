@@ -351,6 +351,7 @@ fn upload_batch_repo_contract() {
     let repository = database.upload_batch_repo();
     let batch = NewUploadBatch {
         batch_id: "batch-1".into(),
+        owner_user_id: None,
     };
     let event = BatchEvent {
         event_id: "event-1".into(),
@@ -380,6 +381,7 @@ fn sent_upload_batches_do_not_report_stale_retry_errors() {
     let repository = database.upload_batch_repo();
     let batch = NewUploadBatch {
         batch_id: "batch-with-recovered-error".into(),
+        owner_user_id: None,
     };
 
     repository.insert_batch(&batch).unwrap();
@@ -442,6 +444,7 @@ fn multi_table_batch_write_rolls_back_on_failure() {
     let repository = database.upload_batch_repo();
     let batch = NewUploadBatch {
         batch_id: "batch-rollback".into(),
+        owner_user_id: None,
     };
     let event = BatchEvent {
         event_id: "event-duplicate".into(),
@@ -569,6 +572,7 @@ fn personal_override_runs_before_plugins_and_is_not_taxonomy_version_scoped() {
         .insert_batch_with_events(
             &NewUploadBatch {
                 batch_id: "uploaded-correction".into(),
+                owner_user_id: None,
             },
             &[BatchEvent {
                 event_id: Uuid::new_v4().to_string(),
@@ -686,6 +690,7 @@ fn correction_history_search_paginates_beyond_twenty_five_and_survives_upload_re
             .insert_batch_with_events(
                 &NewUploadBatch {
                     batch_id: "correction-history-upload".into(),
+                    owner_user_id: None,
                 },
                 &[BatchEvent {
                     event_id: Uuid::new_v4().to_string(),
@@ -1037,6 +1042,7 @@ fn failed_batches_are_resumed_and_rejected_batches_are_terminal() {
     repository
         .insert_batch(&NewUploadBatch {
             batch_id: "batch-recovery".into(),
+            owner_user_id: None,
         })
         .unwrap();
 

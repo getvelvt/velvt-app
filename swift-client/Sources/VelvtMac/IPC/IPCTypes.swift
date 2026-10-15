@@ -3006,6 +3006,12 @@ public struct AuthSession: Codable, Equatable, Sendable {
     public let userAccessToken: String?
     public let userRefreshToken: String?
     public let userExpiresAt: Date?
+    /// The account the session belongs to (protocol 34). The service stamps
+    /// every event it queues for upload with it, so activity recorded under
+    /// one account is never uploaded under another's session. Absent from a
+    /// session stored before 1.0.14; `AccountStateManager` fills it in from
+    /// the stored snapshot before handing the session over.
+    public let userId: String?
 
     public init(
         deviceId: String,
@@ -3014,7 +3020,8 @@ public struct AuthSession: Codable, Equatable, Sendable {
         expiresAt: Date,
         userAccessToken: String? = nil,
         userRefreshToken: String? = nil,
-        userExpiresAt: Date? = nil
+        userExpiresAt: Date? = nil,
+        userId: String? = nil
     ) {
         self.deviceId = deviceId
         self.accessToken = accessToken
@@ -3023,6 +3030,21 @@ public struct AuthSession: Codable, Equatable, Sendable {
         self.userAccessToken = userAccessToken
         self.userRefreshToken = userRefreshToken
         self.userExpiresAt = userExpiresAt
+        self.userId = userId
+    }
+
+    /// The same session, naming `userId` as its account.
+    public func owned(by userId: String) -> AuthSession {
+        AuthSession(
+            deviceId: deviceId,
+            accessToken: accessToken,
+            refreshToken: refreshToken,
+            expiresAt: expiresAt,
+            userAccessToken: userAccessToken,
+            userRefreshToken: userRefreshToken,
+            userExpiresAt: userExpiresAt,
+            userId: userId
+        )
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -3033,6 +3055,7 @@ public struct AuthSession: Codable, Equatable, Sendable {
         case userAccessToken = "user_access_token"
         case userRefreshToken = "user_refresh_token"
         case userExpiresAt = "user_expires_at"
+        case userId = "user_id"
     }
 }
 

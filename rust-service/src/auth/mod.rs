@@ -14,7 +14,7 @@ pub use device::{
     NoOpDeviceRegistrar,
 };
 pub use http::{
-    describe_request, encode_body, HttpClient, HttpMethod, HttpRequest, HttpResponse,
+    describe_request, encode_body, user_agent, HttpClient, HttpMethod, HttpRequest, HttpResponse,
     ReqwestHttpClient,
 };
 pub use manager::{AuthError, AuthManager, SessionValidator};

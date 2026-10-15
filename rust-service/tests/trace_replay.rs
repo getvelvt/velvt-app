@@ -45,8 +45,8 @@ use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use velvt_service::{persistence::SqlitePersistence, work_block::WorkBlockManager};
 use velvt_shared_types::{
-    ClassificationConfidence, ClassificationStatus, StartWorkBlock, WorkBlockIntensity,
-    WorkBlockPurpose,
+    ClassificationConfidence, ClassificationSource, ClassificationStatus, StartWorkBlock,
+    WorkBlockIntensity, WorkBlockPurpose,
 };
 
 const SUITE_A: &str = "SYNTHETIC-suite-a-recovery.jsonl";
@@ -283,6 +283,10 @@ fn replay(trace: &Trace) -> Replayed {
                     &observation.category,
                     status_of(&observation.status),
                     confidence_of(&observation.confidence),
+                    // The fixtures carry evidence, not provenance. The gate
+                    // never reads the source (`golden_replay.rs`), so one
+                    // fixed rung stands in for every observation.
+                    ClassificationSource::Seed,
                     at,
                 )
                 .unwrap_or_else(|error| {

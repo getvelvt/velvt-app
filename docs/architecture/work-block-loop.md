@@ -143,6 +143,35 @@ open, which is why the version changed. `tests/drift_offer_live_helper.rs`
 replays one block with the departure on a site nothing names, on a seeded
 site, and on a site whose name is read.
 
+Drift policy version 6 (`DRIFT_POLICY_VERSION = 6`, no protocol change) keeps
+every constant, branch and timing of version 5 and changes two things. The
+evidence from two sites (2026-10-07): a YouTube tab is decided by its video
+title (a learning marker is REFERENCE, an entertainment marker
+PASSIVE_CONSUMPTION, both at medium confidence, and a title with neither or
+both is the ambiguous prior, never evidence), and TikTok's web app is
+SOCIAL_FEED. And the anchor (the founder's rule of 2026-10-15): it is the work
+category (`ANCHOR_CATEGORIES`: FOCUS_WORK, REFERENCE, TASK_MANAGEMENT,
+COMMUNICATION) with the most confident, closed time in the block. Through
+version 5 it was whichever category had the most, so a long stretch of YouTube
+or a feed became the anchor, each return to work counted as a departure, and
+the offer fired as the person came back, naming the drift as the work they
+chose; a return to the drift then closed the offer as `returned`. Under
+version 6, PASSIVE_CONSUMPTION and SOCIAL_FEED time never makes or moves the
+anchor, and a block with no confident work time yet has no anchor: the gate
+records `abstained_no_anchor` and makes no offer. The snapshot's
+`anchor_category` is the same value. The list is fixed, so a long stretch in
+one work category can still outweigh another: fifteen minutes of Hacker News,
+Wikipedia, a news app or a YouTube lecture (all REFERENCE) after five of Xcode
+makes REFERENCE the anchor, and the return to Xcode is a departure; Slack
+first (COMMUNICATION) does the same. The end-of-block result is not the gate:
+its evidence category, switch-away and return counts are still measured from
+whichever category had the most confident time. In a block with five minutes
+of Xcode and fifteen of YouTube, the offer therefore counts switches away from
+focus work while the result card reads "You left passive consumption 4 times
+and came back 3 of them". Whether the result follows the anchor rule is an
+open founder decision. The cohort export reads none of these fields; the
+weekly digest and the dashboard read `recovery_count`.
+
 An observation row's end is the next row's start. At a boundary — pause or
 sleep, a service restart, or the end of the block — there is no next row, and
 the dwell the user is in has not been measured yet. The open row is therefore
@@ -166,6 +195,49 @@ wording; intense mode does not weaken evidence rules or increase notification
 volume. The phrase “your task” is not generated unless a local intention exists
 and the block is active; the current library avoids that phrase entirely.
 
+## Classification Provenance (migration 0045)
+
+Each observation row records the rung of the classifier that produced the
+report which opened it, in `classification_source`: `seed`, `heuristic`,
+`embedding`, `user_rule`, `declared_document_types`, `declared_app_category` or
+`fallback`, the `ClassificationSource` the abstraction engine reported. The
+second report of a dwell, or any report with the same category, status and
+confidence as the open row, opens no row and changes no evidence, whatever rung
+produced it. Its rung is still recorded on the row that absorbed it when it
+outranks the row's: `vault_rule`, then `user_rule`, then every other rung, which
+never replaces the opener (`WorkBlockRepo::record_absorbed_source`). So a row
+names a rule whenever a rule classified any report the row holds. Without that,
+a dwell a rule moved into the open row's category, which without the rule
+would have been a switch away, would leave no trace on the row: the replay's
+taught app at t=3900 and taught site at t=12200 both fall inside rows a seed
+entry opened. Rows opened before the migration hold NULL unless a rule's report
+is absorbed into them afterwards. Every decision row also has
+`synced_rule_evidence`, 0 on every row; the build that applies synced rules
+counts it from these rows.
+
+Both columns are records, not inputs. `WorkBlockObservation`, which the gate,
+the decision-outcome pass and the result read, has no field for the source, so
+no decision can depend on it. They exist for the personal-vault design
+(`personal-vault-and-devices.md` § 11.1, lock 3, not built). In that design,
+category rules synced from another Mac are held, and classify nothing until a
+pre-registered policy version turns them on between waves; these columns are
+added first, so the logged data can show that no decision was made on one.
+Nothing in this build syncs a rule, and nothing produces `vault_rule`, which
+the CHECK on `classification_source` already accepts. The cohort export names
+every column it selects, so it carries neither column.
+
+`tests/golden_replay.rs` is the proof. It replays a synthetic six-block trace
+through the router, the shipped ladder, the gate and the decision-outcome pass,
+and compares every push and every row of `work_block_intervention`,
+`intervention_decision_log` and `work_block_observation`, column by column, with
+`decisions.golden`, which was recorded before the columns existed. The two
+columns are compared on their own in `provenance.golden`, and a test checks
+that every dwell a taught rule classified, and no other, is attributed to
+`user_rule`. A difference from `decisions.golden` is a changed decision and
+needs a new `DRIFT_POLICY_VERSION`; record mode refuses to overwrite a golden
+recorded under the current version unless `VELVT_GOLDEN_REPLAY_SAME_POLICY`
+gives the reason (a parent PR's amendment, a new trace step).
+
 ## Exact Local and Cloud Field Table
 
 | Field | Local command / IPC | Protected SQLite | Cloud upload/cache | Logs, telemetry, crash-safe diagnostics | Notification ID |
@@ -177,6 +249,7 @@ and the block is active; the current library avoids that phrase entirely.
 | `intensity` | Yes | Yes | Never | Safe enum only | Never |
 | planned/elapsed/paused timestamps | Yes | Yes | Never | Safe timing metadata only | Never |
 | abstracted category/status/confidence | Yes | Yes, observation rows | Existing abstract-event upload remains unchanged; no work-block association | Existing safe values only | Never |
+| classifier rung (`classification_source`, migration 0045) | No | Yes, observation rows; never read by a gate | Never | Never | Never |
 | live anchor category (`anchor_category`, protocol 31) | Yes, local socket only | Derived on read from observation rows; not stored separately | Never | Safe category value only | Never |
 | longest stretch / switch-away / recovery counts | Result snapshot | Yes, safe result JSON | Never | Safe aggregate only | Never |
 | coverage/confidence/evidence category | Result snapshot | Yes, safe result JSON | Never | Safe aggregate only | Never |
@@ -198,6 +271,16 @@ Rust owns the evidence record: transition times are floored to five-minute
 buckets, reduced to local hour/date buckets, pruned after 14 days, and the
 schema has no column that could hold a Focus mode's name, configuration, or
 schedule.
+
+The boolean is real only in a build signed with the Communication
+Notifications entitlement, which release builds through 1.0.13 lack (see
+`s7-menu-bar-and-notifications.md`, "Focus status: what a build can read").
+Since protocol 36 Swift reports `focus_status_availability` beside the edges,
+and sends edges only while it is `available`. Every drift decision records
+`intervention_decision_log.focus_state`: `on` or `off` from the evidence while
+the app can read Focus status, `unknown` otherwise (migration 0044). The record
+is not an input: the decisions below read the evidence exactly as before, so
+in a build that cannot read Focus none of them ever applies.
 
 Decisions derived from that record, all in Rust:
 
@@ -324,7 +407,8 @@ Focused tests cover every transition, restart/expiry and idempotence,
 sleep/wake and clock changes, Rust aggregation, insufficient coverage, one
 action, local-only intention isolation, v8-to-v9 SQLite migration, clear data,
 offline Swift behavior, lifecycle commands, protocol round trips, and
-notification separation. The full Rust and Swift suites plus the Xcode app
+notification separation. `tests/golden_replay.rs` holds the decisions, the
+decision log and the observations over a recorded trace to a committed golden. The full Rust and Swift suites plus the Xcode app
 target remain the release checks.
 
 ## Before/After Resource Sample

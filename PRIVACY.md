@@ -21,7 +21,11 @@ The macOS client observes, locally:
   (`LSItemContentTypes`) it says it can open. These are properties of the
   application's build, the same on every Mac, not of anything you did in it
 - Whether a macOS Focus mode is on, if you allow Focus status during
-  onboarding: one yes-or-no value, never which Focus mode or its schedule
+  onboarding: one yes-or-no value, never which Focus mode or its schedule.
+  macOS gives that value only to apps signed with Apple's Communication
+  Notifications entitlement, so the app also tells the local service whether
+  it can read it at all (available, unavailable, denied, or not yet asked),
+  and Velvt records "unknown" rather than "off" when it cannot
 - Timestamps for these events
 
 That list is exhaustive. Velvt does not use screen recording, keylogging,
@@ -128,9 +132,9 @@ reminder, also described below.
 | `personal_semantic_prototype` | a copy of that same sketch, kept for a category you corrected so the classifier can recognise the activity again | the 64 most-corrected pairs, at most 12 per category; removed by undoing that correction or by Reset Corrections. No sweep expires it |
 | `history_cache` / `insight_cache` | ready-to-display summaries fetched from the cloud | minutes to tens of minutes, per `VELVT_HISTORY_TTL_SECONDS`/`VELVT_INSIGHT_TTL_SECONDS` |
 | `work_block` | local state and optional free-form intention | intention: 24 hours; the safe state until Clear Local Work Blocks |
-| `work_block_observation` | safe category/status/confidence spans only | removed with its block, and by Clear Local Work Blocks |
+| `work_block_observation` | safe category/status/confidence spans, and since migration 0045 `classification_source`: which rung of the classifier classified the activity that began each span (a seed entry, a heuristic, Tier 2, a rule you taught, the application's declared document types or App Store category, or the fallback), or a rule you taught when it classified later activity that continued the same span, one closed token. NULL on a span begun before that migration that no such rule continued. No app identity, site, rule, label or window title | removed with its block, and by Clear Local Work Blocks |
 | `work_block_result` | safe local duration, transition, recovery, coverage, evidence, observation, and one next action | removed with its block, and by Clear Local Work Blocks |
-| `intervention_decision_log` | every moment the drift policy was evaluated and what it decided, including the times it decided to stay silent: policy version, broad anchor category, switch count, elapsed and remaining seconds, the verdict, the propensity (always 1.0: the policy is deterministic), and, once its horizon passes, whether the anchor category was seen again within 600 seconds. No label, no app identity, no window title, no URL, no intention text | removed with the block it belongs to, and by Clear Local Work Blocks, which also deletes any row logged without a block |
+| `intervention_decision_log` | every moment the drift policy was evaluated and what it decided, including the times it decided to stay silent: policy version, broad anchor category, switch count, elapsed and remaining seconds, the verdict, the propensity (always 1.0: the policy is deterministic), whether Velvt knew a Focus mode was on at that moment (`focus_state`, migration 0044: on, off, or unknown when this copy of Velvt cannot read Focus status), once its horizon passes, whether the anchor category was seen again within 600 seconds, and `synced_rule_evidence` (migration 0045), a count reserved for a later version, 0 on every row in this one. No label, no app identity, no window title, no URL, no intention text, no Focus mode name | removed with the block it belongs to, and by Clear Local Work Blocks, which also deletes any row logged without a block |
 | `out_of_block_run` | activity outside a declared work block, as broad category plus coarse time: start floored to a five-minute bucket, duration, local hour, and local date. Structurally cannot hold an application name, a label, a stable ID, a window title, or a URL — it is deliberately less informative than the 14-day `raw_event_buffer` it would be derived from. **Nothing writes it today** — see the note below the table | 90 days once written |
 | `block_antecedent` | the bounded window of activity immediately before a block started, recorded once and never updated: the *set* of broad categories present (not their order), a switch count, a dominant category and its dwell, weekday/weekend, and hour bucket. The window is capped at 30 minutes by the database schema, so it cannot be widened by a setting. **Nothing writes it today** — see the note below the table | removed with its block, and by Clear Local Work Blocks |
 | `antecedent_finding` | a discovered pattern about what precedes a block: a key from a closed compile-time registry (a time bin, a day type, a broad category, a coarse elapsed bucket), an effect size, and a q-value. The registry has no constructor that could mint an application name, a label, a window title, or a URL. **Nothing writes it today** — see the note below the table | no sweep, no cascade, and no in-app action removes a row — deleting `~/.velvt/` is the only removal. Empty today |
@@ -362,7 +366,7 @@ three empty ones are — you will see them if you open the file.
 | `work_block_intervention` | the drift offer a block received: broad anchor category, switch count, window length, salience, the fixed action id, when it was offered, when its in-app card was first on screen (`card_seen_at`, migration 0032), what became of its notification and when the app reported it (`delivery_channel`, `delivery_reported_at`, migration 0043: posted, posted with alert style None, notifications off or unanswered, refused by macOS, withdrawn before it was posted, quiet, or too old to post), and the outcome you gave it and when. The block id is the primary key, so a block holds at most one. No label, app identity, window title, URL, or intention text | removed with its block, and by Clear Local Work Blocks |
 | `work_block_category_correction` | when you answer an offer with "wrong classification", the broad category that counts as focus work for that block. Categories only | removed with its block, and by Clear Local Work Blocks |
 | `intervention_demotion_state` | one row recording whether interventions are currently demoted, when that happened, and when you last reset it. The current state only, never a history | singleton; removed by Clear Local Work Blocks |
-| `focus_state_evidence` | coarse macOS Focus/DND transitions: active or inactive, the time floored to a five-minute bucket, and a local hour and date. No Focus mode name, schedule, or configuration is representable | 14 days, pruned when the next transition is reported rather than on a timer; removed by Clear Local Work Blocks |
+| `focus_state_evidence` | coarse macOS Focus/DND transitions: active or inactive, the time floored to a five-minute bucket, and a local hour and date. No Focus mode name, schedule, or configuration is representable | 14 days, pruned when the app next reports Focus or whether it can read Focus, which it does on every connection, rather than on a timer; removed by Clear Local Work Blocks |
 | `focus_observer_state` | one row holding the client's most recent UTC offset, so a local-hour rule never needs a locale or an identity | singleton, overwritten in place; removed by Clear Local Work Blocks |
 | `quiet_hours_offer_state` | one row remembering whether the quiet-hours offer was triggered, offered, accepted, or declined, when, and under which rule version | singleton; removed by Clear Local Work Blocks |
 | `velvt_quiet_hours` | Velvt's own quiet-hours window, if you accepted that offer: start and end local minutes, the rule version, and when it was configured. Not the macOS Focus configuration, which Velvt never reads or writes | singleton; no sweep, and it survives Clear Local Work Blocks — it is a setting you chose, not evidence |
@@ -508,7 +512,7 @@ fails until this list is updated in the same commit.
 | `initiation_invitation` | `invitation_id`, `offered_at`, `local_date`, `action_id`, `policy_version`, `backoff_policy_version`, `outcome`, `outcome_at` |
 | `initiation_settings` | `id`, `invitations_enabled`, `updated_at` |
 | `insight_cache` | `id`, `date`, `payload`, `ttl`, `created_at`, `not_found` |
-| `intervention_decision_log` | `decision_id`, `occurred_at`, `block_id`, `policy_version`, `anchor_category`, `switch_count`, `elapsed_seconds`, `remaining_seconds`, `gate_verdict`, `propensity`, `anchor_seen_within_600s`, `outcome_at` |
+| `intervention_decision_log` | `decision_id`, `occurred_at`, `block_id`, `policy_version`, `anchor_category`, `switch_count`, `elapsed_seconds`, `remaining_seconds`, `gate_verdict`, `propensity`, `anchor_seen_within_600s`, `outcome_at`, `focus_state`, `synced_rule_evidence` |
 | `intervention_demotion_state` | `id`, `state`, `demoted_at`, `manual_reset_at`, `threshold_policy_version`, `repromotion_policy_version`, `updated_at` |
 | `local_site_name` | `site_key_hash`, `host`, `last_seen_at` |
 | `out_of_block_run` | `id`, `started_at_bucket`, `duration_seconds`, `category`, `classification_status`, `classification_confidence`, `local_hour`, `local_date` |
@@ -529,7 +533,7 @@ fails until this list is updated in the same commit.
 | `work_block` | `block_id`, `state_version`, `phase`, `intention`, `purpose`, `intensity`, `planned_duration_seconds`, `started_at`, `paused_at`, `total_paused_seconds`, `ended_at`, `recovered_after_restart`, `recovery_of`, `intention_expires_at`, `created_at`, `updated_at`, `origin` |
 | `work_block_category_correction` | `block_id`, `category`, `counts_as_category`, `corrected_at` |
 | `work_block_intervention` | `block_id`, `offered_at`, `action_id`, `anchor_category`, `switch_count`, `window_seconds`, `outcome`, `outcome_at`, `salience`, `card_seen_at`, `delivery_channel`, `delivery_reported_at` |
-| `work_block_observation` | `id`, `block_id`, `occurred_at`, `ended_at`, `category`, `classification_status`, `classification_confidence` |
+| `work_block_observation` | `id`, `block_id`, `occurred_at`, `ended_at`, `category`, `classification_status`, `classification_confidence`, `classification_source` |
 | `work_block_result` | `block_id`, `payload`, `created_at` |
 
 ### Corrections to earlier versions of this section
@@ -615,6 +619,14 @@ compares with this list.
   account or sign in: your email address and password.
 - **`POST /v1/devices`** — when you sign in on a Mac with no registered
   device: the app version.
+- **`PATCH /v1/devices/{device_id}`** — once each time the app starts with a
+  saved session, after the server confirms it; if that request gets no answer
+  (no connection, or the server is busy or down), again each time the app
+  restores the saved session, until one is answered: the app
+  version, as `{"client_version": ...}`, so the server's record of this Mac
+  names the version it runs rather than the one it first signed in with. It
+  is the same version device registration and every batch already send;
+  nothing new leaves the Mac.
 - **`POST /v1/auth/devices/reissue`** — when you sign in on a Mac that is
   already registered, or the server says this device's token was revoked: the
   device ID. After a reissue that gets no answer, or no verdict on the session,

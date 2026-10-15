@@ -441,7 +441,8 @@ mod tests {
     };
     use std::sync::atomic::{AtomicBool, Ordering};
     use velvt_shared_types::{
-        ClassificationConfidence, ClassificationStatus, WorkBlockIntensity, WorkBlockPhase,
+        ClassificationConfidence, ClassificationSource, ClassificationStatus, WorkBlockIntensity,
+        WorkBlockPhase,
     };
 
     /// 2027-01-15T08:00:00Z — a Friday, 08:00 local at offset 0. The same
@@ -539,6 +540,7 @@ mod tests {
                 classification_status: ClassificationStatus::Classified,
                 classification_confidence: ClassificationConfidence::High,
             },
+            ClassificationSource::Seed,
         )
         .unwrap();
     }
@@ -675,6 +677,7 @@ mod tests {
                     classification_status: ClassificationStatus::Classified,
                     classification_confidence: ClassificationConfidence::High,
                 },
+                ClassificationSource::Seed,
             )
             .unwrap();
         }

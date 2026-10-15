@@ -118,6 +118,23 @@ pub struct HttpResponse {
     pub device_id: Option<String>,
 }
 
+/// The wait a `Retry-After` header asks for: whole seconds, as velvt-core
+/// sends it, or an HTTP date. A date already past is no wait.
+pub fn retry_after_delay(value: &str) -> Option<Duration> {
+    if let Ok(seconds) = value.trim().parse::<u64>() {
+        return Some(Duration::from_secs(seconds));
+    }
+    let retry_at = chrono::DateTime::parse_from_rfc2822(value.trim())
+        .ok()?
+        .with_timezone(&Utc);
+    Some(
+        retry_at
+            .signed_duration_since(Utc::now())
+            .to_std()
+            .unwrap_or_default(),
+    )
+}
+
 pub trait HttpClient: Send + Sync {
     fn send<'a>(
         &'a self,

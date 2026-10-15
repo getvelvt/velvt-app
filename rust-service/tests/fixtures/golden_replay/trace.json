@@ -1,0 +1,148 @@
+{
+  "about": "SYNTHETIC. Written by hand for tests/golden_replay.rs; no person's activity. Six declared blocks over one evening. Block 1 drifts to a video and is offered, then runs out of time. Block 2 is offered and answered was_focused, pauses, and is taught the unknown app Qwybex. Block 3 falls inside the cooldown that answer earned, and is taught a forum site. Block 4 is offered quietly after that cooldown, and the person comes back. Block 5 is video and a feed only, so it never has an anchor. Block 6 leaves three times during warm-up and is back at work when the gate first looks. Every dwell is reported in progress when it begins and closed when it ends, as protocol 32 and later clients report it.",
+  "origin": 1700000000,
+  "activities": {
+    "xcode": {
+      "app": "Xcode",
+      "bundle_id": "com.apple.dt.Xcode",
+      "title": "Engine.swift — Golden"
+    },
+    "slack": {
+      "app": "Slack",
+      "bundle_id": "com.tinyspeck.slackmacgap",
+      "title": "general - Golden Workspace - Slack"
+    },
+    "youtube_highlights": {
+      "app": "Safari",
+      "bundle_id": "com.apple.Safari",
+      "title": "Arsenal vs Chelsea | Extended Highlights - YouTube",
+      "url": "https://www.youtube.com/watch?v=golden01"
+    },
+    "youtube_lecture": {
+      "app": "Safari",
+      "bundle_id": "com.apple.Safari",
+      "title": "Lecture 14: Enhancers and Super-Enhancers - YouTube",
+      "url": "https://www.youtube.com/watch?v=golden02"
+    },
+    "hacker_news": {
+      "app": "Safari",
+      "bundle_id": "com.apple.Safari",
+      "title": "Hacker News",
+      "url": "https://news.ycombinator.com/"
+    },
+    "webmail": {
+      "app": "Safari",
+      "bundle_id": "com.apple.Safari",
+      "title": "Inbox (3)",
+      "url": "https://mail.golden-example.org/inbox"
+    },
+    "forum": {
+      "app": "Safari",
+      "bundle_id": "com.apple.Safari",
+      "title": "Thread 42 - Qwybex Forum",
+      "url": "https://forum.qwybex.org/t/42"
+    },
+    "tiktok": {
+      "app": "Safari",
+      "bundle_id": "com.apple.Safari",
+      "title": "TikTok - Make Your Day",
+      "url": "https://www.tiktok.com/foryou"
+    },
+    "qwybex": {
+      "app": "Qwybex",
+      "bundle_id": "com.example.qwybex",
+      "title": "Untitled"
+    },
+    "zorblat": {
+      "app": "Zorblat",
+      "bundle_id": "com.example.zorblat",
+      "title": "notes.swift",
+      "document_type_ids": ["public.source-code", "public.swift-source"]
+    },
+    "lumify": {
+      "app": "Lumify",
+      "bundle_id": "com.example.lumify",
+      "title": "Morning edition",
+      "declared_app_category": "public.app-category.news"
+    },
+    "scrivlet": {
+      "app": "Scrivlet",
+      "bundle_id": "com.example.scrivlet",
+      "title": "Quarterly budget spreadsheet - revenue forecast"
+    }
+  },
+  "steps": [
+    {"do": "start", "at": 0, "minutes": 25, "purpose": "deep_work", "intensity": "medium"},
+    {"do": "dwell", "at": 10, "until": 200, "activity": "xcode"},
+    {"do": "dwell", "at": 200, "until": 215, "activity": "slack"},
+    {"do": "dwell", "at": 215, "until": 260, "activity": "xcode"},
+    {"do": "dwell", "at": 260, "until": 275, "activity": "slack"},
+    {"do": "dwell", "at": 275, "until": 320, "activity": "xcode"},
+    {"do": "dwell", "at": 320, "until": 368, "activity": "youtube_highlights"},
+    {"do": "dwell", "at": 368, "until": 600, "activity": "xcode"},
+    {"do": "dwell", "at": 600, "until": 700, "activity": "qwybex"},
+    {"do": "dwell", "at": 700, "until": 900, "activity": "zorblat"},
+    {"do": "dwell", "at": 900, "until": 1000, "activity": "lumify"},
+    {"do": "dwell", "at": 1000, "until": 1100, "activity": "webmail"},
+    {"do": "dwell", "at": 1100, "until": 1250, "activity": "xcode"},
+    {"do": "dwell", "at": 1250, "until": 1400, "activity": "scrivlet"},
+    {"do": "dwell", "at": 1400, "until": 1460, "activity": "slack"},
+    {"do": "end", "at": 1430},
+
+    {"do": "start", "at": 3000, "minutes": 30, "purpose": "study", "intensity": "light"},
+    {"do": "dwell", "at": 3010, "until": 3200, "activity": "xcode"},
+    {"do": "dwell", "at": 3200, "until": 3210, "activity": "slack"},
+    {"do": "dwell", "at": 3210, "until": 3250, "activity": "xcode"},
+    {"do": "dwell", "at": 3250, "until": 3270, "activity": "hacker_news"},
+    {"do": "dwell", "at": 3270, "until": 3300, "activity": "xcode"},
+    {"do": "dwell", "at": 3300, "until": 3330, "activity": "youtube_lecture"},
+    {"do": "reply", "at": 3310, "response": "was_focused"},
+    {"do": "dwell", "at": 3330, "until": 3900, "activity": "xcode"},
+    {"do": "pause", "at": 3600},
+    {"do": "resume", "at": 3700},
+    {"do": "teach_app", "at": 3890, "app": "Qwybex", "category": "FOCUS_WORK"},
+    {"do": "dwell", "at": 3900, "until": 4200, "activity": "qwybex"},
+    {"do": "dwell", "at": 4200, "until": 4500, "activity": "xcode"},
+    {"do": "end", "at": 4500},
+
+    {"do": "start", "at": 6000, "minutes": 25, "purpose": "deep_work", "intensity": "medium"},
+    {"do": "dwell", "at": 6010, "until": 6200, "activity": "xcode"},
+    {"do": "dwell", "at": 6200, "until": 6215, "activity": "slack"},
+    {"do": "dwell", "at": 6215, "until": 6260, "activity": "xcode"},
+    {"do": "dwell", "at": 6260, "until": 6275, "activity": "slack"},
+    {"do": "dwell", "at": 6275, "until": 6320, "activity": "xcode"},
+    {"do": "dwell", "at": 6320, "until": 6340, "activity": "slack"},
+    {"do": "teach_site", "at": 6330, "host": "forum.qwybex.org", "category": "FOCUS_WORK"},
+    {"do": "dwell", "at": 6340, "until": 6500, "activity": "forum"},
+    {"do": "dwell", "at": 6500, "until": 6560, "activity": "tiktok"},
+    {"do": "dwell", "at": 6560, "until": 6700, "activity": "xcode"},
+    {"do": "end", "at": 6700},
+
+    {"do": "start", "at": 12000, "minutes": 25, "purpose": "healthy_tech_use", "intensity": "intense"},
+    {"do": "dwell", "at": 12010, "until": 12200, "activity": "xcode"},
+    {"do": "dwell", "at": 12200, "until": 12260, "activity": "forum"},
+    {"do": "dwell", "at": 12260, "until": 12275, "activity": "slack"},
+    {"do": "dwell", "at": 12275, "until": 12320, "activity": "xcode"},
+    {"do": "dwell", "at": 12320, "until": 12335, "activity": "slack"},
+    {"do": "dwell", "at": 12335, "until": 12380, "activity": "qwybex"},
+    {"do": "dwell", "at": 12380, "until": 12400, "activity": "slack"},
+    {"do": "dwell", "at": 12400, "until": 13000, "activity": "xcode"},
+    {"do": "end", "at": 13300},
+
+    {"do": "start", "at": 15000, "minutes": 20, "purpose": "healthy_tech_use", "intensity": "light"},
+    {"do": "dwell", "at": 15010, "until": 15300, "activity": "youtube_highlights"},
+    {"do": "dwell", "at": 15300, "until": 15500, "activity": "tiktok"},
+    {"do": "dwell", "at": 15500, "until": 15700, "activity": "youtube_highlights"},
+    {"do": "end", "at": 15800},
+
+    {"do": "start", "at": 18000, "minutes": 25, "purpose": "creative_practice", "intensity": "medium"},
+    {"do": "dwell", "at": 18010, "until": 18100, "activity": "xcode"},
+    {"do": "dwell", "at": 18100, "until": 18110, "activity": "slack"},
+    {"do": "dwell", "at": 18110, "until": 18130, "activity": "xcode"},
+    {"do": "dwell", "at": 18130, "until": 18140, "activity": "slack"},
+    {"do": "dwell", "at": 18140, "until": 18150, "activity": "xcode"},
+    {"do": "dwell", "at": 18150, "until": 18185, "activity": "slack"},
+    {"do": "dwell", "at": 18185, "until": 18600, "activity": "xcode"},
+    {"do": "end", "at": 18600}
+  ]
+}

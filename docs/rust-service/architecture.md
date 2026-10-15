@@ -114,6 +114,14 @@ and the singular recovery action. At a block boundary it reads the reported
 dwells overlapping the block back from `raw_event_buffer` (start, duration,
 and category evidence only) to close the last observation where its dwell
 ended and to measure coverage against what was actually reported. Swift receives a ready-to-render snapshot.
+`WorkBlockManager` also receives the ladder rung that produced each piece of
+evidence (`ClassificationSource`) and stores it on the observation row the
+report opens (`work_block_observation.classification_source`, migration 0045).
+A report whose evidence matches the open row opens nothing; if a rule
+classified it, the open row records that rule instead of the rung that opened
+it. That is a record, not an input: `WorkBlockObservation`, which every gate
+and result reads, has no field for it, and `tests/golden_replay.rs` holds the
+decisions to the ones recorded before the column existed.
 Deadline scheduling uses a replaceable one-shot sleep rather than polling. See
 `docs/architecture/work-block-loop.md` for the state machine and field boundary.
 
@@ -125,7 +133,7 @@ The upload path has three layers:
 2. `UploadBatcher` groups events by count, age, and shutdown.
 3. `UploadCoordinator` sends batches through `HttpBatchUploader`, records status, and manages retry/backoff.
 
-Batch IDs are stable for idempotent retry. `raw_field_rejected` is terminal because retrying a privacy-invalid payload would be incorrect.
+Batch IDs are stable for idempotent retry. `raw_field_rejected` is terminal because retrying a privacy-invalid payload would be incorrect. A `429` puts the upload host off for its `Retry-After`, at most an hour (velvt-core's longest rate-limit window; a proxy's far larger value would otherwise park the queue, across restarts), or the coordinator's own backoff without one; `AuthManager` carries the header in `AuthError::RateLimited { retry_after }`, which `HttpBatchUploader` maps to `UploadOutcome::RateLimited` (protocol 37; before, it was mapped to a transport failure and the header was lost).
 
 ## Delivery Pipeline
 

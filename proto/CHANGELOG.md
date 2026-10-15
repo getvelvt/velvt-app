@@ -1,5 +1,108 @@
 # IPC Protocol Changelog
 
+## Version 37 - 2026-10-15
+
+A sign-up or login the cloud refused for too many attempts was reported as
+`server_error` with whatever words the server sent: "Too many requests." from
+the server deployed through 1.0.14, which said neither what happened nor how
+long to wait (1.0.14 simulation, backend-e2e-07 and helper-backend-12).
+velvt-core #41 sends `Retry-After` in whole seconds on every rate-limit 429.
+
+- Added `rate_limited` to `auth_failure.code` (Rust to Swift). Rust sends it
+  for a `429` from `POST /v1/auth/signup` or `POST /v1/auth/login`, with a
+  message it writes from `Retry-After`, rounded up to the minute: "Too many
+  attempts. Try again in 15 minutes." ("in a minute" under one; in hours from
+  120 minutes), or "Too many attempts. Try again later." when the server sent
+  no usable `Retry-After`, as the server deployed before #41 does. The server's
+  own words are not used, so the app says the same thing to either server.
+  Rust sends it too when a sign-in's device registration (`POST /v1/devices`,
+  which #41 limits to 10 an hour per user) or the reissue of the stored
+  device is refused with `429`: "This Mac could not be registered yet. Too
+  many attempts. Try again in 60 minutes." (after a sign-up, "Your account was
+  created, but ... Log in to try again in 60 minutes."). Swift shows the
+  message as it is, as it does for every `auth_failure`.
+- Swift decodes `auth_failure.code` as a closed set, so a 36 app would fail
+  the frame and drop the connection: hence the version.
+- Not on the wire, in the same release: once per launch, after a restored
+  session is validated, Rust sends `PATCH /v1/devices/{device_id}` with
+  `{"client_version"}` (install-release-09; any answer, a 404 or 405 from a
+  server without the route included, ends it for the launch); an ingestion or
+  insight-poll 429's `Retry-After` reaches the upload queue and the poll, which
+  `AuthManager` used to drop; requests refused together as
+  `device_token_revoked` share one reissue. Swift never matches a synced
+  history row (a UTC day) against the local "today": the Patterns coaching
+  card shows "This week so far", not "Today so far", for a synced history
+  with one ready day. The UTC day labels, the history tooltip's percentage
+  (now `seconds / active_seconds`) and the Today metrics changed in
+  `HistoryListView` and `TodayWorkspaceView`, which only `#if DEBUG` previews
+  create; the app does not show them.
+
+## Version 36 - 2026-10-15
+
+A decision made during a Focus the service could not see was stored exactly
+like one made with no Focus (1.0.14 simulation, B5). Apple gives Focus status
+only to an app signed with the Communication Notifications entitlement
+(`com.apple.developer.usernotifications.communication`, which a Developer ID
+build can carry only with an embedded provisioning profile). Release builds
+through 1.0.13 have neither, so the person can allow Focus status, and
+`INFocusStatusCenter` still answers `isFocused = false`, but the system never
+read it: the app reported Focus as off on every reconnect, the gate never held
+an offer for Focus, and macOS silenced offers recorded as delivered.
+
+- Added `focus_status_availability {availability}` (Swift to Rust).
+  `availability` is one of `available` (entitled, and the person allowed Focus
+  status), `unavailable` (unreadable whatever the person answers: no
+  entitlement, a restriction, or no value from the system), `denied` or
+  `not_determined`. The entitlement decides first, so an authorized but
+  unentitled app is `unavailable`. Swift sends it on every connection, ahead
+  of any `focus_state_changed`, and whenever it changes at an activation or
+  wake, and sends `focus_state_changed` only while it is `available`: an
+  unentitled build no longer reports a Focus state it cannot read. A fact
+  about the app, never about the person's Focus.
+- The service keeps the latest value in memory (none until the first report)
+  and answers nothing. It records on every drift decision
+  `intervention_decision_log.focus_state` (migration 0044): `on` or `off` from
+  the transition record while the app reports `available` and the record has
+  an edge, `unknown` otherwise. NULL means the row predates 0044.
+- Not an input to any decision. The Focus hold reads `focus_state_changed`
+  edges exactly as before, and an unentitled build sent only `active: false`
+  edges, which never held an offer; sending none holds none either, so no
+  offer changes. The cohort export (format 6) carries `focus_state` in the
+  decisions file, and `analyze_cohort.py` adds a descriptive breakdown of
+  offers by it; no pre-registered denominator changes.
+- The app logs one line at launch (`focus_status_self_check`, subsystem
+  `com.velvt.mac`, category `FocusStatus`): authorization status, whether the
+  system gave an `isFocused` value (the raw value only on a build without the
+  entitlement, where it is not the person's Focus), whether the entitlement is
+  present, and the availability sent to the service. Values only.
+- Rust's `ClientMessage` denies unknown variants, so a 35 helper would answer
+  the new message `malformed_message`: hence the version.
+
+## The drift gate's anchor is a work category - 2026-10-15 (no wire change; the protocol stays 35)
+
+- The anchor the drift gate counts departures from, and that
+  `work_block_state.anchor_category` and `active_intervention.anchor_category`
+  carry, is now the work category (`FOCUS_WORK`, `REFERENCE`,
+  `TASK_MANAGEMENT` or `COMMUNICATION`) with the most confident, closed time
+  in the block. It was whichever category had the most, so fifteen minutes of
+  YouTube after five of Xcode made `PASSIVE_CONSUMPTION` the anchor, each
+  return to Xcode counted as a departure, and the offer fired as the person
+  came back to work, naming passive consumption as the work they chose
+  (1.0.14 simulation, B6). `PASSIVE_CONSUMPTION` and `SOCIAL_FEED` time never
+  makes or moves the anchor now.
+- `anchor_category` stays required and nullable, with the same type and
+  bounds. It is null until a confident observation of a work category has
+  closed, where before any confident category would do, so a block that
+  starts on passive content has no anchor, and the gate makes no offer in it,
+  until some work time has been observed.
+- Part of drift policy version 6 (`DRIFT_POLICY_VERSION` stays 6: no version 6
+  build has been distributed, so no version 6 decision was made under the
+  earlier anchor). The gate's constants, branches and timing are unchanged.
+  Past the warm-up, a block with no work time records `abstained_no_anchor`,
+  which under version 6 means no confident work time yet rather than no
+  confident time at all.
+- Privacy: nothing new is sent or stored.
+
 ## Version 35 - 2026-10-14
 
 Whether a nudge was actually shown was never recorded (1.0.14 simulation,

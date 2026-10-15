@@ -39,20 +39,32 @@ read_plist() {
   /usr/libexec/PlistBuddy -c "Print :$1" "$plist"
 }
 
+# Every slice of the helper runs through arch(1), named by absolute path, so
+# which slice answers never depends on what else is on PATH. Running the helper
+# directly ran whatever slice its parent's architecture picked: under an
+# x86_64 perl or shell (an Intel Homebrew perl first on PATH, a Rosetta
+# terminal) that was x86_64, and the arm64 slice was never asked. A GNU arch
+# from coreutils, first on PATH, rejects -x86_64 outright.
+# VELVT_TEST_ARCH_BIN replaces arch(1) for the tests only, to stand in for a
+# Mac that cannot run a slice.
+arch_bin="${VELVT_TEST_ARCH_BIN:-/usr/bin/arch}"
+
 # Each call passes a flag that prints and exits. A helper that does not know the
 # flag would start the whole service instead, so every call runs with an empty
 # environment and a scratch HOME (never the real ~/.velvt) and is killed after
-# 20 seconds.
+# 20 seconds (the alarm survives both execs).
 helper_flag() {
-  local scratch_home output status
+  local flag="$1" slice="$2" scratch_home output status
   scratch_home="$(mktemp -d "${TMPDIR:-/tmp}/velvt-verify-home.XXXXXX")"
   set +e
-  output="$(env -i PATH="$PATH" HOME="$scratch_home" perl -e 'alarm 20; exec @ARGV or die "exec failed\n"' "$helper" "$1" 2>/dev/null)"
+  output="$(env -i PATH=/usr/bin:/bin:/usr/sbin:/sbin HOME="$scratch_home" \
+    /usr/bin/perl -e 'alarm 20; exec @ARGV or die "exec failed\n"' \
+    "$arch_bin" "-$slice" "$helper" "$flag" 2>/dev/null)"
   status=$?
   set -e
   rm -rf "$scratch_home"
   [[ $status -eq 0 ]] || {
-    echo "ERROR: velvt-service $1 failed or did not exit (status $status)." >&2
+    echo "ERROR: velvt-service ($slice slice) $flag failed or did not exit (status $status)." >&2
     exit 1
   }
   printf '%s\n' "$output"
@@ -82,21 +94,10 @@ app_protocol="$(read_plist VelvtProtocolVersion)"
 }
 bash "$script_dir/verify_helper_portability.sh" "$helper"
 
-helper_protocol="$(helper_flag --protocol-version)"
-[[ "$helper_protocol" == "$app_protocol" ]] || {
-  echo "ERROR: app protocol $app_protocol does not match helper protocol $helper_protocol." >&2
-  exit 1
-}
-
 # The helper reports the app's version to the backend on every batch and at
 # device registration. Through 1.0.11 it reported Cargo's fixed 1.0.0.
 app_version="$(read_plist CFBundleShortVersionString)"
 app_build="$(read_plist CFBundleVersion)"
-helper_version="$(helper_flag --version)"
-[[ "$helper_version" == "$app_version" ]] || {
-  echo "ERROR: helper reports version $helper_version, but the app is $app_version." >&2
-  exit 1
-}
 [[ "$(cat "$resources/velvt-service.version" 2>/dev/null)" == "$app_version" ]] || {
   echo "ERROR: velvt-service.version does not say $app_version." >&2
   exit 1
@@ -109,9 +110,52 @@ source_commit="$(read_plist VelvtSourceCommit 2>/dev/null || true)"
   echo "ERROR: Info.plist has no VelvtSourceCommit, so nothing records what source built this app." >&2
   exit 1
 }
-helper_commit="$(helper_flag --source-commit)"
-[[ "$helper_commit" == "$source_commit" ]] || {
-  echo "ERROR: helper was built from $helper_commit, but the app records $source_commit." >&2
+
+# Every slice of the universal helper is asked for its protocol, version and
+# source commit. Asking only the slice this Mac runs natively let a helper
+# lipo'd from two builds pass on Apple Silicon with its x86_64 slice never run,
+# and on an Intel Mac every launch would have ended in the version-mismatch
+# alert. Apple Silicon runs both slices, the x86_64 one under Rosetta 2; an
+# Intel Mac cannot run the arm64 one. A local verification warns about a slice
+# it cannot run. A production one, which goes to testers, refuses.
+helper_slices="$(lipo -archs "$helper" 2>/dev/null)" && [[ -n "$helper_slices" ]] || {
+  echo "ERROR: lipo cannot read the embedded helper's architectures." >&2
+  exit 1
+}
+slices_run=""
+for slice in $(tr ' ' '\n' <<<"$helper_slices" | sort); do
+  if ! "$arch_bin" "-$slice" /usr/bin/true >/dev/null 2>&1; then
+    if [[ "$mode" == "production" ]]; then
+      echo "ERROR: this Mac cannot run the helper's $slice slice, so it cannot check it against the app." >&2
+      if [[ "$slice" == "x86_64" ]]; then
+        echo "Rosetta 2 is not installed. Install it with: softwareupdate --install-rosetta --agree-to-license" >&2
+      else
+        echo "Cut production builds on an Apple Silicon Mac with Rosetta 2, which runs every slice." >&2
+      fi
+      exit 1
+    fi
+    echo "WARNING: this Mac cannot run the helper's $slice slice, so its protocol, version and source commit were not checked." >&2
+    continue
+  fi
+  slice_protocol="$(helper_flag --protocol-version "$slice")"
+  [[ "$slice_protocol" == "$app_protocol" ]] || {
+    echo "ERROR: the helper's $slice slice speaks protocol $slice_protocol, but the app speaks $app_protocol." >&2
+    exit 1
+  }
+  slice_version="$(helper_flag --version "$slice")"
+  [[ "$slice_version" == "$app_version" ]] || {
+    echo "ERROR: the helper's $slice slice reports version $slice_version, but the app is $app_version." >&2
+    exit 1
+  }
+  slice_commit="$(helper_flag --source-commit "$slice")"
+  [[ "$slice_commit" == "$source_commit" ]] || {
+    echo "ERROR: the helper's $slice slice was built from $slice_commit, but the app records $source_commit." >&2
+    exit 1
+  }
+  slices_run+="${slices_run:+ }$slice"
+done
+[[ -n "$slices_run" ]] || {
+  echo "ERROR: this Mac can run none of the helper's slices ($helper_slices), so nothing checked it against the app." >&2
   exit 1
 }
 
@@ -343,6 +387,7 @@ echo "  version: $app_version ($app_build)"
 echo "  source commit: $source_commit"
 echo "  protocol: $app_protocol"
 echo "  helper: embedded"
+echo "  helper slices run: $slices_run"
 echo "  preview/debug dylibs: absent"
 echo "  codesign: valid"
 echo "  hardened runtime: enabled"

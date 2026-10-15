@@ -1,5 +1,30 @@
 # IPC Protocol Changelog
 
+## The drift gate's anchor is a work category - 2026-10-15 (no wire change; the protocol stays 35)
+
+- The anchor the drift gate counts departures from, and that
+  `work_block_state.anchor_category` and `active_intervention.anchor_category`
+  carry, is now the work category (`FOCUS_WORK`, `REFERENCE`,
+  `TASK_MANAGEMENT` or `COMMUNICATION`) with the most confident, closed time
+  in the block. It was whichever category had the most, so fifteen minutes of
+  YouTube after five of Xcode made `PASSIVE_CONSUMPTION` the anchor, each
+  return to Xcode counted as a departure, and the offer fired as the person
+  came back to work, naming passive consumption as the work they chose
+  (1.0.14 simulation, B6). `PASSIVE_CONSUMPTION` and `SOCIAL_FEED` time never
+  makes or moves the anchor now.
+- `anchor_category` stays required and nullable, with the same type and
+  bounds. It is null until a confident observation of a work category has
+  closed, where before any confident category would do, so a block that
+  starts on passive content has no anchor, and the gate makes no offer in it,
+  until some work time has been observed.
+- Part of drift policy version 6 (`DRIFT_POLICY_VERSION` stays 6: no version 6
+  build has been distributed, so no version 6 decision was made under the
+  earlier anchor). The gate's constants, branches and timing are unchanged.
+  Past the warm-up, a block with no work time records `abstained_no_anchor`,
+  which under version 6 means no confident work time yet rather than no
+  confident time at all.
+- Privacy: nothing new is sent or stored.
+
 ## Version 35 - 2026-10-14
 
 Whether a nudge was actually shown was never recorded (1.0.14 simulation,

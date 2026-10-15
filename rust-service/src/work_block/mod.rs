@@ -36,8 +36,8 @@ const INTENTION_RETENTION_HOURS: i64 = 24;
 
 /// In-session drift gates. These are deterministic evidence thresholds, not a
 /// learned policy: an offer is made only when the observed switching is
-/// unambiguous, the block has run long enough to have an anchor, and there is
-/// still enough time left for a return to mean anything.
+/// unambiguous, the block has run long enough and seen enough work to have an
+/// anchor, and there is still enough time left for a return to mean anything.
 ///
 /// Recalibrated 2026-09-19 from six weeks of the development device's own
 /// decisions, which showed the first two thresholds were set past the point of
@@ -122,20 +122,36 @@ const DRIFT_MIN_REMAINING_SECONDS: u32 = 2 * 60;
 /// and the two are never pooled.
 ///
 /// Version 6 (2026-10-07, no protocol change) keeps every constant, branch
-/// and timing of version 5, and the gate's code with them. What changed is the
-/// evidence from two sites. A YouTube tab was PASSIVE_CONSUMPTION at high
-/// confidence whatever video it showed; under version 6 the video title
-/// decides it: a title with a learning marker (a lecture, a tutorial, "how
-/// to") is REFERENCE and one with an entertainment marker (highlights, a music
-/// video, an episode) is PASSIVE_CONSUMPTION, both at medium confidence; a
-/// title with neither, or both, is the ambiguous browser prior and never
-/// evidence; the bare feed stays PASSIVE_CONSUMPTION at high confidence.
-/// TikTok's web app was PASSIVE_CONSUMPTION and is SOCIAL_FEED. Both kinds of
-/// YouTube verdict still depart a FOCUS_WORK anchor, so most decisions are the
-/// same; but a YouTube tab with an unclear title is no longer a switch, a
-/// return or anchor time, and REFERENCE and PASSIVE_CONSUMPTION are different
-/// anchors, so the decision points can differ from version 5 wherever YouTube
-/// or TikTok was open, and the two are never pooled.
+/// and timing of version 5 and changes two things: the evidence from two
+/// sites, and which categories can be the anchor.
+///
+/// A YouTube tab was PASSIVE_CONSUMPTION at high confidence whatever video it
+/// showed; under version 6 the video title decides it: a title with a
+/// learning marker (a lecture, a tutorial, "how to") is REFERENCE and one with
+/// an entertainment marker (highlights, a music video, an episode) is
+/// PASSIVE_CONSUMPTION, both at medium confidence; a title with neither, or
+/// both, is the ambiguous browser prior and never evidence; the bare feed
+/// stays PASSIVE_CONSUMPTION at high confidence. TikTok's web app was
+/// PASSIVE_CONSUMPTION and is SOCIAL_FEED. Both kinds of YouTube verdict still
+/// depart a FOCUS_WORK anchor, so most decisions are the same; but a YouTube
+/// tab with an unclear title is no longer a switch, a return or anchor time,
+/// and a lecture is now REFERENCE time, which can be the anchor.
+///
+/// The anchor rule is the founder's of 2026-10-15, made before any version 6
+/// build was distributed. Through version 5 the anchor was the category with
+/// the most confident, closed time, whatever it was, so a long stretch of
+/// YouTube or a feed became the anchor and the return to work counted as the
+/// departure (the case is on `ANCHOR_CATEGORIES`). Under version 6 it is the
+/// work category (FOCUS_WORK, REFERENCE, TASK_MANAGEMENT, COMMUNICATION) with
+/// the most confident, closed time, and time in PASSIVE_CONSUMPTION or
+/// SOCIAL_FEED never makes or moves it. A block with no work time observed yet
+/// has no anchor, and each evaluation past the warm-up records
+/// `abstained_no_anchor`, which under version 6 means "no confident work time
+/// yet" rather than "no confident time at all".
+///
+/// So the anchor, the switch counts and the decision points differ from
+/// version 5 wherever YouTube or TikTok was open, or a non-work category held
+/// the most time, and the two are never pooled.
 pub const DRIFT_POLICY_VERSION: u32 = 6;
 /// The realized probability of the arm actually taken. Exactly 1.0 while the
 /// policy is deterministic — there is no randomization, and none is being
@@ -895,7 +911,9 @@ impl WorkBlockManager {
             return Ok(None);
         }
         let observations = self.repo.observations(&record.block_id)?;
-        let Some(anchor) = dominant_category(&observations) else {
+        // No work time observed yet, however much else there was: nothing to
+        // drift from, so nothing to offer.
+        let Some(anchor) = work_anchor(&observations) else {
             self.log_decision(record, now, GateVerdict::AbstainedNoAnchor, None, 0);
             return Ok(None);
         };
@@ -1458,7 +1476,7 @@ impl WorkBlockManager {
             record.phase,
             WorkBlockPhase::Active | WorkBlockPhase::Paused
         ) {
-            dominant_category(&self.repo.observations(&record.block_id)?)
+            work_anchor(&self.repo.observations(&record.block_id)?)
         } else {
             None
         };
@@ -1785,11 +1803,37 @@ fn merged_spans(
     merged
 }
 
-/// The category holding the most confidently observed time so far. Ties break
-/// on category name so the anchor cannot oscillate between equal candidates.
-fn dominant_category(observations: &[WorkBlockObservation]) -> Option<String> {
+/// The categories a block's anchor can be: the work lanes.
+///
+/// Drift policy v6, the founder's anchor rule of 2026-10-15. Until then the
+/// anchor was whichever category held the most confident time, so fifteen
+/// minutes of YouTube after five of Xcode made PASSIVE_CONSUMPTION the anchor:
+/// every return to Xcode counted as a departure, the offer fired on the
+/// third, naming passive consumption as the work the person chose, and going
+/// back to YouTube closed it as `returned`. PASSIVE_CONSUMPTION and
+/// SOCIAL_FEED are what a person drifts to, never what they drift from.
+/// SYSTEM, UNLOGGED and unclear time are not evidence at all.
+const ANCHOR_CATEGORIES: [&str; 4] = [
+    "FOCUS_WORK",
+    "REFERENCE",
+    "TASK_MANAGEMENT",
+    "COMMUNICATION",
+];
+
+/// The block's anchor: the work category ([`ANCHOR_CATEGORIES`]) holding the
+/// most confidently observed, closed time so far. Time in any other category
+/// never makes or moves the anchor however long it lasts, and until some work
+/// time has been observed there is none, and the gate makes no offer. Ties
+/// break on category name so the anchor cannot oscillate between equal
+/// candidates.
+fn work_anchor(observations: &[WorkBlockObservation]) -> Option<String> {
     let mut category_seconds = HashMap::<String, u32>::new();
-    for observation in observations.iter().filter(|o| is_confident_evidence(o)) {
+    for observation in observations.iter().filter(|o| {
+        is_confident_evidence(o)
+            && ANCHOR_CATEGORIES
+                .iter()
+                .any(|category| category.eq_ignore_ascii_case(&o.category))
+    }) {
         let Some(ended_at) = observation.ended_at else {
             continue;
         };
@@ -2525,7 +2569,7 @@ mod tests {
             .unwrap()
     }
 
-    /// Establishes DEEP_WORK as the anchor, then alternates away from it
+    /// Establishes FOCUS_WORK as the anchor, then alternates away from it
     /// inside the ten-minute window, and returns the observation that carried
     /// the drift offer, stopping the moment one fires.
     ///
@@ -2542,13 +2586,13 @@ mod tests {
     /// Stopping at the offer makes the fixture mean "a block that drifted into
     /// an offer" rather than "a block that drifted exactly four times".
     fn drift_into_offer(manager: &WorkBlockManager) -> Option<ObservationOutcome> {
-        observe(manager, "DEEP_WORK", 10);
+        observe(manager, "FOCUS_WORK", 10);
         let mut last = None;
         for (index, seconds) in (400..=520).step_by(20).enumerate() {
             let category = if index % 2 == 0 {
                 "COMMUNICATION"
             } else {
-                "DEEP_WORK"
+                "FOCUS_WORK"
             };
             let outcome = observe(manager, category, seconds);
             let carried_offer = outcome
@@ -2576,13 +2620,13 @@ mod tests {
         let block_id = active.block_id.unwrap();
         let mut offer = None;
         for (offset, category) in [
-            (10, "DEEP_WORK"),
+            (10, "FOCUS_WORK"),
             (400, "COMMUNICATION"),
-            (420, "DEEP_WORK"),
+            (420, "FOCUS_WORK"),
             (440, "COMMUNICATION"),
-            (460, "DEEP_WORK"),
+            (460, "FOCUS_WORK"),
             (480, "COMMUNICATION"),
-            (500, "DEEP_WORK"),
+            (500, "FOCUS_WORK"),
             (520, "COMMUNICATION"),
         ] {
             if let Some(outcome) = manager
@@ -2961,13 +3005,13 @@ mod tests {
         let block_id = active.block_id.unwrap();
         let mut delivered = None;
         for (offset, category) in [
-            (10, "DEEP_WORK"),
+            (10, "FOCUS_WORK"),
             (400, "COMMUNICATION"),
-            (420, "DEEP_WORK"),
+            (420, "FOCUS_WORK"),
             (440, "COMMUNICATION"),
-            (460, "DEEP_WORK"),
+            (460, "FOCUS_WORK"),
             (480, "COMMUNICATION"),
-            (500, "DEEP_WORK"),
+            (500, "FOCUS_WORK"),
             (520, "COMMUNICATION"),
         ] {
             if let Some(outcome) = manager
@@ -3009,7 +3053,7 @@ mod tests {
                 .entry(format!(
                     "{}|{}",
                     drift_title(seed),
-                    drift_body(seed, 4, "DEEP_WORK")
+                    drift_body(seed, 4, "FOCUS_WORK")
                 ))
                 .or_default() += 1;
         }
@@ -3046,7 +3090,7 @@ mod tests {
         let block_id = active.block_id.unwrap().to_string();
 
         // Four departures, all inside the three-minute warm-up, so the gate
-        // returns early every time and no offer is possible yet. DEEP_WORK
+        // returns early every time and no offer is possible yet. FOCUS_WORK
         // holds the longer dwell throughout and stays the anchor.
         //
         // Compressed from the original 60/120/180/240 spacing when the warm-up
@@ -3054,13 +3098,13 @@ mod tests {
         // departures land after the warm-up expires, so the gate opens mid-loop
         // and the test stops describing the case it is named for.
         for (category, seconds) in [
-            ("DEEP_WORK", 10),
+            ("FOCUS_WORK", 10),
             ("COMMUNICATION", 40),
-            ("DEEP_WORK", 50),
+            ("FOCUS_WORK", 50),
             ("COMMUNICATION", 80),
-            ("DEEP_WORK", 90),
+            ("FOCUS_WORK", 90),
             ("COMMUNICATION", 120),
-            ("DEEP_WORK", 130),
+            ("FOCUS_WORK", 130),
             ("COMMUNICATION", 170),
         ] {
             let outcome = observe(&manager, category, seconds);
@@ -3072,7 +3116,7 @@ mod tests {
 
         // Warm-up expired and the four switches are still inside the window,
         // but this observation is the return to the anchor: no offer.
-        let returned = observe(&manager, "DEEP_WORK", 200).unwrap();
+        let returned = observe(&manager, "FOCUS_WORK", 200).unwrap();
         assert!(
             returned.intervention.is_none(),
             "an offer fired on the observation that returned to the anchor"
@@ -3093,6 +3137,149 @@ mod tests {
             .unwrap()
             .expect("the departure offer is recorded");
         assert_eq!(recorded.offered_at, at(220));
+    }
+
+    /// A long drift never becomes the anchor, so coming back to work is not a
+    /// departure (drift policy v6, the founder's anchor rule of 2026-10-15).
+    ///
+    /// Five minutes of Xcode, fifteen of YouTube, then back and forth. While
+    /// the anchor was whichever category held the most time, YouTube became it
+    /// at the first return, every return to Xcode counted as a switch, and the
+    /// offer fired on the third return, naming passive consumption as the
+    /// work the person chose; going back to YouTube then closed it as
+    /// `returned`. The anchor is now the work category with the most time, so
+    /// it stays FOCUS_WORK: the returns are returns, and the offer waits for a
+    /// third departure and fires while the person is on YouTube.
+    #[test]
+    fn a_long_drift_never_becomes_the_anchor_so_returning_to_work_is_not_offered() {
+        let (manager, repo) = gate_manager(true, None);
+        let active = manager.start(request(3_000), at(0)).unwrap();
+        let block_id = active.block_id.unwrap().to_string();
+
+        for (category, seconds) in [
+            ("FOCUS_WORK", 10),
+            ("PASSIVE_CONSUMPTION", 300),
+            ("FOCUS_WORK", 1_200),
+            ("PASSIVE_CONSUMPTION", 1_250),
+            ("FOCUS_WORK", 1_300),
+            ("PASSIVE_CONSUMPTION", 1_350),
+            ("FOCUS_WORK", 1_450),
+        ] {
+            let outcome = observe(&manager, category, seconds).unwrap();
+            assert!(
+                outcome.intervention.is_none(),
+                "an offer fired on the {category} observation at t={seconds}"
+            );
+            if seconds >= 300 {
+                assert_eq!(
+                    outcome.snapshot.anchor_category.as_deref(),
+                    Some("FOCUS_WORK"),
+                    "the anchor moved off the work category at t={seconds}"
+                );
+            }
+        }
+        assert!(
+            repo.intervention(&block_id).unwrap().is_none(),
+            "an offer was recorded for a return to work"
+        );
+
+        let departed = observe(&manager, "PASSIVE_CONSUMPTION", 1_500).unwrap();
+        let offer = departed
+            .intervention
+            .expect("the third departure from the work anchor is an offer");
+        assert!(
+            offer.body.contains("focus work"),
+            "the offer names the work the person left: {}",
+            offer.body
+        );
+        let recorded = repo.intervention(&block_id).unwrap().unwrap();
+        assert_eq!(recorded.anchor_category, "FOCUS_WORK");
+        assert_eq!(recorded.offered_at, at(1_500));
+
+        // Every decision named the work category or no anchor at all.
+        for decision in repo.decisions(&block_id).unwrap() {
+            assert!(
+                matches!(
+                    decision.anchor_category.as_deref(),
+                    None | Some("FOCUS_WORK")
+                ),
+                "a decision was made against a {:?} anchor",
+                decision.anchor_category
+            );
+        }
+
+        // Going back to YouTube is not the nudge working; going back to work is.
+        observe(&manager, "PASSIVE_CONSUMPTION", 1_550);
+        assert_eq!(
+            repo.intervention(&block_id).unwrap().unwrap().outcome,
+            WorkBlockInterventionOutcome::Offered
+        );
+        observe(&manager, "FOCUS_WORK", 1_600);
+        assert_eq!(
+            repo.intervention(&block_id).unwrap().unwrap().outcome,
+            WorkBlockInterventionOutcome::Returned
+        );
+    }
+
+    /// A block that opens on passive content has no anchor until some work
+    /// time has been observed, so the gate never offers on switching between
+    /// non-work categories, however much of it there is. Each evaluation past
+    /// the warm-up records `abstained_no_anchor` with no anchor on the row.
+    #[test]
+    fn a_block_that_starts_on_passive_content_has_no_anchor_and_no_offer() {
+        let (manager, repo) = gate_manager(true, None);
+        let active = manager.start(request(3_600), at(0)).unwrap();
+        let block_id = active.block_id.unwrap().to_string();
+
+        observe(&manager, "PASSIVE_CONSUMPTION", 10);
+        for (seconds, category) in (400_i64..)
+            .step_by(20)
+            .zip(["SOCIAL_FEED", "PASSIVE_CONSUMPTION"].into_iter().cycle())
+            .take(12)
+        {
+            let outcome = observe(&manager, category, seconds).unwrap();
+            assert!(
+                outcome.intervention.is_none(),
+                "an offer fired with no work time observed, at t={seconds}"
+            );
+            assert_eq!(outcome.snapshot.anchor_category, None);
+        }
+        assert!(repo.intervention(&block_id).unwrap().is_none());
+
+        let decisions = repo.decisions(&block_id).unwrap();
+        assert_eq!(decisions[0].gate_verdict, GateVerdict::AbstainedWarmup);
+        assert!(decisions.len() > 1);
+        for decision in &decisions[1..] {
+            assert_eq!(decision.gate_verdict, GateVerdict::AbstainedNoAnchor);
+            assert_eq!(decision.anchor_category, None);
+            assert_eq!(decision.switch_count, 0);
+        }
+    }
+
+    /// The first closed stretch of work time becomes the anchor, even when far
+    /// more time went to non-work categories before it, and departures from it
+    /// count from then on.
+    #[test]
+    fn work_time_after_a_passive_start_becomes_the_anchor() {
+        let (manager, _repo) = manager_with_repo();
+        manager.start(request(3_600), at(0)).unwrap();
+        observe(&manager, "PASSIVE_CONSUMPTION", 10);
+        let opened = observe(&manager, "REFERENCE", 900).unwrap();
+        assert_eq!(opened.snapshot.anchor_category, None);
+        let away = observe(&manager, "SOCIAL_FEED", 960).unwrap();
+        assert_eq!(away.snapshot.anchor_category.as_deref(), Some("REFERENCE"));
+
+        let mut offer = None;
+        for (category, seconds) in [
+            ("REFERENCE", 980),
+            ("PASSIVE_CONSUMPTION", 1_000),
+            ("REFERENCE", 1_020),
+            ("SOCIAL_FEED", 1_040),
+        ] {
+            offer = offer.or(observe(&manager, category, seconds).unwrap().intervention);
+        }
+        let offer = offer.expect("three departures from the work anchor are an offer");
+        assert!(offer.body.contains("reference"), "{}", offer.body);
     }
 
     // Removed with scope 4's integration: four tests of an in-block
@@ -3202,7 +3389,7 @@ mod tests {
         // `DRIFT_MIN_SWITCHES`, and the next recalibration should not have to
         // find every "4" scattered through the assertions.
         assert!(intervention.body.contains(&format!(
-            "{DRIFT_MIN_SWITCHES} switches away from deep work"
+            "{DRIFT_MIN_SWITCHES} switches away from focus work"
         )));
         assert!(intervention.body.contains("last 10 minutes"));
 
@@ -3210,7 +3397,7 @@ mod tests {
             .intervention(&block_id.to_string())
             .unwrap()
             .expect("the offer is persisted so its outcome can be observed");
-        assert_eq!(recorded.anchor_category, "DEEP_WORK");
+        assert_eq!(recorded.anchor_category, "FOCUS_WORK");
         assert_eq!(recorded.switch_count, DRIFT_MIN_SWITCHES);
         assert_eq!(recorded.outcome, WorkBlockInterventionOutcome::Offered);
     }
@@ -3224,7 +3411,7 @@ mod tests {
         // Keep drifting well past the gate; the cap holds.
         for (index, seconds) in [560, 580, 600, 620, 640].iter().enumerate() {
             let category = if index % 2 == 0 {
-                "DEEP_WORK"
+                "FOCUS_WORK"
             } else {
                 "COMMUNICATION"
             };
@@ -3250,7 +3437,7 @@ mod tests {
         let block_id = active.block_id.unwrap().to_string();
         drift_into_offer(&manager);
 
-        observe(&manager, "DEEP_WORK", 560);
+        observe(&manager, "FOCUS_WORK", 560);
 
         let recorded = repo.intervention(&block_id).unwrap().unwrap();
         assert_eq!(recorded.outcome, WorkBlockInterventionOutcome::Returned);
@@ -3273,7 +3460,7 @@ mod tests {
 
         let outcome = manager
             .observe_safe_category(
-                "DEEP_WORK",
+                "FOCUS_WORK",
                 ClassificationStatus::Classified,
                 ClassificationConfidence::Low,
                 at(560),
@@ -3317,7 +3504,7 @@ mod tests {
         let active = manager.start(request(3600), at(0)).unwrap();
         let block_id = active.block_id.unwrap();
         drift_into_offer(&manager);
-        observe(&manager, "DEEP_WORK", 560);
+        observe(&manager, "FOCUS_WORK", 560);
 
         manager.end(block_id, at(900)).unwrap();
 
@@ -3431,10 +3618,10 @@ mod tests {
             .active_intervention
             .expect("an unanswered offer renders in-app");
         assert_eq!(card.action_id, DRIFT_ACTION_ID);
-        assert_eq!(card.anchor_category, "DEEP_WORK");
+        assert_eq!(card.anchor_category, "FOCUS_WORK");
         assert_eq!(card.switch_count, DRIFT_MIN_SWITCHES);
         assert!(card.body.contains(&format!(
-            "{DRIFT_MIN_SWITCHES} switches away from deep work"
+            "{DRIFT_MIN_SWITCHES} switches away from focus work"
         )));
 
         let answered = manager
@@ -3448,12 +3635,12 @@ mod tests {
         let (manager, _repo) = manager_with_repo();
         manager.start(request(3600), at(0)).unwrap();
         // Same switching shape, but inside the three-minute warm-up.
-        observe(&manager, "DEEP_WORK", 10);
+        observe(&manager, "FOCUS_WORK", 10);
         for (index, seconds) in [40, 60, 80, 100, 120, 140, 160].iter().enumerate() {
             let category = if index % 2 == 0 {
                 "COMMUNICATION"
             } else {
-                "DEEP_WORK"
+                "FOCUS_WORK"
             };
             let outcome = observe(&manager, category, *seconds).unwrap();
             assert!(outcome.intervention.is_none());
@@ -3479,7 +3666,7 @@ mod tests {
     fn weak_evidence_abstains_rather_than_guessing() {
         let (manager, _repo) = manager_with_repo();
         manager.start(request(3600), at(0)).unwrap();
-        observe(&manager, "DEEP_WORK", 10);
+        observe(&manager, "FOCUS_WORK", 10);
         // Ambiguous, low-confidence switches are not evidence of anything.
         for seconds in [400, 440, 480, 520] {
             let outcome = manager
@@ -3504,7 +3691,7 @@ mod tests {
             demotion_disclosure_copy(),
             deterministic_explanation(&ExplanationSelection {
                 claim_id: DRIFT_EXPLANATION_CLAIM_ID,
-                anchor_category: "DEEP_WORK".into(),
+                anchor_category: "FOCUS_WORK".into(),
                 switch_count: 5,
                 window_minutes: 10,
             }),
@@ -3513,7 +3700,7 @@ mod tests {
         // variant 3 would otherwise reach users and pass this test.
         for seed in 0..64u64 {
             registry.push(drift_title(seed));
-            registry.push(drift_body(seed, 4, "DEEP_WORK"));
+            registry.push(drift_body(seed, 4, "FOCUS_WORK"));
         }
         for (completed_under_dnd, held_count) in
             [(true, 0), (true, 1), (true, 3), (false, 1), (false, 3)]
@@ -3546,7 +3733,7 @@ mod tests {
                 registry.push(status_line(
                     phase,
                     intensity,
-                    Some("DEEP_WORK"),
+                    Some("FOCUS_WORK"),
                     ClassificationStatus::Classified,
                 ));
                 registry.push(status_line(
@@ -3879,7 +4066,7 @@ mod tests {
     fn confidence_flapping_on_one_departure_is_not_four_switches() {
         let manager = manager();
         manager.start(request(3_600), at(0)).unwrap();
-        observe(&manager, "DEEP_WORK", 10);
+        observe(&manager, "FOCUS_WORK", 10);
 
         // One real departure after the warm-up gate. The classifier then
         // flaps confidence on the same category; every flap appends a new
@@ -4308,7 +4495,7 @@ mod tests {
         let (manager, _repo, focus) = manager_with_focus();
         focus.set_active(at(0), at(400));
         manager.start(request(300), at(0)).unwrap();
-        observe(&manager, "DEEP_WORK", 10);
+        observe(&manager, "FOCUS_WORK", 10);
 
         let completed = manager.request_state(at(301)).unwrap();
         assert_eq!(completed.phase, WorkBlockPhase::Completed);
@@ -4381,16 +4568,16 @@ mod tests {
         // DND turns off at t=600. Gate-clearing switching resumes inside the
         // base cooldown (until 520 + 900 = 1420): still nothing delivered —
         // the held decision is not released late when DND lifts.
-        observe(&manager, "DEEP_WORK", 540);
+        observe(&manager, "FOCUS_WORK", 540);
         for (category, seconds) in [
             ("COMMUNICATION", 700),
-            ("DEEP_WORK", 720),
+            ("FOCUS_WORK", 720),
             ("COMMUNICATION", 740),
-            ("DEEP_WORK", 760),
+            ("FOCUS_WORK", 760),
             ("COMMUNICATION", 780),
-            ("DEEP_WORK", 800),
+            ("FOCUS_WORK", 800),
             ("COMMUNICATION", 820),
-            ("DEEP_WORK", 840),
+            ("FOCUS_WORK", 840),
         ] {
             let outcome = observe(&manager, category, seconds).unwrap();
             assert!(
@@ -4411,11 +4598,11 @@ mod tests {
         // suppression neither shortened a wait nor raised salience, and that
         // the held decision is never rewritten into a delivery.
         observe(&manager, "COMMUNICATION", 1_430);
-        observe(&manager, "DEEP_WORK", 1_440);
+        observe(&manager, "FOCUS_WORK", 1_440);
         observe(&manager, "COMMUNICATION", 1_450);
-        observe(&manager, "DEEP_WORK", 1_460);
+        observe(&manager, "FOCUS_WORK", 1_460);
         observe(&manager, "COMMUNICATION", 1_470);
-        observe(&manager, "DEEP_WORK", 1_480);
+        observe(&manager, "FOCUS_WORK", 1_480);
         observe(&manager, "COMMUNICATION", 1_490);
 
         let held = repo
@@ -4757,7 +4944,7 @@ mod tests {
             &WorkBlockIntervention {
                 offered_at,
                 action_id: DRIFT_ACTION_ID.to_owned(),
-                anchor_category: "DEEP_WORK".into(),
+                anchor_category: "FOCUS_WORK".into(),
                 switch_count: 4,
                 window_seconds: 600,
                 outcome,
@@ -4784,7 +4971,7 @@ mod tests {
         // Warmup: the block has not run long enough to have an anchor.
         let (manager, repo) = gate_manager(logging, None);
         manager.start(request(3_600), at(0)).unwrap();
-        observe(&manager, "DEEP_WORK", 10);
+        observe(&manager, "FOCUS_WORK", 10);
         scenarios.push((
             "warmup",
             GateVerdict::AbstainedWarmup,
@@ -4795,7 +4982,7 @@ mod tests {
         // Remaining: past warmup, but under two minutes are left.
         let (manager, repo) = gate_manager(logging, None);
         manager.start(request(400), at(0)).unwrap();
-        observe(&manager, "DEEP_WORK", 310);
+        observe(&manager, "FOCUS_WORK", 310);
         scenarios.push((
             "remaining",
             GateVerdict::AbstainedRemaining,
@@ -4820,7 +5007,7 @@ mod tests {
         let (manager, repo) = gate_manager(logging, None);
         drift_block(&manager, 0, Some(InterventionResponse::NotHelpful));
         manager.start(request(3_600), at(600)).unwrap();
-        observe(&manager, "DEEP_WORK", 610);
+        observe(&manager, "FOCUS_WORK", 610);
         observe(&manager, "COMMUNICATION", 910);
         scenarios.push((
             "backoff",
@@ -4844,7 +5031,7 @@ mod tests {
         // Minimum switches: one departure is not four.
         let (manager, repo) = gate_manager(logging, None);
         manager.start(request(3_600), at(0)).unwrap();
-        observe(&manager, "DEEP_WORK", 10);
+        observe(&manager, "FOCUS_WORK", 10);
         observe(&manager, "COMMUNICATION", 400);
         scenarios.push((
             "min_switches",
@@ -4862,18 +5049,18 @@ mod tests {
         // spacing every departure lands after warm-up expires, so the gate
         // opens on the second one and the scenario reaches `Offered` instead of
         // the verdict it exists to produce. Departures are now at 50/100/150,
-        // all inside warm-up, and DEEP_WORK keeps the dominant dwell
+        // all inside warm-up, and FOCUS_WORK keeps the dominant dwell
         // (120s against 60s) so the anchor does not flip to COMMUNICATION.
         let (manager, repo) = gate_manager(logging, None);
         manager.start(request(3_600), at(0)).unwrap();
         for (offset, category) in [
-            (10, "DEEP_WORK"),
+            (10, "FOCUS_WORK"),
             (50, "COMMUNICATION"),
-            (60, "DEEP_WORK"),
+            (60, "FOCUS_WORK"),
             (100, "COMMUNICATION"),
-            (110, "DEEP_WORK"),
+            (110, "FOCUS_WORK"),
             (150, "COMMUNICATION"),
-            (190, "DEEP_WORK"),
+            (190, "FOCUS_WORK"),
         ] {
             observe(&manager, category, offset);
         }
@@ -4994,7 +5181,7 @@ mod tests {
                 occurred_at: at(0),
                 block_id: Some("pre-existing-block".into()),
                 policy_version: DRIFT_POLICY_VERSION,
-                anchor_category: Some("DEEP_WORK".into()),
+                anchor_category: Some("FOCUS_WORK".into()),
                 switch_count: 4,
                 elapsed_seconds: 600,
                 remaining_seconds: 900,
@@ -5063,7 +5250,7 @@ mod tests {
     fn abstentions_are_recorded_without_producing_an_intervention_row() {
         let (manager, repo) = gate_manager(true, None);
         manager.start(request(3_600), at(0)).unwrap();
-        observe(&manager, "DEEP_WORK", 10);
+        observe(&manager, "FOCUS_WORK", 10);
         observe(&manager, "COMMUNICATION", 400);
 
         let block_id = repo.latest().unwrap().unwrap().block_id;
@@ -5079,7 +5266,7 @@ mod tests {
         // What the log knew, not what could be reconstructed later: the warmup
         // abstention happened before the gate had computed an anchor.
         assert_eq!(decisions[0].anchor_category, None);
-        assert_eq!(decisions[1].anchor_category.as_deref(), Some("DEEP_WORK"));
+        assert_eq!(decisions[1].anchor_category.as_deref(), Some("FOCUS_WORK"));
         assert_eq!(decisions[1].switch_count, 1);
     }
 
@@ -5154,11 +5341,11 @@ mod tests {
         assert_eq!(repo.decisions("block-for-replay").unwrap().len(), 1);
     }
 
-    /// `anchor_category` on the snapshot is the drift gate's anchor: the
+    /// `anchor_category` on the snapshot is the drift gate's anchor: the work
     /// category with the most confidently observed, closed time. It is absent
-    /// until one confident observation has closed, follows the dominant
-    /// category as time accumulates, survives a pause, and is withdrawn once
-    /// the block is finished.
+    /// until one confident observation of work has closed, follows the leading
+    /// work category as time accumulates, survives a pause, and is withdrawn
+    /// once the block is finished.
     #[test]
     fn the_snapshot_carries_the_gate_anchor_only_while_the_block_is_live() {
         let (manager, _repo) = manager_with_repo();
@@ -5168,45 +5355,50 @@ mod tests {
 
         // The open observation is not evidence yet: the gate counts closed
         // time only, and so does the snapshot.
-        let first = observe(&manager, "DEEP_WORK", 10).unwrap();
+        let first = observe(&manager, "FOCUS_WORK", 10).unwrap();
         assert_eq!(first.snapshot.anchor_category, None);
 
         let away = observe(&manager, "COMMUNICATION", 400).unwrap();
-        assert_eq!(away.snapshot.anchor_category.as_deref(), Some("DEEP_WORK"));
+        assert_eq!(away.snapshot.anchor_category.as_deref(), Some("FOCUS_WORK"));
         assert_eq!(
             away.snapshot.current_category.as_deref(),
             Some("COMMUNICATION")
         );
 
-        let back = observe(&manager, "DEEP_WORK", 450).unwrap();
+        let back = observe(&manager, "FOCUS_WORK", 450).unwrap();
         assert_eq!(
             back.snapshot.anchor_category,
             back.snapshot.current_category
         );
 
         let polled = manager.request_state(at(500)).unwrap();
-        assert_eq!(polled.anchor_category.as_deref(), Some("DEEP_WORK"));
+        assert_eq!(polled.anchor_category.as_deref(), Some("FOCUS_WORK"));
 
         let paused = manager.pause(block_id, at(520)).unwrap();
         assert_eq!(paused.phase, WorkBlockPhase::Paused);
-        assert_eq!(paused.anchor_category.as_deref(), Some("DEEP_WORK"));
+        assert_eq!(paused.anchor_category.as_deref(), Some("FOCUS_WORK"));
 
         let ended = manager.end(block_id, at(530)).unwrap();
         assert_eq!(ended.phase, WorkBlockPhase::Abandoned);
         assert_eq!(ended.anchor_category, None);
     }
 
-    /// The anchor is whichever category holds the most time, so it moves when
-    /// another category overtakes it — exactly as the gate's does.
+    /// The anchor is whichever work category holds the most time, so it moves
+    /// when another work category overtakes it, exactly as the gate's does.
+    /// A non-work category never does: see
+    /// `a_long_drift_never_becomes_the_anchor_so_returning_to_work_is_not_offered`.
     #[test]
-    fn the_snapshot_anchor_follows_the_dominant_category() {
+    fn the_snapshot_anchor_follows_the_work_category_with_the_most_time() {
         let (manager, _repo) = manager_with_repo();
         manager.start(request(3_600), at(0)).unwrap();
-        observe(&manager, "DEEP_WORK", 10);
+        observe(&manager, "FOCUS_WORK", 10);
         let early = observe(&manager, "COMMUNICATION", 100).unwrap();
-        assert_eq!(early.snapshot.anchor_category.as_deref(), Some("DEEP_WORK"));
+        assert_eq!(
+            early.snapshot.anchor_category.as_deref(),
+            Some("FOCUS_WORK")
+        );
 
-        let overtaken = observe(&manager, "DEEP_WORK", 400).unwrap();
+        let overtaken = observe(&manager, "FOCUS_WORK", 400).unwrap();
         assert_eq!(
             overtaken.snapshot.anchor_category.as_deref(),
             Some("COMMUNICATION")
@@ -5221,7 +5413,7 @@ mod tests {
         manager.start(request(3_600), at(0)).unwrap();
         manager
             .observe_safe_category(
-                "DEEP_WORK",
+                "FOCUS_WORK",
                 ClassificationStatus::Classified,
                 ClassificationConfidence::Low,
                 at(10),

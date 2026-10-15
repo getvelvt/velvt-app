@@ -45,7 +45,7 @@ That floor enforces exactly two rules, and traces must respect both:
 A trace whose offsets START AFTER the block start and INCREASE MONOTONICALLY
 is therefore recorded at its true timestamps, through the real path, at any
 speed. A backdated or shuffled trace collapses to a single instant: every
-dwell computes to zero, `dominant_category` finds no anchor, and the gate
+dwell computes to zero, `work_anchor` finds no anchor, and the gate
 correctly abstains — producing a silent, meaningless pass.
 
 So the emitter below refuses to write a non-monotonic trace, and suite A
@@ -101,6 +101,11 @@ TAXONOMY = (
 # `is_confident_evidence` in `work_block/mod.rs` drops these three categories
 # whatever their status, so they can never anchor a block or count as a switch.
 NON_EVIDENCE_CATEGORIES = ("SYSTEM", "UNLOGGED", "UNCLASSIFIED")
+
+# `ANCHOR_CATEGORIES` in `work_block/mod.rs` (drift policy v6, 2026-10-15): the
+# work categories, the only ones that can anchor a block. Time in any other
+# category, however long, never makes or moves the anchor.
+ANCHOR_CATEGORIES = ("FOCUS_WORK", "REFERENCE", "TASK_MANAGEMENT", "COMMUNICATION")
 
 # ---------------------------------------------------------------------------
 # ASSUMPTIONS. Every number below is an assumption, not a measurement, except
@@ -278,7 +283,7 @@ def suite_a() -> list[dict]:
     # ---- planted drift the gate must detect --------------------------------
 
     # Anchor dwell 10 -> 400 gives FOCUS_WORK 390 confident seconds before any
-    # departure, so `dominant_category` cannot pick anything else. Four
+    # departure, so `work_anchor` cannot pick anything else. Four
     # departures land inside one 600s window, elapsed at the last one is 520
     # (>= 300), remaining is 3080 (>= 120), and the last confident observation
     # is not the anchor.
@@ -303,7 +308,8 @@ def suite_a() -> list[dict]:
         "PLANTED",
         [observation(10, "REFERENCE")] + _drift_burst(400, "REFERENCE", ["SOCIAL_FEED"] * 4),
         True,
-        "the anchor is whatever holds the most confident time, not a fixed category",
+        "the anchor is whichever work category holds the most confident time, "
+        "not a fixed one",
     ))
 
     traces.append(single_block_trace(
@@ -460,8 +466,8 @@ def suite_a() -> list[dict]:
     ))
 
     # A slow rotation through five categories. An anchor exists — the gate
-    # still picks whichever category holds the most confident seconds — but no
-    # 600s window holds four departures from it, so nothing fires.
+    # still picks whichever work category holds the most confident seconds —
+    # but no 600s window holds four departures from it, so nothing fires.
     traces.append(single_block_trace(
         "A-NEAR-SLOW-ROTATION",
         "NEAR_MISS",
@@ -474,9 +480,57 @@ def suite_a() -> list[dict]:
         f"DRIFT_MIN_SWITCHES={DRIFT_MIN_SWITCHES} inside one window",
     ))
 
-    # Nothing here is confident evidence, so `dominant_category` returns None
-    # and the gate abstains before it ever counts a switch. This is the one
-    # trace where the abstention is genuinely "I have no anchor".
+    # Five minutes of work, fifteen of passive video, then back to work three
+    # times with two short trips to the video between. Through drift policy v5
+    # the video held the most time and became the anchor at the first return,
+    # each return to work counted as a departure, and the offer fired on the
+    # third, as the person came back. Under v6 only a work category anchors
+    # (ANCHOR_CATEGORIES), so the returns are returns, and the two trips are
+    # under the switch floor.
+    _long_drift = [observation(t, category) for t, category in [
+        (10, "FOCUS_WORK"), (300, "PASSIVE_CONSUMPTION"), (1200, "FOCUS_WORK"),
+        (1250, "PASSIVE_CONSUMPTION"), (1300, "FOCUS_WORK"),
+        (1350, "PASSIVE_CONSUMPTION"), (1450, "FOCUS_WORK"),
+    ]]
+    traces.append(single_block_trace(
+        "A-NEAR-RETURNS-AFTER-A-LONG-DRIFT",
+        "NEAR_MISS",
+        list(_long_drift),
+        False,
+        "fifteen minutes of PASSIVE_CONSUMPTION never becomes the anchor, so each "
+        "return to FOCUS_WORK is a return, not a departure, and the two trips back "
+        f"are below DRIFT_MIN_SWITCHES={DRIFT_MIN_SWITCHES}",
+        planned_duration_seconds=3000,
+    ))
+
+    # The evidence is not lost: one more trip away is the third departure from
+    # the work anchor, and the offer fires there, while the person is away.
+    traces.append(single_block_trace(
+        "A-PLANT-DEPARTURE-AFTER-A-LONG-DRIFT",
+        "PLANTED",
+        _long_drift + [observation(1500, "PASSIVE_CONSUMPTION")],
+        True,
+        "the third departure from the FOCUS_WORK anchor inside 600s, made after a "
+        "long drift that never became the anchor",
+        planned_duration_seconds=3000,
+    ))
+
+    # Fast switching between a video and a feed, with no work at all. Through
+    # v5 the video held the most time and anchored the block, and this fired.
+    # With no time in a work category there is nothing to drift from.
+    traces.append(single_block_trace(
+        "A-NEAR-NO-WORK-TIME",
+        "NEAR_MISS",
+        [observation(10, "PASSIVE_CONSUMPTION")]
+        + _drift_burst(400, "PASSIVE_CONSUMPTION", ["SOCIAL_FEED"] * 6),
+        False,
+        "no time in a work category "
+        f"({', '.join(ANCHOR_CATEGORIES)}), so no anchor, however fast the "
+        "switching between non-work categories",
+    ))
+
+    # Nothing here is confident evidence, so `work_anchor` returns None and the
+    # gate abstains before it ever counts a switch.
     traces.append(single_block_trace(
         "A-NEAR-NO-EVIDENCE",
         "NEAR_MISS",
@@ -485,7 +539,7 @@ def suite_a() -> list[dict]:
             (550, "UNLOGGED"), (600, "SYSTEM"), (650, "UNLOGGED"), (700, "SYSTEM"),
         ]],
         False,
-        "no confident evidence at all; dominant_category finds no anchor",
+        "no confident evidence at all; work_anchor finds no anchor",
     ))
 
     # ---- the trap, demonstrated rather than described ----------------------

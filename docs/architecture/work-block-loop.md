@@ -143,6 +143,26 @@ open, which is why the version changed. `tests/drift_offer_live_helper.rs`
 replays one block with the departure on a site nothing names, on a seeded
 site, and on a site whose name is read.
 
+Drift policy version 6 (`DRIFT_POLICY_VERSION = 6`, no protocol change) keeps
+every constant, branch and timing of version 5 and changes two things. The
+evidence from two sites (2026-10-07): a YouTube tab is decided by its video
+title (a learning marker is REFERENCE, an entertainment marker
+PASSIVE_CONSUMPTION, both at medium confidence, and a title with neither or
+both is the ambiguous prior, never evidence), and TikTok's web app is
+SOCIAL_FEED. And the anchor (the founder's rule of 2026-10-15): it is the work
+category (`ANCHOR_CATEGORIES`: FOCUS_WORK, REFERENCE, TASK_MANAGEMENT,
+COMMUNICATION) with the most confident, closed time in the block. Through
+version 5 it was whichever category had the most, so a long stretch of YouTube
+or a feed became the anchor, each return to work counted as a departure, and
+the offer fired as the person came back, naming the drift as the work they
+chose; a return to the drift then closed the offer as `returned`. Under
+version 6, PASSIVE_CONSUMPTION and SOCIAL_FEED time never makes or moves the
+anchor, and a block with no confident work time yet has no anchor: the gate
+records `abstained_no_anchor` and makes no offer. The snapshot's
+`anchor_category` is the same value. The end-of-block result is not the gate:
+its evidence category, switch-away and return counts are still measured from
+whichever category had the most confident time.
+
 An observation row's end is the next row's start. At a boundary — pause or
 sleep, a service restart, or the end of the block — there is no next row, and
 the dwell the user is in has not been measured yet. The open row is therefore

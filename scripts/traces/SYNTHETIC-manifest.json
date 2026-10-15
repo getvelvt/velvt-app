@@ -36,8 +36,8 @@
   "files": {
     "SYNTHETIC-suite-a-recovery.jsonl": {
       "acceptance": "every trace's observed offer matches its expect_offer field",
-      "sha256": "4fc387c3f8c173dbe6e2a8287a39a5ccf0fe9840d5e61876d83e7377130d24a7",
-      "traces": 17
+      "sha256": "1b734de531e907743a216ae6a91c3897bda929cd3249f33dcc22150ae47d3053",
+      "traces": 20
     },
     "SYNTHETIC-suite-b-null-compressed.jsonl": {
       "acceptance": "at least one offer, in aggregate. Not scored per trace.",

@@ -228,6 +228,21 @@ WARMUP_EXCLUSION_SECONDS = 180
 # either was open. Rows from v1 to v6 are never pooled, and every cohort result
 # uses policy_version 6 only. [Pending: the founder appends the v6 note to
 # traction-summary.md before any v6 build reaches a tester.]
+#
+# Note, dated 2026-10-15, part of the same v6 (the founder's anchor rule, made
+# before any v6 build was distributed): the anchor on a decision row is the
+# work category (FOCUS_WORK, REFERENCE, TASK_MANAGEMENT or COMMUNICATION) with
+# the most confident, closed time in the block, never PASSIVE_CONSUMPTION or
+# SOCIAL_FEED. Through v5 it was any category with the most such time, so after
+# a long drift the anchor became the drift: the return to work was the
+# departure, `sustained_anchor_900s` scored time back at work as a failure and
+# time on the drift as a success, and a return to the drift closed the offer
+# as `returned`. A v6 block with no work time yet has no anchor and gets no
+# offer: past the warm-up it records `abstained_no_anchor`, with no anchor and
+# so no outcome row. The labels are computed exactly as before, against the
+# anchor the row records, and an eligible (offered) point always has a work
+# anchor. [Pending: the v6 note in traction-summary.md describes this rule
+# before any v6 build reaches a tester.]
 ANALYSED_POLICY_VERSION = 6
 
 # A `work_block_intervention` row has no policy column. It takes the

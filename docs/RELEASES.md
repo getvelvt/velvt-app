@@ -3,12 +3,16 @@
 Every notarized Velvt build that has been released, and the source it came
 from, as far as that source can still be identified. Ten builds have been
 notarized and released: 1.0.0, 1.0.1, 1.0.3, 1.0.4, 1.0.6, 1.0.7, 1.0.8,
-1.0.9, 1.0.10 and 1.0.11. There was no 1.0.2 and no 1.0.5.
+1.0.9, 1.0.10 and 1.0.11. There was no 1.0.2 and no 1.0.5. Two later builds,
+1.0.12 (build 18) and 1.0.13 (build 19), were built, installed on the
+founder's Macs and tagged `v1.0.12` and `v1.0.13` in the maintainer's clone,
+but have no rows in the table yet (see "Pending: 1.0.14" below).
 
-Source tags exist for **v1.0.0, v1.0.1, v1.0.9 and v1.0.11 only**. The source
-of 1.0.10 was not preserved, and the source of 1.0.3 through 1.0.7 was never
-recorded. No release has been shown to rebuild byte for byte from its tag, so
-this ledger does not claim that any release is reproducible.
+Of the ten in the table, source tags exist for **v1.0.0, v1.0.1, v1.0.9 and
+v1.0.11 only**. The source of 1.0.10 was not preserved, and the source of
+1.0.3 through 1.0.7 was never recorded. No release has been shown to rebuild
+byte for byte from its tag, so this ledger does not claim that any release is
+reproducible.
 
 **Recipients, all releases: the founder's own Macs only.** There are two
 installs, both on the founder's Macs, and no external installs. No
@@ -96,6 +100,15 @@ Before cutting it:
 3. The v6 pre-registration, which describes the work-category anchor, must be
    appended to `pitch-deck-inputs/evidence/traction-summary.md` before the
    build is cut. It is not there yet.
+4. Before any tester gets 1.0.14, make the privacy copy say what v6 reads. v6
+   decides a YouTube tab's category on the Mac from words in its video title
+   (#78). The velvt-web privacy page from velvt-web #18
+   (`fix/privacy-permission-list`,
+   `apps/web/components/marketing/privacy-page.tsx`) says Velvt does not read
+   what you "type, click or watch" on a page. Rewrite that sentence to say
+   that, on the Mac, a YouTube tab's category is decided from its video
+   title, and bump the page's "Last updated" date. `PRIVACY.md` must say the
+   same; on `develop` it does not mention the video title yet.
 
 ## Cutting the next release
 

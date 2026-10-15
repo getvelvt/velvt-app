@@ -303,6 +303,7 @@ public actor UnixSocketIPCClient: IPCClientProtocol {
 actor UnixSocketTransport: IPCTransportProtocol {
     private let peerCheck: SocketPeerCheck
     private var connection: UnixSocketConnection?
+    private var pendingConnect: AbandonableBlockingCall<UnixSocketConnection>?
     private var bufferedData = Data()
 
     init(peerCheck: SocketPeerCheck = .forThisBuild) {
@@ -310,15 +311,38 @@ actor UnixSocketTransport: IPCTransportProtocol {
     }
 
     deinit {
+        pendingConnect?.abandon()
         connection?.close()
     }
 
+    /// Connects and checks the peer. Cancelling the task, or `close()` while
+    /// this waits, ends it at once with `connectionClosed`, as cancelling an
+    /// `NWConnection` did, even if the blocking connect or check underneath has
+    /// not returned yet; whatever it returns later is closed.
     func connect(to path: String) async throws {
         guard FileManager.default.fileExists(atPath: path) else {
             throw IPCError.socket(code: ENOENT)
         }
         connection?.close()
-        connection = try await UnixSocketConnection.connect(to: path, checkingPeerWith: peerCheck)
+        connection = nil
+        let peerCheck = peerCheck
+        let attempt = AbandonableBlockingCall<UnixSocketConnection>(discarding: { $0.close() })
+        pendingConnect = attempt
+        defer {
+            if pendingConnect === attempt {
+                pendingConnect = nil
+            }
+        }
+        let connected = try await attempt.run {
+            try UnixSocketConnection.connectBlocking(to: path, checkingPeerWith: peerCheck)
+        }
+        // `close()` can run while this waits for its result, after the result
+        // is ready but before this resumes, which abandoning cannot catch.
+        guard pendingConnect === attempt else {
+            connected.close()
+            throw IPCError.connectionClosed
+        }
+        connection = connected
     }
 
     func send(frame: Data) async throws {
@@ -365,9 +389,76 @@ actor UnixSocketTransport: IPCTransportProtocol {
     }
 
     func close() async {
+        pendingConnect?.abandon()
+        pendingConnect = nil
         connection?.close()
         connection = nil
         bufferedData.removeAll(keepingCapacity: false)
+    }
+}
+
+/// Runs blocking work on a global queue, out of reach of task cancellation,
+/// and lets the caller stop waiting for it.
+///
+/// Cancelling the calling task, or `abandon()`, ends `run` at once with
+/// `IPCError.connectionClosed`. The work cannot be interrupted, so it runs to
+/// the end, and a value nobody is waiting for any more goes to `discard`.
+final class AbandonableBlockingCall<Value: Sendable>: @unchecked Sendable {
+    private let lock = NSLock()
+    private let discard: @Sendable (Value) -> Void
+    private var continuation: CheckedContinuation<Value, Error>?
+    private var isAbandoned = false
+
+    init(discarding discard: @escaping @Sendable (Value) -> Void) {
+        self.discard = discard
+    }
+
+    func run(_ work: @escaping @Sendable () throws -> Value) async throws -> Value {
+        try await withTaskCancellationHandler(
+            operation: {
+                try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Value, Error>) in
+                    let abandoned = lock.withLock { () -> Bool in
+                        guard !isAbandoned else { return true }
+                        self.continuation = continuation
+                        return false
+                    }
+                    guard !abandoned else {
+                        continuation.resume(throwing: IPCError.connectionClosed)
+                        return
+                    }
+                    DispatchQueue.global(qos: .userInitiated).async { [self] in
+                        finish(Result { try work() })
+                    }
+                }
+            },
+            onCancel: {
+                abandon()
+            })
+    }
+
+    /// Stops waiting: `run` throws `connectionClosed` now, or at once if it
+    /// has not started.
+    func abandon() {
+        let waiting = lock.withLock { () -> CheckedContinuation<Value, Error>? in
+            isAbandoned = true
+            defer { continuation = nil }
+            return continuation
+        }
+        waiting?.resume(throwing: IPCError.connectionClosed)
+    }
+
+    private func finish(_ result: Result<Value, Error>) {
+        let waiting = lock.withLock { () -> CheckedContinuation<Value, Error>? in
+            defer { continuation = nil }
+            return continuation
+        }
+        guard let waiting else {
+            if case .success(let value) = result {
+                discard(value)
+            }
+            return
+        }
+        waiting.resume(with: result)
     }
 }
 
@@ -398,21 +489,11 @@ final class UnixSocketConnection: @unchecked Sendable {
     }
 
     /// Connects to the socket at `path` and checks the process serving it.
+    /// Blocks; `UnixSocketTransport.connect` runs it off the cooperative pool.
     ///
     /// A refused connection fails at once with `ECONNREFUSED`, so the client's
     /// fast retry cadence covers a helper that has not bound the socket yet.
-    static func connect(
-        to path: String,
-        checkingPeerWith peerCheck: SocketPeerCheck
-    ) async throws -> UnixSocketConnection {
-        try await withCheckedThrowingContinuation { continuation in
-            DispatchQueue.global(qos: .userInitiated).async {
-                continuation.resume(with: Result { try connectBlocking(to: path, checkingPeerWith: peerCheck) })
-            }
-        }
-    }
-
-    private static func connectBlocking(
+    static func connectBlocking(
         to path: String,
         checkingPeerWith peerCheck: SocketPeerCheck
     ) throws -> UnixSocketConnection {
@@ -456,7 +537,7 @@ final class UnixSocketConnection: @unchecked Sendable {
                 try peerCheck.verifyPeer(ofSocket: descriptor)
             } catch IPCError.peerRejected(let code) {
                 SocketPeerCheckLog.shared.error(
-                    "IPC peer failed the code-signature check; connection dropped. error_code=ipc_peer_rejected code=\(code, privacy: .public)"
+                    "IPC peer is not the signed helper this app started; connection dropped. error_code=ipc_peer_rejected code=\(code, privacy: .public)"
                 )
                 throw IPCError.peerRejected(code: code)
             }

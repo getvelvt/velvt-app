@@ -212,21 +212,25 @@ impl<R: super::MessageRouter + Clone + Send + 'static> IpcTransport for TokioUni
                     let Some(stream) = accept else {
                         break;
                     };
-                    // Before the push queue is acquired or a byte is written:
-                    // a refused peer never sees `server_hello`.
-                    let Some(stream) = admit_peer(&self.peer_policy, stream).await else {
-                        continue;
-                    };
                     let max_errors = self.max_errors;
                     let auth_states = self.auth_states.clone();
                     let write_timeout = self.write_timeout;
                     let router = self.router.clone();
                     let conn_shutdown = self.shutdown.clone();
+                    // Each connection's peer is checked in that connection's
+                    // own task, so a slow check holds up nobody else's accept.
+                    // It still comes before the push queue is acquired or a
+                    // byte is written: a refused peer never sees
+                    // `server_hello`.
+                    let peer_policy = std::sync::Arc::clone(&self.peer_policy);
 
                     if let Some(tracker) = &self.reconnect_tracker {
-                        let queue = tracker.acquire();
                         let tracker_clone = std::sync::Arc::clone(tracker);
                         join_set.spawn(async move {
+                            let Some(stream) = admit_peer(&peer_policy, stream).await else {
+                                return;
+                            };
+                            let queue = tracker_clone.acquire();
                             let result = if let Some(srx) = conn_shutdown {
                                 super::serve_connection_with_push_queue_and_shutdown(
                                     stream, router, max_errors, auth_states,
@@ -253,6 +257,9 @@ impl<R: super::MessageRouter + Clone + Send + 'static> IpcTransport for TokioUni
                         let privacy_alerts =
                             self.privacy_alerts.as_ref().map(|s| s.subscribe());
                         join_set.spawn(async move {
+                            let Some(stream) = admit_peer(&peer_policy, stream).await else {
+                                return;
+                            };
                             let result = if let Some(pq) = push_queue {
                                 if let Some(srx) = conn_shutdown {
                                     super::serve_connection_with_push_queue_and_shutdown(
@@ -302,8 +309,9 @@ impl<R: super::MessageRouter + Clone + Send + 'static> IpcTransport for TokioUni
     }
 }
 
-/// Returns the stream if the process that connected passes `policy`, and
-/// drops it otherwise.
+/// Returns the stream if the process that connected passes `policy` (the app
+/// that launched this helper, with the app's signature, in a Release build),
+/// and drops it otherwise.
 ///
 /// The Security.framework calls block, so they run on the blocking pool. The
 /// stream travels with them, so it cannot be closed (and its descriptor number
@@ -349,7 +357,7 @@ async fn admit_peer(
             tracing::error!(
                 error_code = refusal.code(),
                 status = refusal.status(),
-                "IPC peer failed the code-signature check; connection dropped"
+                "IPC peer is not the signed app that launched this helper; connection dropped"
             );
             None
         }

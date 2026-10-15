@@ -449,6 +449,10 @@ echo "  codesign: valid"
 echo "  hardened runtime: enabled"
 echo "  socket peer check: the helper requires $peer_requirement"
 echo "  socket peer check: the app requires $helper_requirement"
+if [[ "$peer_requirement" != anchor* ]]; then
+  # --mode production never gets here: it refuses a build without a team.
+  echo "WARNING: this build has no team, so each side's socket peer requirement is an identifier, which any ad-hoc signature can claim. Only the helper's pin to its parent and the app's to its child protect the socket. Keep this build on this Mac." >&2
+fi
 echo "  required architectures: $required_archs"
 echo "  verification mode: $mode"
 if [[ -n "$dmg_path" ]]; then

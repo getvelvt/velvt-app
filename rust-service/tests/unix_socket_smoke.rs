@@ -201,26 +201,29 @@ async fn unix_socket_accepts_two_simultaneous_clients() {
 }
 
 /// PR A0 (docs/architecture/personal-vault-and-devices.md §9.3): a Release
-/// helper serves only a peer whose code signature passes, and closes any other
-/// before writing it a single byte, so a refused peer never sees `server_hello`
-/// or anything pushed after it.
+/// helper serves only a peer that passes, and closes any other before writing
+/// it a single byte, so a refused peer never sees `server_hello` or anything
+/// pushed after it.
 ///
 /// The test binary stands in for an unsigned peer: it is linker-signed ad hoc,
 /// with no team and an identifier that is not the app's. macOS will not run
 /// truly unsigned code on Apple Silicon, so ad hoc is what any program a
-/// process running as the person could build for itself looks like.
+/// process running as the person could build for itself looks like. It is
+/// pinned as the expected process, so the refusal is the signature's.
 #[cfg(target_os = "macos")]
 #[tokio::test]
 async fn a_peer_that_is_not_the_signed_app_is_closed_before_server_hello() {
-    use velvt_service::ipc::peer::{requirement_for, PeerPolicy, APP_IDENTIFIER};
+    use velvt_service::ipc::peer::{requirement_for, PeerPolicy, PeerProcess, APP_IDENTIFIER};
 
     if !filesystem_sockets_available() {
         return;
     }
     let socket_dir = SocketDir::new();
     let socket_path = socket_dir.socket_path("unsigned-peer");
-    let release_policy =
-        PeerPolicy::Require(requirement_for(APP_IDENTIFIER, Some("ABCDE12345")).unwrap());
+    let release_policy = PeerPolicy::Require {
+        requirement: requirement_for(APP_IDENTIFIER, Some("ABCDE12345")).unwrap(),
+        process: PeerProcess::Id(std::process::id()),
+    };
     let transport =
         TokioUnixTransport::new(socket_path.clone(), 3).with_peer_policy(release_policy);
     let server = tokio::spawn(async move { transport.run().await });
@@ -249,14 +252,14 @@ async fn a_peer_that_is_not_the_signed_app_is_closed_before_server_hello() {
 }
 
 /// A refusal ends only that connection: the helper goes on serving. Here a
-/// separate process (`/usr/bin/nc`, signed by Apple, not by Velvt) is refused
-/// and sees nothing, then a peer that satisfies the requirement completes the
-/// handshake on the same listener.
+/// separate process (`/usr/bin/nc`, signed by Apple, not by Velvt, and not the
+/// expected process) is refused and sees nothing, then a peer that passes
+/// completes the handshake on the same listener.
 #[cfg(target_os = "macos")]
 #[tokio::test]
 async fn a_refused_process_sees_nothing_and_the_next_peer_is_served() {
     use std::io::Read;
-    use velvt_service::ipc::peer::{signing_identity_of_this_process, PeerPolicy};
+    use velvt_service::ipc::peer::{signing_identity_of_this_process, PeerPolicy, PeerProcess};
 
     let netcat = std::path::Path::new("/usr/bin/nc");
     if !filesystem_sockets_available() || !netcat.exists() {
@@ -268,16 +271,13 @@ async fn a_refused_process_sees_nothing_and_the_next_peer_is_served() {
         .unwrap()
         .identifier
         .expect("the test binary is linker-signed");
-    let transport = TokioUnixTransport::new(socket_path.clone(), 3)
-        .with_peer_policy(PeerPolicy::Require(format!("identifier \"{this_binary}\"")));
+    let transport =
+        TokioUnixTransport::new(socket_path.clone(), 3).with_peer_policy(PeerPolicy::Require {
+            requirement: format!("identifier \"{this_binary}\""),
+            process: PeerProcess::Id(std::process::id()),
+        });
     let server = tokio::spawn(async move { transport.run().await });
-    tokio::time::timeout(Duration::from_secs(2), async {
-        while !socket_path.exists() {
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .expect("timed out waiting for IPC socket");
+    wait_for_socket(&socket_path).await;
 
     // nc with stdin at EOF stays connected until the other end closes, so its
     // exit is the helper's refusal.
@@ -310,4 +310,104 @@ async fn a_refused_process_sees_nothing_and_the_next_peer_is_served() {
     let writer = connect_and_handshake(&socket_path).await;
     drop(writer);
     server.abort();
+}
+
+/// The attack from the review of PR #88, end to end. A process opens a burst
+/// of connections, forks a child that keeps them all and reads whatever
+/// arrives, and execs a binary that satisfies the code requirement
+/// (`/bin/sleep` against `identifier "com.apple.sleep"`). With the Release pin
+/// to the helper's parent, every connection is refused before a byte is
+/// written, and the child receives nothing.
+///
+/// Under a signature-only check, whether a connection is served here depends
+/// on whether its token is read after the exec: the review's run, with the
+/// check inside the accept loop, served 28 of 64. Checked in parallel, nearly
+/// every token is read before the exec, so this test alone would rarely catch
+/// a regression to signature-only. `ipc::peer`'s
+/// `a_peer_that_execs_a_signed_binary_after_connecting_is_refused` reads the
+/// token after the exec every time and fails without the pin.
+#[cfg(target_os = "macos")]
+#[tokio::test]
+async fn a_burst_of_connections_followed_by_fork_and_exec_is_refused() {
+    use velvt_service::ipc::peer::{PeerPolicy, PeerProcess};
+
+    if !filesystem_sockets_available() || !zsh_with_sockets() {
+        return;
+    }
+    let socket_dir = SocketDir::new();
+    let socket_path = socket_dir.socket_path("fork-exec");
+    let received_path = socket_dir.0.join("received");
+    let finished_path = socket_dir.0.join("finished");
+    let transport =
+        TokioUnixTransport::new(socket_path.clone(), 3).with_peer_policy(PeerPolicy::Require {
+            requirement: "anchor apple and identifier \"com.apple.sleep\"".to_owned(),
+            process: PeerProcess::Parent,
+        });
+    let server = tokio::spawn(async move { transport.run().await });
+    wait_for_socket(&socket_path).await;
+
+    // $1 the socket, $2 where the child writes what it read, $3 written when
+    // it has read every connection to its end.
+    let mut attacker = std::process::Command::new("/bin/zsh")
+        .args([
+            "-fc",
+            r#"zmodload zsh/net/socket || exit 3
+               fds=()
+               repeat 16 { zsocket "$1" || exit 4; fds+=($REPLY) }
+               ( for fd in $fds; do cat <&$fd; done > "$2"; print > "$3" ) &!
+               exec /bin/sleep 10"#,
+            "zsh",
+        ])
+        .arg(&socket_path)
+        .arg(&received_path)
+        .arg(&finished_path)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while !finished_path.exists() && std::time::Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let finished = finished_path.exists();
+    let received = std::fs::read(&received_path).unwrap_or_default();
+    attacker.kill().ok();
+    attacker.wait().ok();
+    server.abort();
+
+    assert!(
+        finished,
+        "a connection was left open to the forked child (served, not refused)"
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&received),
+        "",
+        "the forked child was sent something"
+    );
+}
+
+#[cfg(target_os = "macos")]
+async fn wait_for_socket(socket_path: &std::path::Path) {
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while !socket_path.exists() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("timed out waiting for IPC socket");
+}
+
+/// `/bin/zsh` with its socket module, which every supported macOS ships.
+#[cfg(target_os = "macos")]
+fn zsh_with_sockets() -> bool {
+    let available = std::process::Command::new("/bin/zsh")
+        .args(["-fc", "zmodload zsh/net/socket"])
+        .status()
+        .is_ok_and(|status| status.success());
+    if !available {
+        eprintln!("SKIP: /bin/zsh with zsh/net/socket is not available");
+    }
+    available
 }

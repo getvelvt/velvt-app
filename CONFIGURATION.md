@@ -188,25 +188,32 @@ Apple Silicon with Rosetta 2, and both targets check for it before they build
 
 ### Socket peer check
 
-In a Release build the app and the helper each check the other's code
-signature on the socket before anything crosses it, so another process
-running as the same person can neither pose as the helper nor connect to it
-(`docs/architecture/ipc-contract.md`, "Peer Code-Signature Check"). The app
-requires a helper signed `com.velvt.service`, and the helper an app signed
-`com.velvt.mac`, each by the team in its own signature, or by identifier alone
-when it has no team (an ad-hoc local build). Debug builds skip both checks.
+In a Release build the app and the helper each check the other on the socket
+before anything crosses it: the helper serves only the app that launched it,
+the app uses only the helper it launched, and each checks the other's code
+signature. Another process running as the same person can then neither pose as
+the helper nor connect to it, even by execing a signed binary after it has
+connected (`docs/architecture/ipc-contract.md`, "Peer Code-Signature Check").
+The app requires a helper signed `com.velvt.service`, and the helper an app
+signed `com.velvt.mac`, each by the team in its own signature, or by identifier
+alone when it has no team (an ad-hoc local build, where that part
+authenticates nothing and only the launch pin protects the socket). Debug
+builds skip both checks.
 
 - `scripts/sign_release.sh` signs the helper with
   `--identifier com.velvt.service`. The app keeps its bundle identifier.
 - `velvt-service --peer-requirement` prints `none` (a Debug app's helper) or
-  the requirement it holds the app to.
+  the code requirement it holds the app to. The pin to its parent comes with
+  any requirement and is not printed.
 - `scripts/verify_release.sh` refuses a Release app whose helper says `none`,
   whose app or helper is signed under another identifier, or whose app or
   helper does not satisfy the requirement the other side checks
-  (`codesign --test-requirement`). Its summary prints both requirements.
+  (`codesign --test-requirement`). Its summary prints both requirements, and
+  `--mode local` warns when they name an identifier only.
 
 A refused connection logs an error code only and the app shows the service
-as unavailable while it keeps reconnecting.
+as unavailable while it keeps reconnecting. A helper left running after its
+app exited serves nobody; the next launch reclaims the socket from it.
 
 If the helper becomes unavailable after launch, Settings offers **Restart Local
 Service**. This sends a graceful termination, waits briefly, and starts the

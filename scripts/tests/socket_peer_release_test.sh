@@ -141,6 +141,8 @@ grep -qF "socket peer check: the helper requires $ad_hoc_app_requirement" <<<"$o
   fail "the summary does not state what the helper requires: $output"
 grep -qF 'socket peer check: the app requires identifier "com.velvt.service"' <<<"$output" ||
   fail "the summary does not state what the app requires: $output"
+grep -qF "WARNING: this build has no team, so each side's socket peer requirement is an identifier" <<<"$output" ||
+  fail "an ad-hoc pair verified without saying its peer requirements authenticate nothing: $output"
 
 # --- A helper under codesign's default name: the app would refuse it ------------
 

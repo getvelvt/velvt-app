@@ -863,47 +863,86 @@ Rust configuration overrides:
 
 The socket's directory is owner-only (`0700`), which keeps other users out but
 not another process running as the same person. In a Release build each end
-therefore checks the other's code signature before anything crosses the
-socket (design: `docs/architecture/personal-vault-and-devices.md` §9.3, from
-velvt-app #87; PR A0).
-The tokens that cross the socket today get the same protection.
+therefore checks the other before anything crosses the socket (design:
+`docs/architecture/personal-vault-and-devices.md` §9.3, from velvt-app #87;
+PR A0). The tokens that cross the socket today get the same protection.
 
-- **Rust checks Swift.** On accept, before `server_hello` and before the
-  connection takes the push queue, `ipc::transport` reads the peer's audit
-  token (`getsockopt(SOL_LOCAL, LOCAL_PEERTOKEN)`), finds its code
+Each end asks two questions of one audit token, in this order:
+
+1. **Is it the right process?** The helper serves only its parent, and the
+   app uses only its own child. The app starts the helper itself
+   (`ServiceProcessLauncher`), so each is the other's only candidate, and no
+   other process can become either one's parent or child.
+2. **Is it signed right?** `SecCodeCheckValidity` against a requirement built
+   from the checking side's own signature (below).
+
+The code signature alone is not enough, which is why the first question
+exists. `LOCAL_PEERTOKEN` describes whatever image the peer's process ID runs
+when it is read, so a process could connect (or bind the socket path), fork a
+child that keeps the socket, and exec a genuinely signed binary, such as the
+app's own executable: the signature check passes on the new image while the
+child reads what crosses. The review of PR #88 demonstrated it both ways. The
+token carries the process's pid version, which changes on every fork and exec,
+and `SecCodeCheckValidity` fails if the process no longer has it, so the
+process that passed question 1 is the one whose signature passed question 2.
+
+- **Rust checks Swift.** On accept, in the connection's own task, before
+  `server_hello` and before the connection takes the push queue,
+  `ipc::transport` reads the peer's audit token
+  (`getsockopt(SOL_LOCAL, LOCAL_PEERTOKEN)`), requires its process ID
+  (`audit_token_to_pid`) to be the helper's parent
+  (`std::os::unix::process::parent_id`, and not launchd), finds its code
   (`SecCodeCopyGuestWithAttributes` with `kSecGuestAttributeAudit`) and checks
   it with `SecCodeCheckValidity` against
   `anchor apple generic and certificate leaf[subject.OU] = "<TEAM_ID>" and identifier "com.velvt.mac"`
   (`rust-service/src/ipc/peer.rs`, a small hand-written FFI to
-  Security.framework and CoreFoundation; no crate).
+  Security.framework, CoreFoundation and libbsm; no crate). Checks run in
+  parallel, so one slow check holds up no other connection.
 - **Swift checks Rust.** After `connect`, before reading `server_hello`, the
-  app makes the same check on the process serving the socket against
-  `identifier "com.velvt.service"` and the same team
+  app reads the token of the process serving the socket, requires it to be its
+  own child (`proc_pidinfo` `pbi_ppid` equal to `getpid()`), and makes the same
+  signature check against `identifier "com.velvt.service"` and the same team
   (`swift-client/Sources/VelvtMac/IPC/SocketPeerCheck.swift`). The client
   owns its BSD socket for this, rather than going through `NWConnection`,
   which never exposes the descriptor; a second connection made only to check
-  could reach a different process.
+  could reach a different process. Cancelling the connect, or closing the
+  transport during it, returns at once even while the blocking connect or
+  check underneath is still running; its result is closed when it arrives.
 - **The team** is read from each side's own signature at launch. A build
   without one (an ad-hoc `make package-release` build, which never leaves the
-  Mac that built it) requires the identifier alone. `verify_release.sh
+  Mac that built it) requires the identifier alone. That part then
+  authenticates nothing, since any ad-hoc signature can claim an identifier,
+  and only the parent and child pin protects the socket;
+  `verify_release.sh --mode local` warns as much. `verify_release.sh
   --mode production` refuses any build without a Developer ID team, so every
   build a tester gets pins it.
 - **Debug builds skip both checks.** Swift skips under `#if DEBUG`. The helper
   checks only when `build_rust_helper.sh` built it for a Release app
   (`VELVT_PEER_SIGNATURE_CHECK=enforce`, from `VELVT_DISTRIBUTABLE=YES`); a
   Debug app's helper, `cargo build` and `cargo test` skip it.
-  `velvt-service --peer-requirement` prints `none` or the requirement it
-  holds the app to.
+  `velvt-service --peer-requirement` prints `none` or the code requirement it
+  holds the app to; the pin to its parent comes with any requirement.
 - **A failed check** drops the connection and logs an error code only
-  (Rust: `error_code=ipc_peer_signature_rejected` and the `OSStatus`, or
+  (Rust: `error_code=ipc_peer_unexpected_process`, `ipc_peer_parent_exited`
+  for an orphaned helper, `ipc_peer_signature_rejected` and the `OSStatus`, or
   `ipc_peer_token_unavailable` and the `errno`; Swift: `ipc_peer_rejected` and
-  the code). Nothing about the refused process is logged. The refused peer
-  is sent nothing. The app treats the refusal as a transport failure
-  (`IPCError.peerRejected`): it keeps reconnecting with backoff and shows the
-  service as unavailable, and on the first dial it reclaims the socket from
-  an orphaned helper of its own, as for a version mismatch (below), because a
-  helper whose executable was replaced by an update fails the check
-  (`errSecCSStaticCodeChanged`) before it can answer with its version.
+  the code, `EPERM` for a process that is not its child). Nothing about the
+  refused process is logged. The refused peer is sent nothing. The app treats
+  the refusal as a transport failure (`IPCError.peerRejected`): it keeps
+  reconnecting with backoff and shows the service as unavailable.
+- **Orphans.** A helper whose app has exited (launchd adopted it) serves
+  nobody, and the next app refuses it because it is not that app's child. On
+  the first dial the app reclaims the socket from such an orphan of its own,
+  as for a version mismatch (below). Before this check, an orphan of the same
+  version was used as it was; now it is always replaced. An orphan the app
+  cannot claim (one started from a bundle at another path) stays refused until
+  it exits.
+- **What it does not cover.** A process that can run code inside the signed
+  app or helper themselves, or one with administrator rights. An ordinary
+  process running as the person cannot: `verify_release.sh` requires the
+  hardened runtime on both and refuses `get-task-allow` in the app, and the
+  Release entitlements (`swift-client/Configs/Release.entitlements`) are
+  empty, so library validation is on and `DYLD_` variables are ignored.
 - **The release scripts** carry the names: `sign_release.sh` signs the helper
   with `--identifier com.velvt.service` (codesign would otherwise name it
   after its file), and `verify_release.sh` refuses a Release app whose helper
@@ -931,9 +970,10 @@ attempts to connect:
 Rust must never recursively delete the socket parent directory.
 
 In a Release build the check's own connection is refused by the live helper's
-peer check (it is not the app), and the live helper logs
-`ipc_peer_signature_rejected` for it. The connection still succeeds at the
-socket level, which is all the check needs.
+peer check (it is not the app that launched that helper), and the live helper
+logs `ipc_peer_unexpected_process` for it, or `ipc_peer_parent_exited` if it
+is an orphan. The connection still succeeds at the socket level, which is all
+the check needs.
 
 ### Reconnect and Buffering
 

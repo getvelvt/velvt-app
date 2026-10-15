@@ -103,6 +103,9 @@ pub struct SyncSnapshot {
     /// Whether "Enter a Code" may be shown. Never in a state where the server
     /// could be steering the person to type an attacker's code (§6.1).
     pub offers_code_entry: bool,
+    /// The copy is at 2,000 live rules and this Mac's last write left some of
+    /// its own out (§4.1). The status line says so; no rule is named.
+    pub rules_over_cap: bool,
 }
 
 pub struct SyncEngine {
@@ -143,8 +146,12 @@ struct Session {
     /// under it, so its item is kept, and a 404 lets this Mac try the create
     /// again with the same key rather than leave it waiting on itself.
     pending_create: Option<VaultKey>,
+    /// Holds the vault's requests after a 412 storm or a 429, never the
+    /// device list.
     backoff_until_ms: Option<i64>,
     last_synced_ms: Option<i64>,
+    /// This Mac's last write had rules the copy had no room for (§4.1).
+    rules_over_cap: bool,
     /// A line that outlives the row it describes ("Sync was turned off from
     /// another of your Macs.").
     line: Option<&'static str>,
@@ -170,6 +177,7 @@ impl Session {
             pending_create: None,
             backoff_until_ms: None,
             last_synced_ms: None,
+            rules_over_cap: false,
             line: None,
         }
     }
@@ -219,6 +227,7 @@ impl Session {
         self.working = None;
         self.newer = None;
         self.clock = None;
+        self.rules_over_cap = false;
     }
 
     /// A Mac's name in the open copy, for a notice that names it.
@@ -1114,10 +1123,16 @@ impl SyncEngine {
         if !session.record.as_ref().is_some_and(|record| record.enabled) {
             return;
         }
-        if !turning_on && session.backoff_until_ms.is_some_and(|until| now < until) {
-            return;
+        let backing_off = !turning_on && session.backoff_until_ms.is_some_and(|until| now < until);
+        if !backing_off {
+            let _ = self.pass_steps(session, notices, now, turning_on).await;
         }
-        let _ = self.pass_steps(session, notices, now, turning_on).await;
+        // §10.4: with sync on, every pass lists the account's devices, in
+        // whatever state the copy is (waiting for a key, paused, read-only,
+        // missing, reset, backing off), so no state hides a new sign-in.
+        if lists_devices(session) {
+            self.refresh_devices(session, notices, now).await;
+        }
         self.deps
             .routing
             .set_daily_insight(self.daily_insight(session));
@@ -1322,6 +1337,7 @@ impl SyncEngine {
                     );
                 }
                 session.drop_copy();
+                let pending_create = session.pending_create.as_ref().map(VaultKey::key_id);
                 match new_vault {
                     Some(new) if inventory.holds_live(new.key_id) => {
                         self.load_key(session, new.key_id).await?;
@@ -1339,10 +1355,14 @@ impl SyncEngine {
                     }
                     // [Set Up Sync] on a Mac already showing the reset: §5.5's
                     // one exception, an item the verified reset names, does
-                    // not block creating the new vault.
-                    None if turning_on
-                        && state_before == SyncState::ResetCompleted
-                        && inventory.live().all(|held| held.key_id == reset_key) =>
+                    // not block creating the new vault. Nor does the item of
+                    // this Mac's own create that got no answer or was
+                    // refused: that create is sent again under its key.
+                    None if (pending_create.is_some()
+                        || (turning_on && state_before == SyncState::ResetCompleted))
+                        && inventory.live().all(|held| {
+                            held.key_id == reset_key || Some(held.key_id) == pending_create
+                        }) =>
                     {
                         self.create(session, notices, now).await
                     }
@@ -1446,8 +1466,7 @@ impl SyncEngine {
 
     // --- The copy ----------------------------------------------------------------
 
-    /// Fetches, verifies and opens the copy, writes this Mac's registers, and
-    /// lists the account's devices.
+    /// Fetches, verifies and opens the copy, and writes this Mac's registers.
     async fn sync_copy(&self, session: &mut Session, notices: &mut NoticeQueue, now: i64) -> Step {
         let trusted = session.anchor().trusted.ok_or(Stop)?;
         self.load_key(session, trusted.key_id).await?;
@@ -1458,7 +1477,6 @@ impl SyncEngine {
             return Ok(());
         }
         self.write(session, notices, true).await?;
-        self.refresh_devices(session, notices, now).await;
         let state = if session.pending_reset.is_some() {
             SyncState::ResetPending
         } else {
@@ -1666,12 +1684,12 @@ impl SyncEngine {
                 mirror::write_own_entry(&mut working, own, clock, now)?;
             }
             mirror::mirror_settings(&mut working, &settings, clock, now)?;
-            mirror::mirror_rule_links(&mut working, &links);
-            Ok::<_, mirror::MirrorError>(())
+            Ok::<_, mirror::MirrorError>(mirror::mirror_rule_links(&mut working, &links))
         })();
         match result {
-            Ok(()) => {
+            Ok(over_cap) => {
                 session.working = Some(working);
+                session.rules_over_cap = !over_cap.is_empty();
                 Ok(())
             }
             Err(mirror::MirrorError::Document(doc::DocumentError::TooManyLiveDevices)) => {
@@ -1705,6 +1723,9 @@ impl SyncEngine {
         {
             session.set_state(SyncState::Error, Some("too_many_macs"));
             return Err(Stop);
+        }
+        if !merged.rules_over_cap.is_empty() {
+            session.rules_over_cap = true;
         }
         let mut document = merged.document;
         collect_garbage(&mut document, now as u64);
@@ -1818,20 +1839,36 @@ impl SyncEngine {
             session.set_state(SyncState::Error, Some("no_device_id"));
             return Err(Stop);
         };
-        let key = match session.pending_create.take() {
-            Some(key) => Ok(key),
-            None => VaultKey::generate(),
-        };
-        let (Ok(key), Ok(salt)) = (key, PersonSalt::generate()) else {
+        let Ok(salt) = PersonSalt::generate() else {
             session.set_state(SyncState::Error, Some("random_unavailable"));
             return Err(Stop);
+        };
+        let retrying = session.pending_create.is_some();
+        let key = match session.pending_create.take() {
+            Some(key) => key,
+            None => match VaultKey::generate() {
+                Ok(key) => key,
+                Err(_) => {
+                    session.set_state(SyncState::Error, Some("random_unavailable"));
+                    return Err(Stop);
+                }
+            },
         };
         // Keychain first, server second (§5.5): no vault ever exists whose key
         // was not saved.
         if let Err(error) = self.deps.keys.store(&session.user, &key, None).await {
+            if retrying {
+                session.pending_create = Some(key);
+            }
             session.set_state(SyncState::Error, Some(error.code()));
             return Err(Stop);
         }
+        // From here the item is kept whatever happens, as for a create whose
+        // answer never arrives: §5.5 deletes an item only on its closed list,
+        // and of a create's own item only once it lost the race (409
+        // `vault_exists`, the vault under another key). The next pass sends
+        // the create again under this key, or finds the vault made under it.
+
         // Rules mirrored under another vault's salt name nothing in this one.
         let _ = self.deps.repo.clear_rule_links();
         let mut document = PrefsDocument::new(salt);
@@ -1862,7 +1899,7 @@ impl SyncEngine {
         {
             Some(sealed) => sealed,
             None => {
-                let _ = self.deps.keys.delete(&session.user, trusted.key_id).await;
+                session.pending_create = Some(key);
                 session.set_state(SyncState::Error, Some("document_write_refused"));
                 return Err(Stop);
             }
@@ -1886,6 +1923,7 @@ impl SyncEngine {
         let (Ok(create_signature), Ok(put_signature)) =
             (key.sign_statement(&create), key.sign_statement(&put))
         else {
+            session.pending_create = Some(key);
             session.set_state(SyncState::Error, Some("signing_failed"));
             return Err(Stop);
         };
@@ -1912,7 +1950,6 @@ impl SyncEngine {
                 session.base = Some(document.clone());
                 session.working = Some(document);
                 session.joined_via = JoinedVia::Created;
-                self.refresh_devices(session, notices, now).await;
                 session.set_state(SyncState::Syncing, None);
                 session.last_synced_ms = Some(now);
                 Ok(())
@@ -1954,7 +1991,10 @@ impl SyncEngine {
                 }
             }
             Ok(_) => {
-                let _ = self.deps.keys.delete(&session.user, trusted.key_id).await;
+                // Refused: no vault was made under this key, and velvt-core
+                // did not say one exists under another (409 `vault_exists`).
+                // No race was lost, so the item is no orphan (§5.5).
+                session.pending_create = Some(key);
                 session.set_state(SyncState::Error, Some("vault_create_refused"));
                 Err(Stop)
             }
@@ -1968,9 +2008,18 @@ impl SyncEngine {
         }
     }
 
+    /// `GET /v1/devices`: the new-sign-in diff (§10.4) and the device list.
     async fn refresh_devices(&self, session: &mut Session, notices: &mut NoticeQueue, now: i64) {
-        let Ok(listed) = self.api.list_devices(&session.user).await else {
-            return;
+        let listed = match self.api.list_devices(&session.user).await {
+            Ok(listed) => listed,
+            // The session ended, as on a vault request.
+            Err(error @ (ApiError::DeviceRevoked | ApiError::AccountDeleted)) => {
+                self.api_failure(session, notices, error).await;
+                return;
+            }
+            // The list waits for the next pass. It never changes the copy's
+            // state, and a list it cannot get is not a vault backoff.
+            Err(_) => return,
         };
         let known = self.deps.repo.known_devices().unwrap_or_default();
         let diff = devices::diff(&known, &listed, now);
@@ -2052,6 +2101,7 @@ impl SyncEngine {
             last_synced_at_ms: session.last_synced_ms,
             error_code,
             offers_code_entry: state.offers_code_entry(),
+            rules_over_cap: session.rules_over_cap,
         }
     }
 
@@ -2065,6 +2115,20 @@ impl SyncEngine {
         if let Some(line) = session.line {
             return line.to_owned();
         }
+        let line = self.state_line(session, state, held, error_code);
+        if session.rules_over_cap && matches!(state, SyncState::Syncing | SyncState::ResetPending) {
+            return format!("{line} {RULES_OVER_CAP_LINE}");
+        }
+        line
+    }
+
+    fn state_line(
+        &self,
+        session: &Session,
+        state: SyncState,
+        held: &HeldSummary,
+        error_code: Option<&str>,
+    ) -> String {
         let time = self.time();
         match state {
             SyncState::Off => "Sync is off on this Mac.".into(),
@@ -2139,6 +2203,21 @@ enum Adoption {
 /// `vault_state.last_error` when the row could not be saved.
 const STATE_NOT_SAVED: &str = "state_not_saved";
 
+/// Added to the status line while this Mac's rules wait for room in the copy
+/// (§4.1, `doc::MAX_LIVE_RULES`). It names no rule.
+const RULES_OVER_CAP_LINE: &str =
+    "Your synced copy is full at 2,000 categories, so new ones from this Mac stay on this Mac.";
+
+/// Whether a pass lists the account's devices: sync is on here and the
+/// session stands. A removal or a deleted account ends the session
+/// (`enabled` goes), and a request refused for want of a sign-in would be
+/// refused again.
+fn lists_devices(session: &Session) -> bool {
+    session.record.as_ref().is_some_and(|record| {
+        record.enabled && record.last_error.as_deref() != Some(ApiError::NeedsReauth.code())
+    })
+}
+
 /// A uniform fraction for jitter. Not a secret, so `SystemRandom` is plenty.
 fn random_fraction() -> f32 {
     use ring::rand::SecureRandom;
@@ -2159,5 +2238,6 @@ fn not_signed_in() -> SyncSnapshot {
         last_synced_at_ms: None,
         error_code: Some("not_signed_in".into()),
         offers_code_entry: false,
+        rules_over_cap: false,
     }
 }

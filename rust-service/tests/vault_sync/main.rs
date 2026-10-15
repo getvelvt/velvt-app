@@ -11,6 +11,7 @@
 mod fake_core;
 mod harness;
 mod malicious;
+mod sign_ins;
 mod two_macs;
 
 use velvt_service::vault::sync::SyncState;

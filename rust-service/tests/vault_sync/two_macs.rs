@@ -1082,3 +1082,180 @@ async fn a_create_whose_answer_was_lost_keeps_its_key_and_opens_its_vault() {
     assert_eq!(held.len(), 1, "its own key, kept");
     assert_eq!(studio.row().unwrap().key_id, Some(held[0].key_id.to_hex()));
 }
+
+fn posted_creates(core: &FakeCore) -> usize {
+    core.received()
+        .iter()
+        .filter(|request| request.method == "POST" && request.path == "/v1/vault")
+        .count()
+}
+
+/// §5.5: a create velvt-core refuses (anything but 409 `vault_exists`) leaves
+/// no vault under any key, so its new item lost no race and is not an
+/// orphan. It is kept, like the item of a create that got no answer, and the
+/// next pass sends the create again under the same key.
+#[tokio::test]
+async fn a_refused_create_keeps_its_new_key_and_sends_it_again() {
+    for (status, code) in [(422, "vault_blob_invalid"), (413, "vault_too_large")] {
+        let (core, clock) = setup();
+        let person = user("person");
+        let icloud = MemoryKeyStore::new();
+        let studio = Mac::new(&core, &clock, &person, &icloud, 1).await;
+        core.lie(move |received, _| {
+            (received.method == "POST" && received.path == "/v1/vault")
+                .then(|| super::fake_core::error(status, code, None))
+        });
+        let refused = studio.turn_on("Studio Mac").await;
+        assert_state(&refused, SyncState::Error);
+        assert_eq!(refused.error_code.as_deref(), Some("vault_create_refused"));
+        let held = icloud.held(&person);
+        assert_eq!(held.len(), 1, "{status}: the new item is kept");
+        assert!(held[0].retired_by.is_none());
+
+        core.tell_the_truth();
+        clock.advance(10 * MINUTE);
+        let created = studio.sync().await;
+        assert_state(&created, SyncState::Syncing);
+        assert_eq!(posted_creates(&core), 2, "sent again");
+        assert_eq!(icloud.held(&person), held, "under the same key");
+        assert_eq!(studio.row().unwrap().key_id, Some(held[0].key_id.to_hex()));
+        assert_eq!(stored_version(&core, person.as_str()), Some(1));
+    }
+}
+
+/// The same when the first copy cannot be built or sealed: here the Mac's
+/// clock is before any time an HLC can carry. Nothing is sent, the item
+/// stays, and the create goes once the copy can be made.
+#[tokio::test]
+async fn a_create_whose_copy_cannot_be_sealed_keeps_its_new_key() {
+    let before_hlc = velvt_service::vault::merge::Hlc::MIN_WALL_MS as i64 - MINUTE;
+    let clock = Clock::at(before_hlc);
+    let core = FakeCore::new(clock.clone());
+    let person = user("person");
+    let icloud = MemoryKeyStore::new();
+    let studio = Mac::new(&core, &clock, &person, &icloud, 1).await;
+    let refused = studio.turn_on("Studio Mac").await;
+    assert_state(&refused, SyncState::Error);
+    assert_eq!(
+        refused.error_code.as_deref(),
+        Some("document_write_refused")
+    );
+    assert_eq!(posted_creates(&core), 0);
+    let held = icloud.held(&person);
+    assert_eq!(held.len(), 1, "the new item is kept");
+
+    clock.advance(START_MS - before_hlc);
+    let created = studio.sync().await;
+    assert_state(&created, SyncState::Syncing);
+    assert_eq!(posted_creates(&core), 1);
+    assert_eq!(icloud.held(&person), held, "under the same key");
+    assert_eq!(studio.row().unwrap().key_id, Some(held[0].key_id.to_hex()));
+}
+
+/// After a completed reset, [Set Up Sync] creates under a new key (§5.5's
+/// one exception). If velvt-core refuses that create, the reset's item and
+/// the new one are both kept, and the new one is not taken for a live item
+/// that blocks the create: the next pass sends it again under that key.
+#[tokio::test]
+async fn a_refused_create_after_a_reset_is_sent_again_under_its_key() {
+    let (core, clock) = setup();
+    let person = user("person");
+    let icloud = MemoryKeyStore::new();
+    let studio = Mac::new(&core, &clock, &person, &icloud, 1).await;
+    studio.turn_on("Studio Mac").await;
+    let old = live_key(&icloud, &person).await.key_id();
+    core.request_reset(person.as_str());
+    studio.sync().await;
+    clock.advance(RESET_DELAY_MS + MINUTE);
+    assert_state(&studio.sync().await, SyncState::ResetCompleted);
+
+    core.lie(|received, _| {
+        (received.method == "POST" && received.path == "/v1/vault")
+            .then(|| super::fake_core::error(422, "vault_blob_invalid", None))
+    });
+    let refused = studio.turn_on("Studio Mac").await;
+    assert_state(&refused, SyncState::Error);
+    assert_eq!(refused.error_code.as_deref(), Some("vault_create_refused"));
+    let held = icloud.held(&person);
+    assert_eq!(held.len(), 2, "the reset's item and the new one");
+    let new = held.iter().find(|item| item.key_id != old).unwrap().key_id;
+
+    core.tell_the_truth();
+    clock.advance(10 * MINUTE);
+    let created = studio.sync().await;
+    assert_state(&created, SyncState::Syncing);
+    assert_eq!(studio.row().unwrap().key_id, Some(new.to_hex()));
+    assert_eq!(icloud.held(&person), held, "no item deleted, none added");
+}
+
+/// §4.1: past 2,000 live rules this Mac stops mirroring new ones, and the
+/// status line says so without naming any. A rule deleted here makes room,
+/// and the line goes once the waiting rule is written.
+#[tokio::test]
+async fn rules_past_the_cap_wait_and_the_status_line_says_so() {
+    use velvt_service::vault::doc::MAX_LIVE_RULES;
+
+    let (core, clock) = setup();
+    let person = user("person");
+    let icloud = MemoryKeyStore::new();
+    let studio = Mac::new(&core, &clock, &person, &icloud, 1).await;
+    studio.turn_on("Studio Mac").await;
+    let this_mac = studio.row().unwrap().sync_device_id;
+    let rule = |n: usize, deleted: bool, at_ms: i64| VaultRuleLinkRecord {
+        local_kind: "site".into(),
+        local_key_hash: format!("{n:064x}"),
+        person_key: format!("{n:064x}"),
+        category: "SOCIAL_FEED".into(),
+        deleted,
+        hlc: format!("{at_ms}.0000.{this_mac}"),
+    };
+    let repo = studio.persistence.vault_state_repo();
+    for n in 0..=MAX_LIVE_RULES {
+        repo.upsert_rule_link(&rule(n, false, START_MS + 10))
+            .unwrap();
+    }
+
+    clock.advance(MINUTE);
+    let full = studio.sync().await;
+    assert_state(&full, SyncState::Syncing);
+    assert!(full.rules_over_cap);
+    assert_eq!(MAX_LIVE_RULES, 2_000);
+    assert!(
+        full.status_line.ends_with(
+            " Your synced copy is full at 2,000 categories, so new ones from this Mac stay on this Mac."
+        ),
+        "{}",
+        full.status_line
+    );
+    assert_eq!(full.held.site_rules, MAX_LIVE_RULES);
+    let waiting = format!("{MAX_LIVE_RULES:064x}");
+    assert!(!full.status_line.contains(&waiting));
+    assert!(full.error_code.is_none(), "syncing, not an error");
+    let key = live_key(&icloud, &person).await;
+    let version = stored_version(&core, person.as_str()).unwrap();
+    let ciphertext = core.with_account(person.as_str(), |account| {
+        account.blob.clone().unwrap().ciphertext
+    });
+    let copy = open_copy(&key, &person, version, &ciphertext);
+    assert_eq!(copy.live_rule_count(), MAX_LIVE_RULES);
+    assert!(
+        copy.rules.keys().all(|key| key.key.to_hex() != waiting),
+        "the highest key waits"
+    );
+
+    repo.upsert_rule_link(&rule(0, true, START_MS + 20))
+        .unwrap();
+    clock.advance(MINUTE);
+    studio.sync().await;
+    clock.advance(MINUTE);
+    let room = studio.sync().await;
+    assert!(!room.rules_over_cap);
+    assert!(!room.status_line.contains("full"), "{}", room.status_line);
+    let version = stored_version(&core, person.as_str()).unwrap();
+    let ciphertext = core.with_account(person.as_str(), |account| {
+        account.blob.clone().unwrap().ciphertext
+    });
+    let copy = open_copy(&key, &person, version, &ciphertext);
+    assert_eq!(copy.live_rule_count(), MAX_LIVE_RULES);
+    assert!(copy.rules.keys().any(|key| key.key.to_hex() == waiting));
+}

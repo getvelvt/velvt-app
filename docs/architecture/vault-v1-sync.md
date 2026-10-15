@@ -60,6 +60,20 @@ fetching during a reset window.
    compare-and-swap `PUT`.
 5. `GET /v1/devices`: the new-sign-in diff.
 
+Step 5 runs on every pass while sync is on here, whatever steps 1 to 4 did:
+with the copy current, read-only on a newer schema, waiting for a key or the
+rotated key, paused (`server_inconsistent`, `server_copy_unreadable`,
+`error`, or the vault switched off), missing on the server or reset, and
+while a 412 storm or a `429` holds the vault's requests back. So no state
+hides a `new_sign_in`. The first list after sync turns on (or after a new
+session) seeds `sync_known_device` without alerting, as before. Only a
+session that has ended lists nothing: sync off here, this Mac removed
+(`403 device_revoked`), the account deleted (`401 account_deleted`), or a
+request refused for want of a sign-in. Either of the first two answers to
+`GET /v1/devices` itself ends the session as it would on a vault request; any
+other failure leaves the list for the next pass and changes neither the
+copy's state nor the backoff.
+
 ## What a Mac believes (§6.1)
 
 What this Mac trusts is its anchor or, with no anchor yet, every key its
@@ -125,7 +139,9 @@ A5 claims and opens the code):
   was written and different from it.
 - `PUT` with `If-Match: "n"` and `new_version = max(n, highest_seen_version) + 1`.
 - `412`: fetch, merge, try again, three times in all with jitter, then wait 10
-  minutes. `409 vault_key_mismatch` and `404`: the next pass judges the vault.
+  minutes. The wait holds back the vault's requests only; the device list is
+  still fetched. `409 vault_key_mismatch` and `404`: the next pass judges the
+  vault.
 - After a stored write, a rule link's tombstone row is deleted only if the
   stored copy carries it (or a newer register for the rule, or it is past the
   tombstone horizon). A rule deleted while the write was in flight has a newer
@@ -140,6 +156,24 @@ A5 claims and opens the code):
   key if the next pass still finds no vault and no other item. If the next
   pass finds a vault under another key, the item is the lost race's orphan and
   goes then.
+- A create velvt-core refuses with any other answer it parses (C2's `413
+  vault_too_large`, `422 vault_blob_invalid`, `vault_key_id_invalid` or
+  `vault_signature_invalid`, `409 vault_reset_pending`), or whose first copy
+  cannot be built, sealed or signed, keeps its item the same way. None of
+  these says a vault exists under another key, so the item lost no race and
+  is no orphan, and nothing else on §5.5's list applies; deleting it would
+  take the key from every Mac on the Apple ID. The state is `error`
+  (`vault_create_refused`, `document_write_refused` or `signing_failed`), and
+  the next pass sends the create again under the same key. After a completed
+  reset, that item does not block [Set Up Sync] as another live item would:
+  it is this create's own key, and the create goes again under it.
+- Past 2,000 live rules (§4.1), the rules that do not fit stay in this Mac's
+  own tables and are not written: `mirror_rule_links` returns them, and a
+  merge's `rules_over_cap` names this Mac's additions it gave up.
+  `SyncSnapshot::rules_over_cap` is set, and in `syncing` and `reset_pending`
+  the status line ends "Your synced copy is full at 2,000 categories, so new
+  ones from this Mac stay on this Mac." Neither names a rule. The flag is
+  worked out again on every write, so it goes once there is room.
 - Edits (rename, the daily-insight switch) go into the in-memory document and
   are written on the next pass, 5 s after the last one. A restart inside that
   window drops them.
@@ -275,3 +309,14 @@ scheduler.
   `401 account_deleted`; an anchor that cannot be saved; a notice held across
   a restart; a rule deleted while a write is in flight; the J2 probe with no
   key here; and a create whose answer was lost.
+- `tests/vault_sync/sign_ins.rs`: a sign-in is noticed (`new_sign_in` once,
+  the state unchanged) in each state a pass can leave the copy in: read-only
+  on a newer schema, paused on a key change, unreadable, the Keychain
+  unavailable, the vault switched off, waiting for the key, waiting for the
+  rotated key, missing on the server, reset completed, and writes backing off
+  after three 412s (with no vault request sent); and a Mac removed from the
+  account, or with sync turned off, lists no devices.
+- A refused create (`422`, `413`) and a create whose copy cannot be sealed
+  keep their new item and send the create again under its key, also after a
+  completed reset; and 2,001 rule links leave one waiting, with the status
+  line saying so until a deletion makes room.

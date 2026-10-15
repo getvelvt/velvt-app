@@ -1805,10 +1805,12 @@ pub struct WorkBlockSnapshot {
     pub paused_at: Option<DateTime<Utc>>,
     pub recovered_after_restart: bool,
     pub current_category: Option<String>,
-    /// The broad category the drift gate treats as this block's anchor: the
-    /// one holding the most confidently observed time so far. Set only while
-    /// the block is active or paused, and `None` until a confident
-    /// observation has closed. A category label and nothing else — no app
+    /// The broad category the drift gate treats as this block's anchor: since
+    /// drift policy v6, the work category (FOCUS_WORK, REFERENCE,
+    /// TASK_MANAGEMENT or COMMUNICATION) holding the most confidently
+    /// observed, closed time so far. Set only while the block is active or
+    /// paused, and `None` until a confident observation of a work category
+    /// has closed. A category label and nothing else — no app
     /// identity, title, URL, or intention — so it is exactly as local as
     /// `current_category`. Absent in pre-v31 payloads, which decode as `None`.
     #[serde(default)]

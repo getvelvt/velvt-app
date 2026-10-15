@@ -922,11 +922,12 @@ impl WorkBlockManager {
         // previous confident observation was the anchor. Counting rows
         // instead would let classifier noise clear the gate — confidence or
         // status flapping on one non-anchor app appends a new row per flap
-        // while the user switched away once — and would disagree with the
-        // switch_away_count the end-of-block result reports for the same
-        // evidence. Seed from the last confident observation before the
-        // window so an away period that merely straddles the boundary is not
-        // recounted as a fresh departure.
+        // while the user switched away once. The end-of-block result's
+        // switch_away_count counts departures the same way, but from the
+        // category with the most confident time, so the two agree only while
+        // that category is the work anchor. Seed from the last confident
+        // observation before the window so an away period that merely
+        // straddles the boundary is not recounted as a fresh departure.
         let mut previous_was_anchor = observations
             .iter()
             .filter(|observation| observation.occurred_at < window_start)
@@ -1666,8 +1667,8 @@ fn current_evidence(
 }
 
 /// True when an observation is strong enough to count as evidence. Mirrors the
-/// filter `aggregate_result` applies, so a switch that would not appear in the
-/// end-of-block result cannot trigger an offer either.
+/// filter `aggregate_result` applies, so an observation the end-of-block
+/// result ignores cannot count toward an offer either.
 fn is_confident_evidence(observation: &WorkBlockObservation) -> bool {
     is_confident(
         &observation.category,
@@ -1812,7 +1813,10 @@ fn merged_spans(
 /// third, naming passive consumption as the work the person chose, and going
 /// back to YouTube closed it as `returned`. PASSIVE_CONSUMPTION and
 /// SOCIAL_FEED are what a person drifts to, never what they drift from.
-/// SYSTEM, UNLOGGED and unclear time are not evidence at all.
+/// SYSTEM, UNLOGGED and unclear time are not evidence at all. The list is the
+/// founder's, so a long stretch in one work category still outweighs another:
+/// fifteen minutes of Hacker News (REFERENCE) after five of Xcode makes
+/// REFERENCE the anchor.
 const ANCHOR_CATEGORIES: [&str; 4] = [
     "FOCUS_WORK",
     "REFERENCE",
@@ -3280,6 +3284,52 @@ mod tests {
         }
         let offer = offer.expect("three departures from the work anchor are an offer");
         assert!(offer.body.contains("reference"), "{}", offer.body);
+    }
+
+    /// REFERENCE is a work category, so a long stretch of it can still become
+    /// the anchor and make the move back to FOCUS_WORK a departure. That is
+    /// the rule as the founder chose it on 2026-10-15 (FOCUS_WORK, REFERENCE,
+    /// TASK_MANAGEMENT and COMMUNICATION), not a case it missed: Hacker News,
+    /// Wikipedia, a news app and a YouTube lecture are all REFERENCE, and
+    /// fifteen minutes of one after five of Xcode is the long-drift trace
+    /// above with a work category in the drift's place. Pinned so that a
+    /// narrower rule is a decision with its own policy note, not a side effect.
+    #[test]
+    fn a_long_reference_stretch_can_become_the_anchor() {
+        let (manager, repo) = gate_manager(true, None);
+        let active = manager.start(request(3_000), at(0)).unwrap();
+        let block_id = active.block_id.unwrap().to_string();
+
+        observe(&manager, "FOCUS_WORK", 10);
+        observe(&manager, "REFERENCE", 300);
+        let back = observe(&manager, "FOCUS_WORK", 1_200).unwrap();
+        assert_eq!(back.snapshot.anchor_category.as_deref(), Some("REFERENCE"));
+        for (category, seconds) in [
+            ("REFERENCE", 1_250),
+            ("FOCUS_WORK", 1_300),
+            ("REFERENCE", 1_350),
+        ] {
+            let outcome = observe(&manager, category, seconds).unwrap();
+            assert!(outcome.intervention.is_none(), "offer at t={seconds}");
+        }
+
+        let offer = observe(&manager, "FOCUS_WORK", 1_450)
+            .unwrap()
+            .intervention
+            .expect("the third return to Xcode is the third departure from REFERENCE");
+        assert!(
+            offer.body.contains("switches away from reference"),
+            "{}",
+            offer.body
+        );
+        let recorded = repo.intervention(&block_id).unwrap().unwrap();
+        assert_eq!(recorded.anchor_category, "REFERENCE");
+
+        observe(&manager, "REFERENCE", 1_500);
+        assert_eq!(
+            repo.intervention(&block_id).unwrap().unwrap().outcome,
+            WorkBlockInterventionOutcome::Returned
+        );
     }
 
     // Removed with scope 4's integration: four tests of an in-block

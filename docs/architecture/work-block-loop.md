@@ -159,9 +159,18 @@ chose; a return to the drift then closed the offer as `returned`. Under
 version 6, PASSIVE_CONSUMPTION and SOCIAL_FEED time never makes or moves the
 anchor, and a block with no confident work time yet has no anchor: the gate
 records `abstained_no_anchor` and makes no offer. The snapshot's
-`anchor_category` is the same value. The end-of-block result is not the gate:
+`anchor_category` is the same value. The list is fixed, so a long stretch in
+one work category can still outweigh another: fifteen minutes of Hacker News,
+Wikipedia, a news app or a YouTube lecture (all REFERENCE) after five of Xcode
+makes REFERENCE the anchor, and the return to Xcode is a departure; Slack
+first (COMMUNICATION) does the same. The end-of-block result is not the gate:
 its evidence category, switch-away and return counts are still measured from
-whichever category had the most confident time.
+whichever category had the most confident time. In a block with five minutes
+of Xcode and fifteen of YouTube, the offer therefore counts switches away from
+focus work while the result card reads "You left passive consumption 4 times
+and came back 3 of them". Whether the result follows the anchor rule is an
+open founder decision. The cohort export reads none of these fields; the
+weekly digest and the dashboard read `recovery_count`.
 
 An observation row's end is the next row's start. At a boundary — pause or
 sleep, a service restart, or the end of the block — there is no next row, and

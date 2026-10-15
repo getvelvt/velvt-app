@@ -337,7 +337,8 @@ scheduler.
 - The 2026-10-15 review: a refused create is sent again after a restart (and
   a second Mac on the Apple ID then joins), after Log Out and back in, and
   after a reset and a restart; a recorded create whose item is gone is
-  forgotten. After a reset, [Set Up Sync Again] whose answer was lost and
+  forgotten; and a create that got no answer and lost the race across a
+  restart deletes only its own orphan and waits for the winner's key. After a reset, [Set Up Sync Again] whose answer was lost and
   the pass that adopts its vault: a served key no Mac signed deletes no item
   and the copy opens again after a restart, a signed rotation retires the
   old item rather than deleting it, and a later reset makes no vault on a

@@ -1554,3 +1554,36 @@ async fn a_recorded_create_whose_item_is_gone_is_forgotten() {
     assert_state(&created, SyncState::Syncing);
     assert_ne!(studio.row().unwrap().key_id, Some(gone.to_hex()));
 }
+
+/// §14 across a restart: a create that got no answer (and never landed),
+/// then the service restarts while a Mac on another Apple ID makes the
+/// vault. The recorded create is still this Mac's own, so its item is the
+/// lost race's orphan and goes (its own key id only), and the Mac waits for
+/// the winner's key. Without the record the item stood as a trust root
+/// against the winner's vault, and sync paused (server_inconsistent).
+#[tokio::test]
+async fn a_create_that_lost_the_race_across_a_restart_deletes_only_its_orphan() {
+    let (core, clock) = setup();
+    let person = user("person");
+    let mut studio = Mac::new(&core, &clock, &person, &MemoryKeyStore::new(), 1).await;
+    let laptop = Mac::new(&core, &clock, &person, &MemoryKeyStore::new(), 2).await;
+    core.lie(|received, _| {
+        (received.method == "POST" && received.path == "/v1/vault")
+            .then(|| super::fake_core::error(503, "unavailable", None))
+    });
+    studio.turn_on("Studio Mac").await;
+    core.tell_the_truth();
+    assert_eq!(studio.keychain.held(&person).len(), 1, "kept");
+
+    studio.restart().await;
+    assert_state(&laptop.turn_on("MacBook Pro").await, SyncState::Syncing);
+    clock.advance(10 * MINUTE);
+    let waiting = studio.sync().await;
+    assert_state(&waiting, SyncState::WaitingForKey);
+    assert!(waiting.offers_code_entry);
+    assert!(
+        studio.keychain.held(&person).is_empty(),
+        "its own orphan, and only that, deleted"
+    );
+    assert_eq!(laptop.keychain.held(&person).len(), 1);
+}

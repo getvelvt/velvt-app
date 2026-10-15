@@ -291,14 +291,18 @@ v1, was ≥ 4 switches after 5 minutes; it no longer ships.
 
 At most **one** offer is made per block, by design. An offer is also held back
 while Velvt is demoted and while Focus/DND is on (recorded as suppressed, not
-delivered later).
+delivered later), but the Focus hold needs a build that can read Focus status:
+one signed with the Communication Notifications entitlement. A build without
+it (every release through 1.0.13) posts the offer and macOS holds it in
+Notification Center, unless Velvt is in that Focus's Allowed Apps; the
+decision row records `focus_state = unknown` (protocol 36).
 
 ### When nothing appears
 
 | Check | How |
 |---|---|
 | Authorization granted | System Settings → Notifications → Velvt |
-| Focus / DND not suppressing it | Control Centre → Focus |
+| Focus / DND not suppressing it | Control Centre → Focus; or add Velvt to the Focus's Allowed Apps (System Settings → Focus → the Focus → Allowed Notifications). `scripts/watch_notifications.sh 1h` shows the launch `focus_status_self_check` line: `availability=unavailable` means this build cannot see Focus |
 | Service running and connected | Menu bar shows a connected state, not "Collection paused" |
 | Accessibility granted | System Settings → Privacy & Security → Accessibility |
 | Gates actually met | ≥3 confident switches in 10 min, ≥3 min elapsed, ≥2 min remaining, and some work time to anchor the block (policy v6) |

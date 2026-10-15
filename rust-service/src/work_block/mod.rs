@@ -22,10 +22,10 @@ use velvt_shared_types::{DemotionState, DemotionStateKind};
 use crate::{
     delivery::PushAdapter,
     persistence::{
-        DemotionStateRecord, GateVerdict, InterventionDecision, InterventionDemotionState,
-        PersistenceError, ReportedDwell, WorkBlockCompletion, WorkBlockIntervention,
-        WorkBlockInterventionOutcome, WorkBlockObservation, WorkBlockOrigin, WorkBlockRecord,
-        WorkBlockRepo, WrongInterventionCounts,
+        DecisionFocusState, DemotionStateRecord, GateVerdict, InterventionDecision,
+        InterventionDemotionState, PersistenceError, ReportedDwell, WorkBlockCompletion,
+        WorkBlockIntervention, WorkBlockInterventionOutcome, WorkBlockObservation, WorkBlockOrigin,
+        WorkBlockRecord, WorkBlockRepo, WrongInterventionCounts,
     },
 };
 
@@ -304,6 +304,13 @@ const BACKOFF_HISTORY_LIMIT: usize = 20;
 /// behind it.
 pub trait FocusStateSource: Send + Sync {
     fn is_focus_active(&self, at: DateTime<Utc>) -> bool;
+
+    /// What the service knows about Focus at `at`, recorded on each drift
+    /// decision beside its verdict. Not an input to any decision: the Focus
+    /// hold reads [`Self::is_focus_active`], which treats unknown as
+    /// inactive. This one keeps unknown apart, so a decision made while the
+    /// app could not read Focus is not stored as one made with no Focus.
+    fn focus_state_at_decision(&self, at: DateTime<Utc>) -> DecisionFocusState;
 }
 
 /// A single approved, device-local intervention offer. Copy is authored here,
@@ -407,6 +414,16 @@ impl WorkBlockManager {
         self.focus
             .as_ref()
             .is_some_and(|focus| focus.is_focus_active(at))
+    }
+
+    /// With no Focus source attached nothing is known about Focus, which is
+    /// `unknown`, not `off`.
+    fn decision_focus_state(&self, at: DateTime<Utc>) -> DecisionFocusState {
+        self.focus
+            .as_ref()
+            .map_or(DecisionFocusState::Unknown, |focus| {
+                focus.focus_state_at_decision(at)
+            })
     }
 
     pub fn deadline_receiver(&self) -> watch::Receiver<Option<DateTime<Utc>>> {
@@ -865,6 +882,7 @@ impl WorkBlockManager {
             // NULL means unresolved; it never means "did not return".
             anchor_seen_within_600s: None,
             outcome_at: None,
+            focus_state: Some(self.decision_focus_state(now)),
         };
         if let Err(error) = self.repo.record_decision(&decision) {
             tracing::error!(
@@ -4487,6 +4505,14 @@ mod tests {
                 .iter()
                 .any(|(from, until)| (*from..*until).contains(&at))
         }
+
+        fn focus_state_at_decision(&self, at: DateTime<Utc>) -> DecisionFocusState {
+            if self.is_focus_active(at) {
+                DecisionFocusState::On
+            } else {
+                DecisionFocusState::Off
+            }
+        }
     }
 
     fn manager_with_focus() -> (WorkBlockManager, Arc<dyn WorkBlockRepo>, Arc<FakeFocus>) {
@@ -4535,6 +4561,56 @@ mod tests {
         let counts = manager.wrong_intervention_counts(at(600)).unwrap();
         assert_eq!(counts.delivered, 0);
         assert_eq!(counts.was_focused, 0);
+    }
+
+    /// Protocol 36, migration 0044: every decision row records what the
+    /// service knew about Focus when the gate decided. With no Focus source
+    /// nothing is known, and that is `unknown`, never `off`. With one, the
+    /// held decision says `on` and the delivered one `off`. The verdicts are
+    /// the ones the gate made before the column existed.
+    #[test]
+    fn every_decision_records_what_was_known_about_focus() {
+        let (manager, repo) = manager_with_repo();
+        let block = manager.start(request(3_600), at(0)).unwrap();
+        drift_into_offer(&manager)
+            .and_then(|outcome| outcome.intervention)
+            .expect("the gate offers without a Focus source");
+        let decisions = repo
+            .decisions(&block.block_id.unwrap().to_string())
+            .unwrap();
+        assert!(decisions.len() > 1, "{decisions:?}");
+        assert!(decisions
+            .iter()
+            .all(|decision| decision.focus_state == Some(DecisionFocusState::Unknown)));
+        assert_eq!(decisions.last().unwrap().gate_verdict, GateVerdict::Offered);
+
+        let (manager, repo, focus) = manager_with_focus();
+        focus.set_active(at(0), at(3_600));
+        let held = manager.start(request(3_600), at(0)).unwrap();
+        drift_into_offer(&manager);
+        let decisions = repo.decisions(&held.block_id.unwrap().to_string()).unwrap();
+        let hold = decisions
+            .iter()
+            .find(|decision| decision.gate_verdict == GateVerdict::SuppressedDnd)
+            .expect("the gate holds the offer while Focus is on");
+        assert_eq!(hold.focus_state, Some(DecisionFocusState::On));
+        // Every later evaluation in the block is still made under Focus.
+        assert!(decisions
+            .iter()
+            .all(|decision| decision.focus_state == Some(DecisionFocusState::On)));
+
+        let (manager, repo, _focus) = manager_with_focus();
+        let offered = manager.start(request(3_600), at(0)).unwrap();
+        drift_into_offer(&manager)
+            .and_then(|outcome| outcome.intervention)
+            .expect("Focus known to be off does not hold the offer");
+        let decisions = repo
+            .decisions(&offered.block_id.unwrap().to_string())
+            .unwrap();
+        assert!(decisions
+            .iter()
+            .all(|decision| decision.focus_state == Some(DecisionFocusState::Off)));
+        assert_eq!(decisions.last().unwrap().gate_verdict, GateVerdict::Offered);
     }
 
     /// D2 and D8: a block that completes while DND is active is a success.
@@ -5239,6 +5315,7 @@ mod tests {
                 propensity: DRIFT_DETERMINISTIC_PROPENSITY,
                 anchor_seen_within_600s: None,
                 outcome_at: None,
+                focus_state: Some(DecisionFocusState::Unknown),
             })
             .unwrap();
         }
@@ -5383,6 +5460,7 @@ mod tests {
             propensity: DRIFT_DETERMINISTIC_PROPENSITY,
             anchor_seen_within_600s: None,
             outcome_at: None,
+            focus_state: Some(DecisionFocusState::Unknown),
         };
 
         repo.record_decision(&decision).unwrap();

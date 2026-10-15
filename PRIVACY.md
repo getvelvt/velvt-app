@@ -21,7 +21,11 @@ The macOS client observes, locally:
   (`LSItemContentTypes`) it says it can open. These are properties of the
   application's build, the same on every Mac, not of anything you did in it
 - Whether a macOS Focus mode is on, if you allow Focus status during
-  onboarding: one yes-or-no value, never which Focus mode or its schedule
+  onboarding: one yes-or-no value, never which Focus mode or its schedule.
+  macOS gives that value only to apps signed with Apple's Communication
+  Notifications entitlement, so the app also tells the local service whether
+  it can read it at all (available, unavailable, denied, or not yet asked),
+  and Velvt records "unknown" rather than "off" when it cannot
 - Timestamps for these events
 
 That list is exhaustive. Velvt does not use screen recording, keylogging,
@@ -130,7 +134,7 @@ reminder, also described below.
 | `work_block` | local state and optional free-form intention | intention: 24 hours; the safe state until Clear Local Work Blocks |
 | `work_block_observation` | safe category/status/confidence spans only | removed with its block, and by Clear Local Work Blocks |
 | `work_block_result` | safe local duration, transition, recovery, coverage, evidence, observation, and one next action | removed with its block, and by Clear Local Work Blocks |
-| `intervention_decision_log` | every moment the drift policy was evaluated and what it decided, including the times it decided to stay silent: policy version, broad anchor category, switch count, elapsed and remaining seconds, the verdict, the propensity (always 1.0: the policy is deterministic), and, once its horizon passes, whether the anchor category was seen again within 600 seconds. No label, no app identity, no window title, no URL, no intention text | removed with the block it belongs to, and by Clear Local Work Blocks, which also deletes any row logged without a block |
+| `intervention_decision_log` | every moment the drift policy was evaluated and what it decided, including the times it decided to stay silent: policy version, broad anchor category, switch count, elapsed and remaining seconds, the verdict, the propensity (always 1.0: the policy is deterministic), whether Velvt knew a Focus mode was on at that moment (`focus_state`, migration 0044: on, off, or unknown when this copy of Velvt cannot read Focus status), and, once its horizon passes, whether the anchor category was seen again within 600 seconds. No label, no app identity, no window title, no URL, no intention text, no Focus mode name | removed with the block it belongs to, and by Clear Local Work Blocks, which also deletes any row logged without a block |
 | `out_of_block_run` | activity outside a declared work block, as broad category plus coarse time: start floored to a five-minute bucket, duration, local hour, and local date. Structurally cannot hold an application name, a label, a stable ID, a window title, or a URL — it is deliberately less informative than the 14-day `raw_event_buffer` it would be derived from. **Nothing writes it today** — see the note below the table | 90 days once written |
 | `block_antecedent` | the bounded window of activity immediately before a block started, recorded once and never updated: the *set* of broad categories present (not their order), a switch count, a dominant category and its dwell, weekday/weekend, and hour bucket. The window is capped at 30 minutes by the database schema, so it cannot be widened by a setting. **Nothing writes it today** — see the note below the table | removed with its block, and by Clear Local Work Blocks |
 | `antecedent_finding` | a discovered pattern about what precedes a block: a key from a closed compile-time registry (a time bin, a day type, a broad category, a coarse elapsed bucket), an effect size, and a q-value. The registry has no constructor that could mint an application name, a label, a window title, or a URL. **Nothing writes it today** — see the note below the table | no sweep, no cascade, and no in-app action removes a row — deleting `~/.velvt/` is the only removal. Empty today |
@@ -508,7 +512,7 @@ fails until this list is updated in the same commit.
 | `initiation_invitation` | `invitation_id`, `offered_at`, `local_date`, `action_id`, `policy_version`, `backoff_policy_version`, `outcome`, `outcome_at` |
 | `initiation_settings` | `id`, `invitations_enabled`, `updated_at` |
 | `insight_cache` | `id`, `date`, `payload`, `ttl`, `created_at`, `not_found` |
-| `intervention_decision_log` | `decision_id`, `occurred_at`, `block_id`, `policy_version`, `anchor_category`, `switch_count`, `elapsed_seconds`, `remaining_seconds`, `gate_verdict`, `propensity`, `anchor_seen_within_600s`, `outcome_at` |
+| `intervention_decision_log` | `decision_id`, `occurred_at`, `block_id`, `policy_version`, `anchor_category`, `switch_count`, `elapsed_seconds`, `remaining_seconds`, `gate_verdict`, `propensity`, `anchor_seen_within_600s`, `outcome_at`, `focus_state` |
 | `intervention_demotion_state` | `id`, `state`, `demoted_at`, `manual_reset_at`, `threshold_policy_version`, `repromotion_policy_version`, `updated_at` |
 | `local_site_name` | `site_key_hash`, `host`, `last_seen_at` |
 | `out_of_block_run` | `id`, `started_at_bucket`, `duration_seconds`, `category`, `classification_status`, `classification_confidence`, `local_hour`, `local_date` |

@@ -10,13 +10,14 @@
 //! trained, or adaptive, and no Focus mode name, configuration, or schedule
 //! is representable in storage, IPC, or logs.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use chrono::{DateTime, Datelike, Duration, FixedOffset, Timelike, Utc};
-use velvt_shared_types::QuietHoursOffer;
+use velvt_shared_types::{FocusAvailability, QuietHoursOffer};
 
 use crate::persistence::{
-    FocusRepo, FocusTransition, PersistenceError, QuietHoursOfferResponse, VelvtQuietHours,
+    DecisionFocusState, FocusRepo, FocusTransition, PersistenceError, QuietHoursOfferResponse,
+    VelvtQuietHours,
 };
 use crate::work_block::FocusStateSource;
 
@@ -59,11 +60,46 @@ pub enum FocusError {
 
 pub struct FocusManager {
     repo: Arc<dyn FocusRepo>,
+    /// Whether the app said it can read Focus status, as of its latest
+    /// report on any connection since this process started (protocol 36).
+    /// In memory only: the app reports it on every connection, and a value
+    /// kept across a restart could describe a build that is no longer
+    /// installed. `None` until the first report.
+    availability: Mutex<Option<FocusAvailability>>,
 }
 
 impl FocusManager {
     pub fn new(repo: Arc<dyn FocusRepo>) -> Arc<Self> {
-        Arc::new(Self { repo })
+        Arc::new(Self {
+            repo,
+            availability: Mutex::new(None),
+        })
+    }
+
+    /// Stores the app's latest report of whether it can read Focus status.
+    /// It decides nothing: the Focus hold reads the transition record
+    /// whatever this says. It is what lets a decision row say `unknown`
+    /// instead of `off` when the app could not tell.
+    pub fn record_availability(&self, availability: FocusAvailability) {
+        let previous = self
+            .availability
+            .lock()
+            .map(|mut stored| stored.replace(availability))
+            .unwrap_or_else(|poisoned| poisoned.into_inner().replace(availability));
+        if previous != Some(availability) {
+            tracing::info!(
+                focus_status_availability = availability.as_str(),
+                "focus status availability reported"
+            );
+        }
+    }
+
+    /// The app's latest report, or `None` before its first one.
+    pub fn availability(&self) -> Option<FocusAvailability> {
+        match self.availability.lock() {
+            Ok(stored) => *stored,
+            Err(poisoned) => *poisoned.into_inner(),
+        }
     }
 
     /// Ingests one observed Focus/DND transition. Coarse by construction:
@@ -301,6 +337,21 @@ impl FocusStateSource for FocusManager {
             .flatten()
             .unwrap_or(false)
     }
+
+    /// `on` or `off` only while the app says it can read Focus status and
+    /// the record holds an edge for `at`. Anything else is `unknown`: an app
+    /// without the entitlement reports Focus as off whatever it is, so its
+    /// edges are not knowledge, and no edge at all is not "off".
+    fn focus_state_at_decision(&self, at: DateTime<Utc>) -> DecisionFocusState {
+        if self.availability() != Some(FocusAvailability::Available) {
+            return DecisionFocusState::Unknown;
+        }
+        match self.repo.focus_state_at_bucket(floor_to_bucket(at)) {
+            Ok(Some(true)) => DecisionFocusState::On,
+            Ok(Some(false)) => DecisionFocusState::Off,
+            Ok(None) | Err(_) => DecisionFocusState::Unknown,
+        }
+    }
 }
 
 fn floor_to_bucket(at: DateTime<Utc>) -> DateTime<Utc> {
@@ -397,6 +448,74 @@ mod tests {
             repo.focus_active_dates_in_hours(&[8]).unwrap().len(),
             1,
             "a repeated sample of an unchanged state must not add evidence"
+        );
+    }
+
+    /// Protocol 36. A decision row says `on` or `off` only while the app says
+    /// it can read Focus status and an edge is recorded. Edges from an app
+    /// that cannot read it (the shipped 1.0.13 build has no Communication
+    /// Notifications entitlement and reports Focus as off) are `unknown`,
+    /// while the Focus hold reads the same edges exactly as before.
+    #[test]
+    fn the_decision_focus_state_is_unknown_unless_the_app_can_read_focus() {
+        let (manager, _repo) = manager_with_repo();
+        assert_eq!(manager.availability(), None);
+        assert_eq!(
+            manager.focus_state_at_decision(at(0)),
+            DecisionFocusState::Unknown,
+            "nothing reported yet is not off"
+        );
+
+        manager.record_availability(FocusAvailability::Available);
+        assert_eq!(
+            manager.focus_state_at_decision(at(0)),
+            DecisionFocusState::Unknown,
+            "readable, but no edge recorded yet"
+        );
+        manager.record_transition(true, at(0), 0, at(0)).unwrap();
+        assert_eq!(
+            manager.focus_state_at_decision(at(60)),
+            DecisionFocusState::On
+        );
+        manager
+            .record_transition(false, at(600), 0, at(600))
+            .unwrap();
+        assert_eq!(
+            manager.focus_state_at_decision(at(660)),
+            DecisionFocusState::Off
+        );
+
+        for unreadable in [
+            FocusAvailability::Unavailable,
+            FocusAvailability::Denied,
+            FocusAvailability::NotDetermined,
+        ] {
+            manager.record_availability(unreadable);
+            assert_eq!(manager.availability(), Some(unreadable));
+            assert_eq!(
+                manager.focus_state_at_decision(at(60)),
+                DecisionFocusState::Unknown,
+                "{unreadable:?}"
+            );
+            // The hold is unchanged: it reads the record, not the report.
+            assert!(manager.is_focus_active(at(60)));
+            assert!(!manager.is_focus_active(at(660)));
+        }
+    }
+
+    /// The report is kept in memory only and outlives Clear Local Work
+    /// Blocks: it describes the installed app, not the person's evidence.
+    #[test]
+    fn availability_survives_clearing_the_evidence() {
+        let (manager, _repo) = manager_with_repo();
+        manager.record_availability(FocusAvailability::Available);
+        manager.record_transition(true, at(0), 0, at(0)).unwrap();
+        manager.clear_evidence().unwrap();
+        assert_eq!(manager.availability(), Some(FocusAvailability::Available));
+        assert_eq!(
+            manager.focus_state_at_decision(at(60)),
+            DecisionFocusState::Unknown,
+            "the cleared edge is gone, and no edge is not off"
         );
     }
 

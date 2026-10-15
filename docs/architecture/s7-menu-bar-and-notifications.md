@@ -286,9 +286,72 @@ it):
 
 `notification_delivered` with no banner on screen means macOS held it — Do
 Not Disturb or another Focus — and it went to Notification Center. Velvt reads
-Focus state only through the optional Focus-status permission; without it the
-service cannot hold the offer as `suppressed_dnd`, and the offer is recorded
-as `notification_posted`.
+Focus state only through Focus status (`INFocusStatusCenter`); when it cannot,
+the service cannot hold the offer as `suppressed_dnd`, and the offer is
+recorded as `notification_posted`. The next section says when it cannot.
+
+### Focus status: what a build can read (protocol 36)
+
+Apple gives Focus status only to an app signed with the Communication
+Notifications capability. Three things have to hold, and the third is the one
+Velvt's release builds through 1.0.13 lack:
+
+1. `NSFocusStatusUsageDescription` in `Info.plist` (present: the xcconfigs set
+   `INFOPLIST_KEY_NSFocusStatusUsageDescription`).
+2. The person allows Focus status (the onboarding step) and notifications.
+3. The `com.apple.developer.usernotifications.communication` entitlement.
+   It is a restricted entitlement, so a Developer ID build carries it only
+   with a Developer ID provisioning profile embedded at
+   `Velvt.app/Contents/embedded.provisionprofile`. `Release.entitlements` is
+   an empty dict and the 1.0.13 bundle has no profile
+   (`codesign -d --entitlements :- /Applications/Velvt.app` prints an empty
+   dict).
+
+Sources: Apple's Focus-status sample code ("Requires UserNotifications and
+FocusStatus to be authorized and Communication Notifications capability
+enabled for the app's target"; "Unauthorized apps don't receive a Focus status
+value"), an Apple engineer on developer forums thread 682143 ("Focus Status
+will only be available to apps that have the Communication Notifications
+capability") and thread 685744 (the usage description, notification
+authorization, and the entitlement), TN3125 (restricted entitlements need a
+profile, embedded at `Contents/embedded.provisionprofile`), and Supported
+capabilities (macOS) (Communication Notifications is available to Developer
+ID). Without the entitlement the person can still allow Focus status, and
+`focusStatus.isFocused` still answers, `false`, but `donotdisturbd` refuses
+the read ("App is missing Communication Notifications entitlement"), so the
+value says nothing about the person's Focus.
+
+What the app does about it:
+
+- **Launch self-check.** One line at launch under subsystem `com.velvt.mac`,
+  category `FocusStatus`, values only:
+  `focus_status_self_check authorization_status=… is_focused=… communication_notifications_entitlement=present|absent availability=…`.
+  `log show --last 1h --predicate 'subsystem == "com.velvt.mac" AND category == "FocusStatus"'`
+  answers it on a signed build; `scripts/watch_notifications.sh` shows it too.
+- **Availability fact.** `FocusStateObserver` reports
+  `focus_status_availability` on every connection and whenever it changes
+  (`available`, `unavailable`, `denied`, `not_determined`). The entitlement
+  decides first (`FocusStatusEntitlement.isPresentInThisProcess`, read from the
+  code signature), so an authorized but unentitled build is `unavailable`. It
+  sends `focus_state_changed` only while `available`: 1.0.13 sent a fabricated
+  `active: false` on every reconnect.
+- **The decision row says what was known.** Rust records
+  `intervention_decision_log.focus_state` on every drift decision: `on` or
+  `off` only while the app reports `available` and an edge is recorded,
+  `unknown` otherwise (migration 0044). No decision changes: the Focus hold
+  reads the edges as before, and an unentitled build's edges never held
+  anything.
+- **The cohort export and the analysis.** The decisions file carries
+  `focus_state` (export format 6), and `analyze_cohort.py` reports offers by it
+  as a descriptive breakdown. An offer whose `focus_state` is `unknown` has
+  unknown delivery: a Focus may have held it in Notification Center.
+
+What gets a nudge through a Focus today: the person adds Velvt to that Focus's
+Allowed Apps (System Settings > Focus > the Focus > Allowed Notifications). An
+allowed app is not silenced, and per Apple an app on the Allowed Apps list
+does not see the person as focused, so with the entitlement the hold would
+not apply either. Velvt never uses time-sensitive notifications to get
+around a Focus.
 
 A daily insight notification does not touch the local interventions counter
 (`AppMetricsStore`, shown in Debug builds): it is not a nudge inside a block,

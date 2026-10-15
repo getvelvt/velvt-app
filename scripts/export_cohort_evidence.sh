@@ -26,6 +26,9 @@
 #                           abstentions included. It carries `policy_version`,
 #                           which the per-offer rows do not, and it is the
 #                           denominator of the replacement primary outcome.
+#                           From protocol 36 it also says whether the service
+#                           knew a Focus was on at that moment (`focus_state`,
+#                           migration 0044).
 #   <stem>-outcomes.csv     one row per decision in that log that has an anchor:
 #                           the pre-registered outcomes of that decision point,
 #                           computed here from `work_block_observation`. Only a
@@ -304,13 +307,28 @@ OFFER_ROWS="$(rows_in "$OUT")"
 # The block columns come from a LEFT JOIN because the log's block_id is
 # nullable, and the analysis needs the block's end to apply the warm-up
 # exclusion and to censor a horizon that runs past the end of the block.
+#
+# `focus_state` arrived in migration 0044 (protocol 36): what the service knew
+# about Focus when the gate decided. on / off: the app could read Focus status
+# and the record said a Focus was / was not on. unknown: the app could not read
+# it (a build without Apple's Communication Notifications entitlement, Focus
+# status denied or never answered), so a Focus may have silenced an offer the
+# row calls offered. Empty on a row written before 0044, or with no such
+# column, which is not "off". A descriptive diagnostic only: no pre-registered
+# denominator reads it.
 # ---------------------------------------------------------------------------
+FOCUS_STATE_SINCE="$(migrated_at 44)"
+if has_column intervention_decision_log focus_state; then
+  FOCUS_STATE_SQL="d.focus_state"
+else
+  FOCUS_STATE_SQL="NULL"
+fi
 DECISION_LOG="absent"
 DECISION_ROWS=0
 if has_table intervention_decision_log; then
   DECISION_LOG="present"
   write_csv "$DECISIONS_OUT" \
-    'decision_id,occurred_at,block_id,policy_version,anchor_category,switch_count,elapsed_seconds,remaining_seconds,gate_verdict,propensity,anchor_seen_within_600s,outcome_at,block_started_at,block_ended_at,block_total_paused_seconds,block_planned_duration_seconds' \
+    'decision_id,occurred_at,block_id,policy_version,anchor_category,switch_count,elapsed_seconds,remaining_seconds,gate_verdict,propensity,anchor_seen_within_600s,outcome_at,focus_state,block_started_at,block_ended_at,block_total_paused_seconds,block_planned_duration_seconds' \
     "SELECT
         d.decision_id,
         d.occurred_at,
@@ -326,6 +344,7 @@ if has_table intervention_decision_log; then
         -- the same as 'did not return'. Resolved-and-negative is 0.
         d.anchor_seen_within_600s,
         d.outcome_at,
+        $FOCUS_STATE_SQL,
         b.started_at,
         b.ended_at,
         b.total_paused_seconds,
@@ -780,7 +799,7 @@ if has_table initiation_settings; then
 fi
 {
   printf 'key,value\n'
-  printf 'export_format,5\n'
+  printf 'export_format,6\n'
   printf 'exported_at,%s\n' "$EXPORTED_AT"
   printf 'schema_version,%s\n' "$SCHEMA_VERSION"
   printf 'decision_log,%s\n' "$DECISION_LOG"
@@ -792,6 +811,7 @@ fi
   printf 'site_rules,%s\n' "$SITE_RULES"
   printf 'card_seen_recorded_since,%s\n' "$CARD_SEEN_SINCE"
   printf 'delivery_channel_recorded_since,%s\n' "$DELIVERY_SINCE"
+  printf 'focus_state_recorded_since,%s\n' "$FOCUS_STATE_SINCE"
   printf 'invitations_enabled,%s\n' "$INVITATIONS_ENABLED"
 } > "$META_OUT"
 
@@ -875,8 +895,11 @@ post). Times are plain epoch seconds.
 
 The decisions file adds each time the detector looked: when, the broad anchor
 category, switch count, elapsed and remaining seconds, the policy version, the
-verdict (including every time it chose to stay quiet), and whether you were
-back in the anchor category within 10 minutes before answering the nudge. The outcomes file adds, for
+verdict (including every time it chose to stay quiet), whether you were
+back in the anchor category within 10 minutes before answering the nudge, and
+whether Velvt knew a Focus mode was on at that moment (on, off, or unknown
+when this copy of Velvt could not read Focus status; never which Focus). The
+outcomes file adds, for
 each of those moments, whether you then spent at least 10 of the next 15
 minutes in the anchor category, whether you left it again within 10 minutes,
 how many seconds passed before you stayed in it for 5 minutes straight, why

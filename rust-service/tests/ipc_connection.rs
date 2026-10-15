@@ -441,12 +441,13 @@ async fn privacy_violation_alert_is_pushed_to_swift() {
     assert!(task.await.unwrap().is_ok());
 }
 
-/// Protocol 35 adds `intervention_delivery`. A protocol-34 app would never
-/// send it, so a 34 client on a 35 helper is refused at the handshake with
-/// the typed error, never served on a contract it does not speak.
+/// Protocol 36 adds `focus_status_availability`. A protocol-35 app would
+/// never send it, so its decisions could not say whether Focus was known; a
+/// 35 client on a 36 helper is refused at the handshake with the typed error,
+/// never served on a contract it does not speak.
 #[tokio::test]
-async fn a_protocol_34_client_is_refused_by_the_35_helper() {
-    assert_eq!(PROTOCOL_VERSION, 35);
+async fn a_protocol_35_client_is_refused_by_the_36_helper() {
+    assert_eq!(PROTOCOL_VERSION, 36);
     let (client, server) = duplex(4096);
     let task = tokio::spawn(serve_connection(server, DefaultRouter, 3));
     let (read, mut write) = tokio::io::split(client);
@@ -454,7 +455,7 @@ async fn a_protocol_34_client_is_refused_by_the_35_helper() {
     assert!(matches!(
         read_message(&mut read).await,
         Some(ServerMessage::ServerHello(ServerHello {
-            protocol_version: 35,
+            protocol_version: 36,
             ..
         }))
     ));
@@ -462,7 +463,7 @@ async fn a_protocol_34_client_is_refused_by_the_35_helper() {
     write_message(
         &mut write,
         &ClientMessage::ClientHello(ClientHello {
-            expected_protocol_version: 34,
+            expected_protocol_version: 35,
             client_version: "1.0.14".into(),
         }),
     )
@@ -470,8 +471,8 @@ async fn a_protocol_34_client_is_refused_by_the_35_helper() {
     assert_eq!(
         read_message(&mut read).await,
         Some(ServerMessage::VersionMismatch(VersionMismatch {
-            server_protocol_version: 35,
-            client_protocol_version: 34,
+            server_protocol_version: 36,
+            client_protocol_version: 35,
         }))
     );
     assert_eq!(read_message(&mut read).await, None);

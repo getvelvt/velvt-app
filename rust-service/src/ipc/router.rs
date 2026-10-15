@@ -3964,6 +3964,15 @@ impl MessageRouter for R7Router {
                 Ok(None)
             }
 
+            // Answered with nothing, and decides nothing: it only lets each
+            // drift decision record whether Focus was known.
+            ClientMessage::FocusStatusAvailability(report) => {
+                if let Some(focus) = &self.focus {
+                    focus.record_availability(report.availability);
+                }
+                Ok(None)
+            }
+
             ClientMessage::RespondQuietHoursOffer(reply) => {
                 let Some(focus) = &self.focus else {
                     return Ok(None);

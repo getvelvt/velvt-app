@@ -360,6 +360,19 @@ DELIVERY_BUCKETS = DELIVERY_CHANNELS + ("not_reported", "unknown")
 # still recorded as notification_posted. An upper bound on offers seen.
 DELIVERY_POSTED_VISIBLE = ("notification_posted",)
 
+# `focus_state` on the decisions file (migration 0044, protocol 36): what the
+# service knew about Focus when the gate decided. on / off: the app could read
+# Focus status and the record said a Focus was / was not on. unknown: it could
+# not (a build without Apple's Communication Notifications entitlement, Focus
+# status denied or never answered), so a Focus may have silenced an offer that
+# is counted as delivered. not_recorded = an empty value: the decision predates
+# migration 0044, or the export has no such column (every export before format
+# 6). Never folded into off. Each offer takes the value on the decision-log row
+# that attributes it (same block, verdict offered / withheld_demotion /
+# suppressed_dnd). Descriptive only: no pre-registered denominator reads it.
+FOCUS_STATES = ("on", "off", "unknown")
+FOCUS_STATE_BUCKETS = FOCUS_STATES + ("not_recorded",)
+
 BLOCK_TERMINAL_PHASES = ("completed", "abandoned", "expired")
 BLOCK_OPEN_PHASES = ("active", "paused")
 BLOCK_ORIGINS = ("manual", "invitation")
@@ -430,6 +443,7 @@ class Offer:
     returned_within_window: bool
     card_seen: str
     notification_delivery: str = "unknown"
+    focus_state: str = "not_recorded"
 
 
 @dataclass
@@ -1005,6 +1019,7 @@ def _load_participant(cohort: Cohort, participant: Participant) -> None:
 
     # --- Decisions, and the attribution map --------------------------------
     attribution: dict[str, set[int]] = {}
+    focus_by_block: dict[str, set[str]] = {}
     other_policy_times: list[int] = []
     analysed_times: list[int] = []
     for row in participant.decision_rows:
@@ -1020,8 +1035,16 @@ def _load_participant(cohort: Cohort, participant: Participant) -> None:
             continue
         cohort.decisions_by_policy[version] += 1
         block_id = _text(row, "block_id")
+        focus_state = _text(row, "focus_state")
+        if focus_state and focus_state not in FOCUS_STATES:
+            cohort.malformed.append(
+                f"{name}: decision {_text(row, 'decision_id') or '?'} has "
+                f"focus_state={focus_state!r}"
+            )
+            focus_state = ""
         if verdict in ATTRIBUTING_VERDICTS and block_id:
             attribution.setdefault(block_id, set()).add(version)
+            focus_by_block.setdefault(block_id, set()).add(focus_state or "not_recorded")
         if version != ANALYSED_POLICY_VERSION:
             other_policy_times.append(occurred)
             continue
@@ -1150,6 +1173,10 @@ def _load_participant(cohort: Cohort, participant: Participant) -> None:
             # a fact, and anything else is unknown, never not_reported.
             channel = _text(row, "delivery_channel")
             delivery = channel if channel in DELIVERY_CHANNELS else "unknown"
+        # One offer per block, so one attributing decision; two that disagree
+        # cannot be told apart and are not recorded rather than guessed.
+        focus_states = focus_by_block.get(block_id, set())
+        focus_state = next(iter(focus_states)) if len(focus_states) == 1 else "not_recorded"
 
         record = Offer(
             participant=name,
@@ -1166,6 +1193,7 @@ def _load_participant(cohort: Cohort, participant: Participant) -> None:
             ),
             card_seen=card_seen,
             notification_delivery=delivery,
+            focus_state=focus_state,
         )
         if outcome in WITHHELD_TERMINAL_OUTCOMES:
             cohort.withheld.append(record)
@@ -1751,6 +1779,21 @@ def analyse(cohort: Cohort, cohort_start: datetime | None = None, cohort_weeks: 
     posted_visible = sum(by_delivery[b]["offers"] for b in DELIVERY_POSTED_VISIBLE)
     unrecorded = by_delivery["not_reported"]["offers"] + by_delivery["unknown"]["offers"]
 
+    by_focus: dict[str, dict] = {}
+    for bucket in FOCUS_STATE_BUCKETS:
+        subset = [o for o in offers if o.focus_state == bucket]
+        by_focus[bucket] = {
+            "offers": len(subset),
+            "posted_with_visible_alert_style": sum(
+                1 for o in subset if o.notification_delivery in DELIVERY_POSTED_VISIBLE
+            ),
+            "returned_within_10min": sum(1 for o in subset if o.returned_within_window),
+            "no_response": sum(1 for o in subset if o.outcome == "no_response"),
+            "withheld": dict(sorted(Counter(
+                o.outcome for o in withheld if o.focus_state == bucket
+            ).items())),
+        }
+
     withheld_counts = Counter(o.outcome for o in withheld)
     eligible = len(cohort.eligible)
     primary = _primary(cohort)
@@ -1882,6 +1925,26 @@ def analyse(cohort: Cohort, cohort_start: datetime | None = None, cohort_weeks: 
             "posted_with_visible_alert_style": posted_visible,
             "not_posted_with_visible_alert_style": denominator - posted_visible - unrecorded,
             "not_recorded": unrecorded,
+            "delivered": denominator,
+        },
+        "focus_state_at_decision": {
+            "status": (
+                "DESCRIPTIVE. An additional breakdown of the delivered and withheld "
+                "offers; it changes no pre-registered denominator, which still counts "
+                "every delivered offer whatever Velvt knew about Focus."
+            ),
+            "definition": (
+                "From focus_state on the decision-log row that attributes each offer "
+                "(migration 0044, protocol 36): what the service knew about Focus when "
+                "the gate decided. on / off: the app could read Focus status and the "
+                "record said a Focus was / was not on. unknown: the app could not read "
+                "it (no Communication Notifications entitlement, Focus status denied "
+                "or never answered), so a Focus may have silenced a delivered offer: "
+                "its delivery is unknown, and posted_with_visible_alert_style there is "
+                "an upper bound on offers seen. not_recorded: decided before migration "
+                "0044, or an export without the column. Never folded into off."
+            ),
+            "by_focus_state": by_focus,
             "delivered": denominator,
         },
         "withheld": {
@@ -2120,6 +2183,19 @@ def render(result: dict) -> str:
     add("  Posted is not seen: a Focus mode Velvt could not detect holds a posted")
     add("  notification in Notification Center, so the first figure is an upper")
     add("  bound on offers seen.")
+
+    focus = result["focus_state_at_decision"]
+    heading("OFFERS BY FOCUS STATE AT DECISION (descriptive, protocol 36)")
+    add("  What Velvt knew about Focus when each offer was decided. Changes no")
+    add("  denominator above. unknown: Velvt could not read Focus status, so a")
+    add("  Focus may have silenced the offer: treat its delivery as unknown.")
+    for bucket in FOCUS_STATE_BUCKETS:
+        stats = focus["by_focus_state"][bucket]
+        withheld_here = sum(stats["withheld"].values())
+        add(f"  {bucket:12} delivered={stats['offers']:4} "
+            f"posted_visible={stats['posted_with_visible_alert_style']:4} "
+            f"returned_unanswered={stats['returned_within_10min']:4} "
+            f"no_response={stats['no_response']:4} withheld={withheld_here:4}")
 
     held = result["withheld"]
     heading("WITHHELD (recorded, never delivered)")

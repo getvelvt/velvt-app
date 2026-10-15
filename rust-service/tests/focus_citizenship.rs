@@ -20,13 +20,16 @@ use velvt_service::auth::{
 use velvt_service::delivery::{FakeCacheManager, PushAdapter, PushQueue};
 use velvt_service::focus::FocusManager;
 use velvt_service::ipc::{MessageRouter, R7Router};
-use velvt_service::persistence::{QuietHoursOfferResponse, SqlitePersistence, VelvtQuietHours};
+use velvt_service::persistence::{
+    DecisionFocusState, GateVerdict, InterventionDecision, QuietHoursOfferResponse,
+    SqlitePersistence, VelvtQuietHours,
+};
 use velvt_service::upload::EventIngestor;
 use velvt_service::work_block::{FocusStateSource, WorkBlockManager};
 use velvt_shared_types::{
-    ClientMessage, EndWorkBlock, FocusStateChanged, InterventionSalience, RawEvent,
-    RespondQuietHoursOffer, ServerMessage, StartWorkBlock, WorkBlockDndOutcome, WorkBlockIntensity,
-    WorkBlockPurpose,
+    ClientMessage, EndWorkBlock, FocusAvailability, FocusStateChanged, FocusStatusAvailability,
+    InterventionSalience, RawEvent, RespondQuietHoursOffer, ServerMessage, StartWorkBlock,
+    WorkBlockDndOutcome, WorkBlockIntensity, WorkBlockPurpose,
 };
 
 struct OfflineHttp;
@@ -426,4 +429,149 @@ async fn an_offer_outside_quiet_hours_reaches_the_client_as_normal_salience() {
         cards > 0,
         "the drift gate has to clear for this to mean anything"
     );
+}
+
+/// What the app reports before a block, in the order Swift sends it on a
+/// connection: whether it can read Focus status, then the edge it read.
+async fn report_focus(h: &Harness, availability: Option<FocusAvailability>, active: Option<bool>) {
+    if let Some(availability) = availability {
+        let response = h
+            .router
+            .route(ClientMessage::FocusStatusAvailability(
+                FocusStatusAvailability { availability },
+            ))
+            .await
+            .unwrap();
+        assert!(
+            response.is_none(),
+            "the availability fact is answered with nothing"
+        );
+    }
+    if let Some(active) = active {
+        h.router
+            .route(ClientMessage::FocusStateChanged(FocusStateChanged {
+                active,
+                occurred_at: Utc::now(),
+                utc_offset_seconds: 0,
+            }))
+            .await
+            .unwrap();
+    }
+}
+
+/// Drives one block through the same drift as the suppression scenario
+/// above and returns the decision that ended it: the offer, or the hold.
+async fn drift_decision(h: &Harness) -> InterventionDecision {
+    let started = h
+        .router
+        .route(ClientMessage::StartWorkBlock(StartWorkBlock {
+            intention: None,
+            planned_duration_seconds: 3_600,
+            purpose: Some(WorkBlockPurpose::DeepWork),
+            intensity: WorkBlockIntensity::Medium,
+            invitation_id: None,
+        }))
+        .await
+        .unwrap();
+    let Some(ServerMessage::WorkBlockState(snapshot)) = started else {
+        panic!("start returns work-block state");
+    };
+    let block_id = snapshot.block_id.expect("active block id");
+    let now = Utc::now();
+    let at = |seconds: i64| now + ChronoDuration::seconds(seconds);
+    h.router
+        .route(raw_event(at(10), "Xcode", "FocusManager.swift"))
+        .await
+        .unwrap();
+    for (seconds, app, title) in [
+        (400, "Slack", "team updates"),
+        (420, "Xcode", "FocusManager.swift"),
+        (440, "Slack", "team updates"),
+        (460, "Xcode", "FocusManager.swift"),
+        (480, "Slack", "team updates"),
+        (500, "Xcode", "FocusManager.swift"),
+        (520, "Slack", "team updates"),
+    ] {
+        h.router
+            .route(raw_event(at(seconds), app, title))
+            .await
+            .unwrap();
+    }
+    drain(&h.queue).await;
+    h.persistence
+        .work_block_repo()
+        .decisions(&block_id.to_string())
+        .unwrap()
+        .into_iter()
+        .rfind(|decision| {
+            matches!(
+                decision.gate_verdict,
+                GateVerdict::Offered | GateVerdict::SuppressedDnd
+            )
+        })
+        .expect("the drift clears the gate")
+}
+
+/// B5 (1.0.14 simulation), route (b). The shipped build has no
+/// Communication Notifications entitlement, so it cannot read Focus status:
+/// it now says so, and sends no edge. The decision is the one the gate made
+/// before protocol 36 (offered: nothing told the service Focus was on), and
+/// its row says `unknown` where it used to be indistinguishable from "no
+/// Focus".
+#[tokio::test]
+async fn an_app_that_cannot_read_focus_gets_the_same_offer_recorded_as_focus_unknown() {
+    let silent = harness();
+    let before = drift_decision(&silent).await;
+    assert_eq!(before.gate_verdict, GateVerdict::Offered);
+    assert_eq!(
+        before.focus_state,
+        Some(DecisionFocusState::Unknown),
+        "nothing reported is not off"
+    );
+
+    for availability in [
+        FocusAvailability::Unavailable,
+        FocusAvailability::Denied,
+        FocusAvailability::NotDetermined,
+    ] {
+        let h = harness();
+        report_focus(&h, Some(availability), None).await;
+        assert_eq!(h.focus.availability(), Some(availability));
+        let decision = drift_decision(&h).await;
+        assert_eq!(
+            decision.gate_verdict, before.gate_verdict,
+            "{availability:?}"
+        );
+        assert_eq!(
+            decision.focus_state,
+            Some(DecisionFocusState::Unknown),
+            "{availability:?}"
+        );
+    }
+
+    // A 1.0.13-style app: allowed Focus status without the entitlement, so it
+    // reports a fabricated "off". The gate reads that edge as it always did;
+    // the row does not take it for knowledge.
+    let h = harness();
+    report_focus(&h, Some(FocusAvailability::Unavailable), Some(false)).await;
+    let decision = drift_decision(&h).await;
+    assert_eq!(decision.gate_verdict, GateVerdict::Offered);
+    assert_eq!(decision.focus_state, Some(DecisionFocusState::Unknown));
+}
+
+/// With the entitlement and the person's permission, the row says what the
+/// gate saw: `on` beside the hold, `off` beside the offer.
+#[tokio::test]
+async fn an_app_that_can_read_focus_records_on_or_off_beside_the_verdict() {
+    let h = harness();
+    report_focus(&h, Some(FocusAvailability::Available), Some(true)).await;
+    let held = drift_decision(&h).await;
+    assert_eq!(held.gate_verdict, GateVerdict::SuppressedDnd);
+    assert_eq!(held.focus_state, Some(DecisionFocusState::On));
+
+    let h = harness();
+    report_focus(&h, Some(FocusAvailability::Available), Some(false)).await;
+    let offered = drift_decision(&h).await;
+    assert_eq!(offered.gate_verdict, GateVerdict::Offered);
+    assert_eq!(offered.focus_state, Some(DecisionFocusState::Off));
 }

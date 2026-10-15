@@ -11,19 +11,17 @@
 //! followed by its 64-byte signatures: one, or for a rotation the old key's and
 //! then the new key's. A parser rejects anything after them.
 //!
-//! The rotation and deletion statements end with the signing Mac's
-//! [`IssuerTag`], so other Macs can name that Mac from signed bytes (J6
-//! `sync_key_changed`, J9 "Sync was turned off from …") while velvt-core sees
-//! no device id.
+//! The layouts are §5.3's table, byte for byte, which is what velvt-core
+//! (`app/services/vault_formats.py`, PR C2) rebuilds and checks. Times inside
+//! signed bytes are whole Unix seconds, as velvt-core signs and compares them.
 
 use uuid::Uuid;
 
 use super::{
-    BlobName, CryptoError, FormatError, IssuerTag, KeyId, Signature, UserId, VaultKey,
-    WritePublicKey, PUBLIC_KEY_LENGTH, SIGNATURE_LENGTH,
+    BlobName, CryptoError, FormatError, KeyId, Signature, UserId, VaultKey, WritePublicKey,
+    PUBLIC_KEY_LENGTH, SIGNATURE_LENGTH,
 };
 use crate::vault::code::HandoffId;
-use crate::vault::doc::SyncDeviceId;
 use crate::vault::wire::{Reader, Writer};
 
 const PUT_TAG: &[u8] = b"velvt-vault-put-v1\0";
@@ -202,10 +200,8 @@ impl Statement for CreateStatement {
 }
 
 /// `"velvt-vault-rotate-v1\0" ‖ lp(user_id) ‖ old_key_id ‖ new_key_id ‖
-/// new_write_pk ‖ u64_be(new_version) ‖ issuer_tag`, signed by the old `W`
-/// (authorization) and by the new `W` (possession). `issuer_tag` is the
-/// rotating Mac's, under the old key, which every Mac that verifies the
-/// rotation holds.
+/// new_write_pk ‖ u64_be(new_version)`, signed by the old `W` (authorization)
+/// and by the new `W` (possession).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RotateStatement {
     pub user_id: UserId,
@@ -213,7 +209,6 @@ pub struct RotateStatement {
     pub new_key_id: KeyId,
     pub new_write_pk: WritePublicKey,
     pub new_version: u64,
-    pub issuer_tag: IssuerTag,
 }
 
 impl private::Sealed for RotateStatement {
@@ -225,7 +220,6 @@ impl private::Sealed for RotateStatement {
             new_key_id: KeyId::from_bytes(reader.array()?),
             new_write_pk: read_public_key(reader)?,
             new_version: reader.u64()?,
-            issuer_tag: IssuerTag::from_bytes(reader.array()?),
         })
     }
 }
@@ -238,7 +232,6 @@ impl Statement for RotateStatement {
             .bytes(self.new_key_id.as_bytes())
             .bytes(self.new_write_pk.as_bytes())
             .u64(self.new_version)
-            .bytes(self.issuer_tag.as_bytes())
             .finish()
     }
 }
@@ -253,14 +246,12 @@ pub struct SignedRotation {
 }
 
 impl SignedRotation {
-    /// The rotation from `old` to `new` that §5.6 step 5 posts, made by the
-    /// Mac `issuer`.
+    /// The rotation from `old` to `new` that §5.6 step 5 posts.
     pub fn sign(
         user_id: UserId,
         old: &VaultKey,
         new: &VaultKey,
         new_version: u64,
-        issuer: SyncDeviceId,
     ) -> Result<Self, CryptoError> {
         let statement = RotateStatement {
             user_id,
@@ -268,7 +259,6 @@ impl SignedRotation {
             new_key_id: new.key_id(),
             new_write_pk: *new.write_public_key(),
             new_version,
-            issuer_tag: old.issuer_tag(issuer)?,
         };
         Ok(Self {
             old_signature: old.sign_statement(&statement)?,
@@ -321,17 +311,16 @@ impl SignedRotation {
 }
 
 /// `"velvt-vault-delete-v1\0" ‖ lp(user_id) ‖ key_id ‖ u64_be(at_version) ‖
-/// i64_be(requested_at) ‖ issuer_tag`, signed by `W`. `requested_at` is Unix
-/// milliseconds, and `issuer_tag` names the deleting Mac
-/// ([`VaultKey::issuer_tag`]). velvt-core keeps it as the tombstone other Macs
-/// verify (J9).
+/// i64_be(requested_at)`, signed by `W`. `requested_at` is whole Unix seconds;
+/// velvt-core refuses one more than 10 minutes from its own clock, so a
+/// tombstone cannot be replayed later. It keeps the signed statement as the
+/// tombstone other Macs verify (J9).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DeleteStatement {
     pub user_id: UserId,
     pub key_id: KeyId,
     pub at_version: u64,
-    pub requested_at_ms: i64,
-    pub issuer_tag: IssuerTag,
+    pub requested_at: i64,
 }
 
 impl private::Sealed for DeleteStatement {
@@ -341,8 +330,7 @@ impl private::Sealed for DeleteStatement {
             user_id: read_user_id(reader)?,
             key_id: KeyId::from_bytes(reader.array()?),
             at_version: reader.u64()?,
-            requested_at_ms: reader.i64()?,
-            issuer_tag: IssuerTag::from_bytes(reader.array()?),
+            requested_at: reader.i64()?,
         })
     }
 }
@@ -353,21 +341,21 @@ impl Statement for DeleteStatement {
             .lp(self.user_id.as_str().as_bytes())
             .bytes(self.key_id.as_bytes())
             .u64(self.at_version)
-            .i64(self.requested_at_ms)
-            .bytes(self.issuer_tag.as_bytes())
+            .i64(self.requested_at)
             .finish()
     }
 }
 
 /// `"velvt-vault-handoff-v1\0" ‖ lp(user_id) ‖ handoff_id ‖ SHA-256(payload) ‖
 /// i64_be(expires_at)`, signed by `W`, so someone with only the password cannot
-/// replace the live handoff. `expires_at` is Unix milliseconds.
+/// replace the live handoff. `expires_at` is whole Unix seconds, the integer
+/// the request body carries.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HandoffStatement {
     pub user_id: UserId,
     pub handoff_id: HandoffId,
     pub payload_sha256: [u8; 32],
-    pub expires_at_ms: i64,
+    pub expires_at: i64,
 }
 
 impl private::Sealed for HandoffStatement {
@@ -377,7 +365,7 @@ impl private::Sealed for HandoffStatement {
             user_id: read_user_id(reader)?,
             handoff_id: HandoffId::from_bytes(reader.array()?),
             payload_sha256: reader.array()?,
-            expires_at_ms: reader.i64()?,
+            expires_at: reader.i64()?,
         })
     }
 }
@@ -388,7 +376,7 @@ impl Statement for HandoffStatement {
             .lp(self.user_id.as_str().as_bytes())
             .bytes(self.handoff_id.as_bytes())
             .bytes(&self.payload_sha256)
-            .i64(self.expires_at_ms)
+            .i64(self.expires_at)
             .finish()
     }
 }

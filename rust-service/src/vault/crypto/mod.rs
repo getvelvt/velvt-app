@@ -28,7 +28,6 @@ use ring::{hkdf, hmac};
 use subtle::ConstantTimeEq;
 use zeroize::Zeroizing;
 
-use super::doc::SyncDeviceId;
 pub use super::wire::FormatError;
 use super::wire::Writer;
 
@@ -39,11 +38,9 @@ pub const TAG_LENGTH: usize = 16;
 pub const SIGNATURE_LENGTH: usize = 64;
 pub const PUBLIC_KEY_LENGTH: usize = 32;
 
-/// The six sizes a sealed document can have: 16, 32, 64, 128, 256 and 512 KiB,
-/// nonce and tag included. Fixing the *sealed* length, rather than the padded
-/// plaintext's, keeps the largest copy inside the server's 512 KiB limit and
-/// shows the server nothing finer than which of the six steps a copy is in.
-pub const SEALED_SIZES: [usize; 6] = [
+/// The six lengths the padded plaintext can have: 16, 32, 64, 128, 256 and
+/// 512 KiB (§5.3: "padded to the next power of two, at least 16 KiB").
+pub const PADDED_SIZES: [usize; 6] = [
     16 * 1024,
     32 * 1024,
     64 * 1024,
@@ -52,14 +49,24 @@ pub const SEALED_SIZES: [usize; 6] = [
     512 * 1024,
 ];
 const SEAL_OVERHEAD: usize = NONCE_LENGTH + TAG_LENGTH;
+/// The six lengths a sealed document can have: a padded size plus the 12-byte
+/// nonce and the 16-byte tag. velvt-core stores exactly these six and refuses
+/// any other length (`vault_blob_invalid`), so the server sees which step a
+/// copy is in and nothing finer.
+pub const SEALED_SIZES: [usize; 6] = [
+    PADDED_SIZES[0] + SEAL_OVERHEAD,
+    PADDED_SIZES[1] + SEAL_OVERHEAD,
+    PADDED_SIZES[2] + SEAL_OVERHEAD,
+    PADDED_SIZES[3] + SEAL_OVERHEAD,
+    PADDED_SIZES[4] + SEAL_OVERHEAD,
+    PADDED_SIZES[5] + SEAL_OVERHEAD,
+];
 const LENGTH_PREFIX: usize = 4;
-/// The longest document JSON that fits in the largest sealed size.
-pub const MAX_DOCUMENT_JSON_LENGTH: usize =
-    SEALED_SIZES[SEALED_SIZES.len() - 1] - SEAL_OVERHEAD - LENGTH_PREFIX;
+/// The longest document JSON that fits in the largest padded size.
+pub const MAX_DOCUMENT_JSON_LENGTH: usize = PADDED_SIZES[PADDED_SIZES.len() - 1] - LENGTH_PREFIX;
 
 const DOC_KEY_INFO: &[u8] = b"velvt-vault-doc-v1";
 const WRITE_SEED_INFO: &[u8] = b"velvt-vault-write-v1";
-const ISSUER_KEY_INFO: &[u8] = b"velvt-vault-issuer-v1";
 const KEY_ID_TAG: &[u8] = b"velvt-vault-key-id-v1\0";
 const FINGERPRINT_TAG: &[u8] = b"velvt-vault-fpr-v1\0";
 const DOC_AAD_TAG: &[u8] = b"velvt-vault-doc-v1\0";
@@ -164,7 +171,8 @@ impl VaultKey {
 
     /// Seals document JSON at the context's version (§5.3):
     /// `nonce ‖ ChaCha20-Poly1305(K_doc, nonce, aad, u32_be(len) ‖ json ‖ 0…)`,
-    /// padded so the result is exactly one of [`SEALED_SIZES`].
+    /// with the plaintext padded to one of [`PADDED_SIZES`], so the result is
+    /// exactly one of [`SEALED_SIZES`].
     pub fn seal_document(
         &self,
         context: &DocumentContext<'_>,
@@ -215,38 +223,6 @@ impl VaultKey {
         let doc_key = hkdf_sha256::<KEY_LENGTH>(&self.secret[..], DOC_KEY_INFO)?;
         let plain = aead_open(&doc_key, &context.aad(), sealed)?;
         Ok(Zeroizing::new(unpad_document(&plain)?.to_vec()))
-    }
-
-    /// The tag a rotation or deletion statement carries to name the Mac that
-    /// signed it (J6, J9): `HMAC-SHA256(K_issuer, sync_device_id)[0..16]`, with
-    /// `K_issuer = HKDF-SHA256(K, info = "velvt-vault-issuer-v1")`. Another
-    /// Mac holding this `K` finds the name by computing the tag for each
-    /// device in its last opened document; velvt-core, which stores the
-    /// statement, sees no device id.
-    pub fn issuer_tag(&self, issuer: SyncDeviceId) -> Result<IssuerTag, CryptoError> {
-        let issuer_key = hkdf_sha256::<KEY_LENGTH>(&self.secret[..], ISSUER_KEY_INFO)?;
-        let key = hmac::Key::new(hmac::HMAC_SHA256, &issuer_key[..]);
-        let mac = hmac::sign(&key, issuer.as_bytes());
-        let mut tag = [0_u8; IssuerTag::LENGTH];
-        tag.copy_from_slice(&mac.as_ref()[..IssuerTag::LENGTH]);
-        Ok(IssuerTag(tag))
-    }
-
-    /// The device among `candidates` whose tag under this key is `tag`, if
-    /// any. `None` when the signer is not in the document this Mac last
-    /// opened, for instance a Mac that joined since; the copy then names no
-    /// Mac.
-    pub fn identify_issuer<'a>(
-        &self,
-        tag: &IssuerTag,
-        candidates: impl IntoIterator<Item = &'a SyncDeviceId>,
-    ) -> Result<Option<SyncDeviceId>, CryptoError> {
-        for candidate in candidates {
-            if self.issuer_tag(*candidate)? == *tag {
-                return Ok(Some(*candidate));
-            }
-        }
-        Ok(None)
     }
 
     /// Private to this module: `statement` signs through
@@ -450,29 +426,6 @@ impl fmt::Debug for Signature {
     }
 }
 
-/// The 16 bytes a rotation or deletion statement carries in place of the
-/// signing Mac's `sync_device_id`; see [`VaultKey::issuer_tag`].
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
-pub struct IssuerTag([u8; IssuerTag::LENGTH]);
-
-impl IssuerTag {
-    pub const LENGTH: usize = 16;
-
-    pub fn from_bytes(bytes: [u8; Self::LENGTH]) -> Self {
-        Self(bytes)
-    }
-
-    pub fn as_bytes(&self) -> &[u8; Self::LENGTH] {
-        &self.0
-    }
-}
-
-impl fmt::Debug for IssuerTag {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(formatter, "IssuerTag({})", encode_hex(&self.0))
-    }
-}
-
 /// velvt-core's id for the account, as it appears in every AAD and statement.
 ///
 /// 1–64 bytes of printable ASCII. velvt-core's ids are UUID strings; the bound
@@ -556,16 +509,20 @@ impl DocumentContext<'_> {
 /// The sealed size a document of `json_length` bytes gets, or `None` past the
 /// largest.
 pub fn sealed_size_for(json_length: usize) -> Option<usize> {
-    let needed = json_length.checked_add(LENGTH_PREFIX + SEAL_OVERHEAD)?;
-    SEALED_SIZES.iter().copied().find(|&size| needed <= size)
+    padded_size_for(json_length).map(|padded| padded + SEAL_OVERHEAD)
 }
 
-/// `u32_be(len(json)) ‖ json ‖ 0x00…`, long enough that sealing it gives a
-/// sealed size.
+fn padded_size_for(json_length: usize) -> Option<usize> {
+    let needed = json_length.checked_add(LENGTH_PREFIX)?;
+    PADDED_SIZES.iter().copied().find(|&size| needed <= size)
+}
+
+/// `u32_be(len(json)) ‖ json ‖ 0x00…`, padded to the smallest of
+/// [`PADDED_SIZES`] that holds it.
 pub fn pad_document(json: &[u8]) -> Result<Zeroizing<Vec<u8>>, CryptoError> {
-    let sealed = sealed_size_for(json.len()).ok_or(CryptoError::TooLarge)?;
+    let padded = padded_size_for(json.len()).ok_or(CryptoError::TooLarge)?;
     let length = u32::try_from(json.len()).map_err(|_| CryptoError::TooLarge)?;
-    let mut plain = Zeroizing::new(vec![0_u8; sealed - SEAL_OVERHEAD]);
+    let mut plain = Zeroizing::new(vec![0_u8; padded]);
     plain[..LENGTH_PREFIX].copy_from_slice(&length.to_be_bytes());
     plain[LENGTH_PREFIX..LENGTH_PREFIX + json.len()].copy_from_slice(json);
     Ok(plain)
@@ -856,10 +813,10 @@ mod tests {
         aead_open, hkdf_sha256, pad_document, sealed_size_for, sha256, unpad_document, BlobName,
         CryptoError, DocumentContext, FormatError, KeyId, PersonKey, PersonKeyKind, PersonSalt,
         Signature, UserId, VaultKey, WritePublicKey, DOC_KEY_INFO, KEY_LENGTH,
-        MAX_DOCUMENT_JSON_LENGTH, SEALED_SIZES,
+        MAX_DOCUMENT_JSON_LENGTH, PADDED_SIZES, SEALED_SIZES,
     };
     use crate::vault::code::HandoffId;
-    use crate::vault::test_support::{device, other_key, other_user, prefs, test_key, user, Rng};
+    use crate::vault::test_support::{other_key, other_user, prefs, test_key, user, Rng};
 
     const JSON: &[u8] = br#"{"schema":1}"#;
 
@@ -1005,22 +962,36 @@ mod tests {
         assert_eq!(nonces.len(), 10_000);
     }
 
+    /// velvt-core accepts exactly these six lengths (C2, `CIPHERTEXT_BYTES`): a
+    /// padded size of 16 to 512 KiB, plus the nonce and the tag.
     #[test]
     fn every_sealed_document_is_exactly_one_of_six_sizes() {
-        assert_eq!(sealed_size_for(0), Some(16 * 1024));
+        assert_eq!(
+            SEALED_SIZES,
+            [16, 32, 64, 128, 256, 512].map(|kib| kib * 1024 + 28)
+        );
+        assert_eq!(
+            PADDED_SIZES,
+            [16, 32, 64, 128, 256, 512].map(|kib| kib * 1024)
+        );
+        assert_eq!(sealed_size_for(0), Some(16 * 1024 + 28));
         for (index, &size) in SEALED_SIZES.iter().enumerate() {
-            let largest = size - 32;
+            let largest = size - 28 - 4;
             assert_eq!(sealed_size_for(largest), Some(size));
             let next = SEALED_SIZES.get(index + 1).copied();
             assert_eq!(sealed_size_for(largest + 1), next);
         }
-        assert_eq!(sealed_size_for(MAX_DOCUMENT_JSON_LENGTH), Some(512 * 1024));
+        assert_eq!(MAX_DOCUMENT_JSON_LENGTH, 512 * 1024 - 4);
+        assert_eq!(
+            sealed_size_for(MAX_DOCUMENT_JSON_LENGTH),
+            Some(512 * 1024 + 28)
+        );
         assert_eq!(sealed_size_for(MAX_DOCUMENT_JSON_LENGTH + 1), None);
 
         let key = test_key();
         let (user_id, name) = (user(), prefs());
         let context = context(&user_id, &name, &key);
-        for json_length in [0, 16 * 1024 - 32, 16 * 1024 - 31, MAX_DOCUMENT_JSON_LENGTH] {
+        for json_length in [0, 16 * 1024 - 4, 16 * 1024 - 3, MAX_DOCUMENT_JSON_LENGTH] {
             let json = vec![b' '; json_length];
             let sealed = key.seal_document(&context, &json).unwrap();
             assert_eq!(Some(sealed.len()), sealed_size_for(json_length));
@@ -1056,7 +1027,7 @@ mod tests {
     #[test]
     fn padding_is_a_length_prefix_and_zeros_and_nothing_else_is_accepted() {
         let plain = pad_document(JSON).unwrap();
-        assert_eq!(plain.len(), 16 * 1024 - 28);
+        assert_eq!(plain.len(), 16 * 1024);
         assert_eq!(&plain[..4], &(JSON.len() as u32).to_be_bytes());
         assert_eq!(unpad_document(&plain).unwrap(), JSON);
 
@@ -1242,15 +1213,14 @@ mod tests {
                 write_pk: *key.write_public_key(),
                 ciphertext_sha256,
             },
-            rotate: SignedRotation::sign(user(), key, next, 43, device(5)).unwrap(),
+            rotate: SignedRotation::sign(user(), key, next, 43).unwrap(),
             delete: Signed::sign(
                 key,
                 DeleteStatement {
                     user_id: user(),
                     key_id: key.key_id(),
                     at_version: 42,
-                    requested_at_ms: 1_760_486_400_000,
-                    issuer_tag: key.issuer_tag(device(5)).unwrap(),
+                    requested_at: 1_760_486_400,
                 },
             )
             .unwrap(),
@@ -1260,7 +1230,7 @@ mod tests {
                     user_id: user(),
                     handoff_id: HandoffId::from_bytes([7; 16]),
                     payload_sha256: sha256(b"payload"),
-                    expires_at_ms: 1_760_487_000_000,
+                    expires_at: 1_760_487_000,
                 },
             )
             .unwrap(),
@@ -1488,7 +1458,7 @@ mod tests {
     #[test]
     fn a_rotation_must_be_signed_by_both_keys_and_name_both_correctly() {
         let (old, new) = (test_key(), other_key());
-        let rotation = SignedRotation::sign(user(), &old, &new, 43, device(5)).unwrap();
+        let rotation = SignedRotation::sign(user(), &old, &new, 43).unwrap();
         assert_eq!(
             rotation.verify(&user(), old.write_public_key()),
             Ok(*new.write_public_key())
@@ -1510,7 +1480,7 @@ mod tests {
             Err(CryptoError::KeyMismatch)
         );
 
-        let to_itself = SignedRotation::sign(user(), &old, &old, 43, device(5)).unwrap();
+        let to_itself = SignedRotation::sign(user(), &old, &old, 43).unwrap();
         assert_eq!(
             to_itself.verify(&user(), old.write_public_key()),
             Err(CryptoError::KeyMismatch)
@@ -1520,38 +1490,6 @@ mod tests {
             rotation.verify(&user(), new.write_public_key()),
             Err(CryptoError::KeyMismatch)
         );
-    }
-
-    /// J6 and J9 name the Mac that rotated or deleted, so the statements carry
-    /// a tag only a holder of `K` can map back to a device: velvt-core, which
-    /// stores them, sees no device id, and cannot change the tag without
-    /// breaking the signature.
-    #[test]
-    fn a_rotation_or_deletion_names_its_mac_to_holders_of_the_key_only() {
-        let (key, next) = (test_key(), other_key());
-        let all = statements(&key, &next);
-        let tag = key.issuer_tag(device(5)).unwrap();
-        assert_eq!(all.rotate.statement.issuer_tag, tag);
-        assert_eq!(all.delete.statement.issuer_tag, tag);
-
-        let devices = [device(1), device(5), device(9)];
-        assert_eq!(key.identify_issuer(&tag, &devices), Ok(Some(device(5))));
-        assert_eq!(key.identify_issuer(&tag, &devices[..1]), Ok(None));
-        assert_eq!(next.identify_issuer(&tag, &devices), Ok(None));
-
-        assert_eq!(key.issuer_tag(device(5)), Ok(tag), "deterministic");
-        assert_ne!(key.issuer_tag(device(6)).unwrap(), tag);
-        assert_ne!(next.issuer_tag(device(5)).unwrap(), tag);
-        let stored = all.delete.to_bytes();
-        let id = device(5);
-        assert!(
-            !stored.windows(16).any(|window| window == id.as_bytes()),
-            "the stored statement holds no sync device id"
-        );
-        assert!(!stored
-            .windows(36)
-            .any(|window| window == id.to_string().as_bytes()));
-        assert!(format!("{tag:?}").starts_with("IssuerTag("));
     }
 
     #[test]

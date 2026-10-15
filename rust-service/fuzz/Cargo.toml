@@ -1,0 +1,47 @@
+# cargo-fuzz targets for src/vault (design §16.1). Not a member of the
+# rust-service workspace and not a dependency of anything: `cargo build`,
+# `cargo test --workspace` and the shipped helper never resolve libfuzzer-sys.
+# Run with `make fuzz-vault` (nightly and cargo-fuzz); CI runs it nightly.
+[package]
+name = "velvt-service-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4.13"
+velvt-service = { path = ".." }
+
+[workspace]
+members = ["."]
+
+[[bin]]
+name = "vault_document"
+path = "fuzz_targets/vault_document.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "vault_setup_code"
+path = "fuzz_targets/vault_setup_code.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "vault_statements"
+path = "fuzz_targets/vault_statements.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "vault_handoff_payload"
+path = "fuzz_targets/vault_handoff_payload.rs"
+test = false
+doc = false
+bench = false

@@ -1,4 +1,4 @@
-.PHONY: check-rust-toolchain check-swift-toolchain check-xcode-version prepare-dmg-tool build-rust test-rust bench-rust check-rust-onnx lint-rust build-swift test-swift lint-swift lint-copy build-all test-all build-app package-release dmg alpha-dmg release update-archive update-appcast verify-update-release test-update-release test-dmg-release test-measurement verify-release verify-release-production build-app-local-core clean
+.PHONY: check-rust-toolchain check-swift-toolchain check-xcode-version prepare-dmg-tool build-rust test-rust bench-rust check-rust-onnx fuzz-vault print-fuzz-toolchain print-cargo-fuzz-version lint-rust build-swift test-swift lint-swift lint-copy build-all test-all build-app package-release dmg alpha-dmg release update-archive update-appcast verify-update-release test-update-release test-dmg-release test-measurement verify-release verify-release-production build-app-local-core clean
 
 ifeq ($(OS),Windows_NT)
 NULL_DEVICE := NUL
@@ -139,6 +139,32 @@ bench-rust: check-rust-toolchain
 # the only callers of some of the gated surface.
 check-rust-onnx: check-rust-toolchain
 	cd rust-service && cargo check --features onnx --all-targets
+
+# The vault's cargo-fuzz targets (rust-service/fuzz), FUZZ_SECONDS each.
+# cargo-fuzz needs a nightly toolchain, pinned here rather than in
+# rust-toolchain.toml so nothing else ever builds with it; the Fuzz workflow
+# (.github/workflows/fuzz.yml) reads both pins from the two print targets.
+# test-rust replays the committed corpora without either.
+FUZZ_TOOLCHAIN ?= nightly-2026-10-01
+CARGO_FUZZ_VERSION := 0.13.2
+FUZZ_SECONDS ?= 60
+VAULT_FUZZ_TARGETS := vault_document vault_setup_code vault_statements vault_handoff_payload
+
+# libFuzzer writes every new input into the first corpus directory it is
+# given, so that is a scratch directory (gitignored); the committed corpus is
+# read from second and never written to. Add only a crashing input to it.
+fuzz-vault:
+	cd rust-service && for target in $(VAULT_FUZZ_TARGETS); do \
+		mkdir -p fuzz/scratch-corpus/$$target && \
+		cargo +$(FUZZ_TOOLCHAIN) fuzz run $$target fuzz/scratch-corpus/$$target fuzz/corpus/$$target \
+			-- -max_total_time=$(FUZZ_SECONDS) || exit 1; \
+	done
+
+print-fuzz-toolchain:
+	@echo $(FUZZ_TOOLCHAIN)
+
+print-cargo-fuzz-version:
+	@echo $(CARGO_FUZZ_VERSION)
 
 # --workspace --all-targets so shared-types, the integration tests, and every
 # #[cfg(test)] module are linted too. Plain `cargo clippy` covers only the root

@@ -35,3 +35,4 @@ Open the relevant file, make your changes, and do not modify files unrelated to 
 | Release ledger | `docs/RELEASES.md` | Every notarized release with build, protocol, source commit or tag, DMG sha256 and recipients; how to cut the next one |
 | Secure application updates | `docs/updates.md` | Updater architecture, trust model, activation checklist, publishing order, and N-to-N+1 verification |
 | Local meaningful-work loop | `docs/architecture/work-block-loop.md` | Work-block ownership, state machine, evidence rules, classification provenance and the golden replay that holds decisions fixed, privacy field table, lifecycle, and failure behavior |
+| Vault v1 wire formats | `docs/architecture/vault-v1-formats.md` | Byte formats of the Sync v1 vault as built in `rust-service/src/vault` (keys, sealed document, signed statements, setup code, person keys, HLC merge), the published test vectors, and fuzzing |

@@ -123,11 +123,20 @@ carry; restoring it would be a change on both sides.
 A signature proves only that `W` signed some bytes. velvt-core must also tie
 those bytes to the request they arrive with, or a valid statement could be
 replayed onto another request. It **rebuilds** the put, create and handoff
-statements from the request and never accepts statement bytes for them. It
-**parses** the rotate, delete and cancel-reset statements that arrive as bytes
-(`*_stmt_b64`), strictly, and requires each field below to equal its request
-counterpart. In every case `user_id` is the authenticated account's id, never a
+statements from the request and never accepts statement bytes for them. The
+rotate and cancel-reset statements arrive as bytes (`rotate_stmt_b64`,
+`cancel_stmt_b64`): it rebuilds each from the request and refuses bytes that
+differ in any one (`422 vault_statement_invalid`), which requires each field
+below to equal its request counterpart. It **parses** the delete statement
+(`delete_stmt_b64`) at exactly its §5.3 length and requires the same of its
+fields. In every case `user_id` is the authenticated account's id, never a
 request field.
+
+`rust-service/tests/vault_c2_contract.rs` ports these checks from velvt-core
+(`app/services/vault_formats.py`, the request checks in `vault_service.py` and
+the field limits in `schemas/vault.py`, #46 at `f448a15`). It runs velvt-core's
+own known answers, these vectors, and blobs and statements A1 makes now through
+them, so a byte on which A1 and C2 disagree fails `cargo test`.
 
 | Endpoint | Statement | Built or checked from |
 |---|---|---|

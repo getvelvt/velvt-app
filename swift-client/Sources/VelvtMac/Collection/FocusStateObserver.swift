@@ -111,15 +111,10 @@ public struct INFocusStatusProvider: FocusStatusProviding {
     /// `isFocused` is read even when the reading would not trust it, because
     /// whether an unentitled build gets a value at all is the question.
     public func selfCheck() -> FocusStatusSelfCheck {
-        let authorization = INFocusStatusCenter.default.authorizationStatus
-        return FocusStatusSelfCheck(
-            authorization: authorization,
+        FocusStatusSelfCheck(
+            authorization: INFocusStatusCenter.default.authorizationStatus,
             isFocused: INFocusStatusCenter.default.focusStatus.isFocused,
-            entitled: entitled,
-            availability: FocusStatusAvailability.resolve(
-                entitled: entitled,
-                authorization: authorization
-            )
+            entitled: entitled
         )
     }
 
@@ -139,15 +134,17 @@ public struct INFocusStatusProvider: FocusStatusProviding {
 // MARK: - FocusStatusSelfCheck
 
 /// One line at launch saying whether this build can read Focus status (1.0.14
-/// simulation, B5): the authorization status, the raw `isFocused`, whether the
-/// signature carries the Communication Notifications entitlement, and the
-/// availability the app reports to the service. Values only, every one a
-/// fixed token: no Focus mode name, nothing about the person beyond the one
-/// boolean the product already reads.
+/// simulation, B5): the authorization status, whether the system gave an
+/// `isFocused` value, whether the signature carries the Communication
+/// Notifications entitlement, and the availability the app reports to the
+/// service. Values only, every one a fixed token: no Focus mode name, and
+/// never the person's Focus.
 public struct FocusStatusSelfCheck: Equatable, Sendable {
     public let authorization: INFocusStatusAuthorizationStatus
     public let isFocused: Bool?
     public let entitled: Bool
+    /// What `currentReading()` sends the service for the same inputs, so the
+    /// line never says `available` while the service is told otherwise.
     public let availability: FocusStatusAvailability
 
     private static let log = Logger(subsystem: "com.velvt.mac", category: "FocusStatus")
@@ -155,23 +152,37 @@ public struct FocusStatusSelfCheck: Equatable, Sendable {
     public init(
         authorization: INFocusStatusAuthorizationStatus,
         isFocused: Bool?,
-        entitled: Bool,
-        availability: FocusStatusAvailability
+        entitled: Bool
     ) {
         self.authorization = authorization
         self.isFocused = isFocused
         self.entitled = entitled
-        self.availability = availability
+        availability =
+            FocusStatusReading(
+                availability: .resolve(entitled: entitled, authorization: authorization),
+                isFocused: isFocused
+            ).availability
     }
 
     public var line: String {
         [
             "focus_status_self_check",
             "authorization_status=\(Self.token(for: authorization))",
-            "is_focused=\(isFocused.map { $0 ? "true" : "false" } ?? "nil")",
+            "is_focused=\(isFocusedToken)",
             "communication_notifications_entitlement=\(entitled ? "present" : "absent")",
             "availability=\(availability.rawValue)",
         ].joined(separator: " ")
+    }
+
+    /// `value` or `nil` on an entitled build, where the value is the person's
+    /// Focus and this line is public in the persisted log. Unentitled, the
+    /// raw value: `donotdisturbd` refuses the read, so it is not the person's
+    /// Focus, and whether it is ever anything but `false` is what the line
+    /// is for.
+    private var isFocusedToken: String {
+        guard let isFocused else { return "nil" }
+        if entitled { return "value" }
+        return isFocused ? "true" : "false"
     }
 
     /// Written at a persisted level, so `log show --predicate 'subsystem ==

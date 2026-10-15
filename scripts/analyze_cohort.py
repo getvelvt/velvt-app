@@ -364,10 +364,12 @@ DELIVERY_POSTED_VISIBLE = ("notification_posted",)
 # service knew about Focus when the gate decided. on / off: the app could read
 # Focus status and the record said a Focus was / was not on. unknown: it could
 # not (a build without Apple's Communication Notifications entitlement, Focus
-# status denied or never answered), so a Focus may have silenced an offer that
-# is counted as delivered. not_recorded = an empty value: the decision predates
-# migration 0044, or the export has no such column (every export before format
-# 6). Never folded into off. Each offer takes the value on the decision-log row
+# status denied or never answered), had not yet said whether it could since the
+# helper started, or no Focus state was recorded yet (for example after Clear
+# Local Work Blocks), so a Focus may have silenced an offer that is counted as
+# delivered. not_recorded = an empty value: the decision predates migration
+# 0044, or the export has no such column (every export before format 6). Never
+# folded into off. Each offer takes the value on the decision-log row
 # that attributes it (same block, verdict offered / withheld_demotion /
 # suppressed_dnd). Descriptive only: no pre-registered denominator reads it.
 FOCUS_STATES = ("on", "off", "unknown")
@@ -1939,7 +1941,9 @@ def analyse(cohort: Cohort, cohort_start: datetime | None = None, cohort_weeks: 
                 "the gate decided. on / off: the app could read Focus status and the "
                 "record said a Focus was / was not on. unknown: the app could not read "
                 "it (no Communication Notifications entitlement, Focus status denied "
-                "or never answered), so a Focus may have silenced a delivered offer: "
+                "or never answered), had not yet said whether it could since the "
+                "helper started, or no Focus state was recorded yet, so a Focus may "
+                "have silenced a delivered offer: "
                 "its delivery is unknown, and posted_with_visible_alert_style there is "
                 "an upper bound on offers seen. not_recorded: decided before migration "
                 "0044, or an export without the column. Never folded into off."

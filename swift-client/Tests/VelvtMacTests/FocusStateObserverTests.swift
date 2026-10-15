@@ -184,8 +184,7 @@ final class FocusStateObserverTests: XCTestCase {
         let unentitled = FocusStatusSelfCheck(
             authorization: .authorized,
             isFocused: false,
-            entitled: false,
-            availability: .unavailable
+            entitled: false
         )
         XCTAssertEqual(
             unentitled.line,
@@ -195,8 +194,7 @@ final class FocusStateObserverTests: XCTestCase {
         let unanswered = FocusStatusSelfCheck(
             authorization: .notDetermined,
             isFocused: nil,
-            entitled: true,
-            availability: .notDetermined
+            entitled: true
         )
         XCTAssertEqual(
             unanswered.line,
@@ -205,6 +203,58 @@ final class FocusStateObserverTests: XCTestCase {
         )
         XCTAssertEqual(FocusStatusSelfCheck.token(for: .denied), "denied")
         XCTAssertEqual(FocusStatusSelfCheck.token(for: .restricted), "restricted")
+    }
+
+    /// The line is public in the persisted log, so an entitled build, whose
+    /// value is the person's Focus, logs only that the system gave one.
+    func testTheLaunchSelfCheckNeverLogsAnEntitledBuildsFocusValue() {
+        for isFocused in [true, false] {
+            let entitled = FocusStatusSelfCheck(
+                authorization: .authorized,
+                isFocused: isFocused,
+                entitled: true
+            )
+            XCTAssertEqual(
+                entitled.line,
+                "focus_status_self_check authorization_status=authorized is_focused=value "
+                    + "communication_notifications_entitlement=present availability=available"
+            )
+        }
+    }
+
+    /// The line reports the availability the service is sent. Entitled and
+    /// authorized with no value from the system, `currentReading()` sends
+    /// `unavailable`, so the line must not say `available`.
+    func testTheLaunchSelfCheckReportsTheAvailabilityTheServiceIsSent() {
+        let noValue = FocusStatusSelfCheck(authorization: .authorized, isFocused: nil, entitled: true)
+        XCTAssertEqual(noValue.availability, .unavailable)
+        XCTAssertEqual(
+            noValue.line,
+            "focus_status_self_check authorization_status=authorized is_focused=nil "
+                + "communication_notifications_entitlement=present availability=unavailable"
+        )
+        let statuses: [INFocusStatusAuthorizationStatus] = [
+            .authorized, .denied, .notDetermined, .restricted,
+        ]
+        for entitled in [true, false] {
+            for authorization in statuses {
+                for isFocused in [true, false, nil] as [Bool?] {
+                    let reading = FocusStatusReading(
+                        availability: .resolve(entitled: entitled, authorization: authorization),
+                        isFocused: isFocused
+                    )
+                    XCTAssertEqual(
+                        FocusStatusSelfCheck(
+                            authorization: authorization,
+                            isFocused: isFocused,
+                            entitled: entitled
+                        ).availability,
+                        reading.availability,
+                        "\(entitled) \(authorization.rawValue) \(String(describing: isFocused))"
+                    )
+                }
+            }
+        }
     }
 
     private func edges(_ client: FakeIPCClient) -> [Bool] {

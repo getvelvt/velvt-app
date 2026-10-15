@@ -31,7 +31,8 @@ pub const DND_PATTERN_RULE_VERSION: u32 = 1;
 /// DND schedule cannot be reconstructed from five-minute edges pruned after
 /// the retention window.
 const FOCUS_EVIDENCE_BUCKET_SECONDS: i64 = 300;
-/// Focus evidence older than this is pruned on every ingest.
+/// Focus evidence older than this is pruned on every transition and on
+/// every availability report, which the app sends on each connection.
 const FOCUS_EVIDENCE_RETENTION_DAYS: i64 = 14;
 /// Rule v1 "late night": a Focus/DND activation observed in local hours
 /// 22:00-01:59.
@@ -76,11 +77,21 @@ impl FocusManager {
         })
     }
 
-    /// Stores the app's latest report of whether it can read Focus status.
-    /// It decides nothing: the Focus hold reads the transition record
-    /// whatever this says. It is what lets a decision row say `unknown`
-    /// instead of `off` when the app could not tell.
-    pub fn record_availability(&self, availability: FocusAvailability) {
+    /// Stores the app's latest report of whether it can read Focus status,
+    /// then prunes Focus evidence past the retention window. The report
+    /// decides nothing: the Focus hold reads the transition record whatever
+    /// this says. It is what lets a decision row say `unknown` instead of
+    /// `off` when the app could not tell.
+    ///
+    /// The prune is here because an app that cannot read Focus sends no
+    /// transitions, so pruning on a transition alone would keep the edges an
+    /// older build left behind forever. This report arrives on every
+    /// connection. The value is stored even when the prune fails.
+    pub fn record_availability(
+        &self,
+        availability: FocusAvailability,
+        now: DateTime<Utc>,
+    ) -> Result<(), FocusError> {
         let previous = self
             .availability
             .lock()
@@ -92,6 +103,9 @@ impl FocusManager {
                 "focus status availability reported"
             );
         }
+        self.repo
+            .prune_focus_evidence(now - Duration::days(FOCUS_EVIDENCE_RETENTION_DAYS))?;
+        Ok(())
     }
 
     /// The app's latest report, or `None` before its first one.
@@ -466,7 +480,9 @@ mod tests {
             "nothing reported yet is not off"
         );
 
-        manager.record_availability(FocusAvailability::Available);
+        manager
+            .record_availability(FocusAvailability::Available, at(0))
+            .unwrap();
         assert_eq!(
             manager.focus_state_at_decision(at(0)),
             DecisionFocusState::Unknown,
@@ -490,7 +506,7 @@ mod tests {
             FocusAvailability::Denied,
             FocusAvailability::NotDetermined,
         ] {
-            manager.record_availability(unreadable);
+            manager.record_availability(unreadable, at(0)).unwrap();
             assert_eq!(manager.availability(), Some(unreadable));
             assert_eq!(
                 manager.focus_state_at_decision(at(60)),
@@ -508,7 +524,9 @@ mod tests {
     #[test]
     fn availability_survives_clearing_the_evidence() {
         let (manager, _repo) = manager_with_repo();
-        manager.record_availability(FocusAvailability::Available);
+        manager
+            .record_availability(FocusAvailability::Available, at(0))
+            .unwrap();
         manager.record_transition(true, at(0), 0, at(0)).unwrap();
         manager.clear_evidence().unwrap();
         assert_eq!(manager.availability(), Some(FocusAvailability::Available));
@@ -517,6 +535,43 @@ mod tests {
             DecisionFocusState::Unknown,
             "the cleared edge is gone, and no edge is not off"
         );
+    }
+
+    /// An app that cannot read Focus sends no transitions, so the 14-day
+    /// prune also runs on its availability report: the `active=0` edge a
+    /// 1.0.13 build left behind does not outlive the retention window.
+    #[test]
+    fn an_availability_report_prunes_evidence_past_the_retention_window() {
+        let (manager, repo) = manager_with_repo();
+        let old = at(-days(FOCUS_EVIDENCE_RETENTION_DAYS) - hours(1));
+        manager.record_transition(false, old, 0, old).unwrap();
+        let recent = at(-days(FOCUS_EVIDENCE_RETENTION_DAYS) + hours(1));
+        manager.record_transition(true, recent, 0, recent).unwrap();
+        assert_eq!(
+            repo.focus_state_at_bucket(floor_to_bucket(old)).unwrap(),
+            Some(false)
+        );
+
+        manager
+            .record_availability(FocusAvailability::Unavailable, at(0))
+            .unwrap();
+        assert_eq!(
+            repo.focus_state_at_bucket(floor_to_bucket(old)).unwrap(),
+            None,
+            "an edge older than the window is pruned"
+        );
+        assert!(
+            repo.latest_focus_transition().unwrap().unwrap().active,
+            "an edge inside the window is kept"
+        );
+        assert!(manager.is_focus_active(at(0)));
+
+        manager
+            .record_availability(FocusAvailability::Unavailable, at(days(1)))
+            .unwrap();
+        assert!(repo.latest_focus_transition().unwrap().is_none());
+        assert!(!manager.is_focus_active(at(days(1))));
+        assert_eq!(manager.availability(), Some(FocusAvailability::Unavailable));
     }
 
     /// Coarse-only storage: the evidence table has no column that could hold

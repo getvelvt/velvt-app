@@ -3964,11 +3964,20 @@ impl MessageRouter for R7Router {
                 Ok(None)
             }
 
-            // Answered with nothing, and decides nothing: it only lets each
-            // drift decision record whether Focus was known.
+            // Answered with nothing, and decides nothing: it lets each drift
+            // decision record whether Focus was known, and prunes Focus
+            // evidence past its retention window.
             ClientMessage::FocusStatusAvailability(report) => {
                 if let Some(focus) = &self.focus {
-                    focus.record_availability(report.availability);
+                    if focus
+                        .record_availability(report.availability, Utc::now())
+                        .is_err()
+                    {
+                        tracing::warn!(
+                            error_code = "focus_evidence_prune_failed",
+                            "old focus evidence was not pruned"
+                        );
+                    }
                 }
                 Ok(None)
             }

@@ -2,7 +2,7 @@
 -- (protocol 36).
 --
 -- WHY. The gate holds an offer while a Focus is on (`suppressed_dnd`), but it
--- learns about Focus only from the app, and Apple gives Focus status only to
+-- hears about Focus only from the app, and Apple gives Focus status only to
 -- an app signed with the Communication Notifications entitlement. A build
 -- without it still reports Focus as off, so a decision made during a Focus
 -- the service could not see was stored exactly like one made with no Focus:

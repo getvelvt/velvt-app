@@ -575,3 +575,40 @@ async fn an_app_that_can_read_focus_records_on_or_off_beside_the_verdict() {
     assert_eq!(offered.gate_verdict, GateVerdict::Offered);
     assert_eq!(offered.focus_state, Some(DecisionFocusState::Off));
 }
+
+/// Retention for an app that cannot read Focus. It sends no transitions, and
+/// the 14-day prune used to run only on a transition, so the `active=0` edge a
+/// 1.0.13 build left behind stayed until Clear Local Work Blocks. The
+/// availability report, sent on every connection, prunes it.
+#[tokio::test]
+async fn an_availability_report_prunes_focus_evidence_older_than_fourteen_days() {
+    let h = harness();
+    let repo = h.persistence.focus_repo();
+    h.router
+        .route(ClientMessage::FocusStateChanged(FocusStateChanged {
+            active: false,
+            occurred_at: Utc::now() - ChronoDuration::days(20),
+            utc_offset_seconds: 0,
+        }))
+        .await
+        .unwrap();
+    assert!(
+        repo.latest_focus_transition().unwrap().is_some(),
+        "the old edge is seeded"
+    );
+
+    report_focus(&h, Some(FocusAvailability::Unavailable), None).await;
+
+    assert!(
+        repo.latest_focus_transition().unwrap().is_none(),
+        "an edge older than 14 days is pruned when the availability arrives"
+    );
+    assert_eq!(h.focus.availability(), Some(FocusAvailability::Unavailable));
+    // Only a `false` edge went, so the hold reads exactly what it read before.
+    assert!(!h.focus.is_focus_active(Utc::now()));
+
+    // An edge inside the window stays.
+    report_focus(&h, Some(FocusAvailability::Available), Some(true)).await;
+    report_focus(&h, Some(FocusAvailability::Available), None).await;
+    assert!(repo.latest_focus_transition().unwrap().unwrap().active);
+}

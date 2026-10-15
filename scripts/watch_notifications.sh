@@ -98,6 +98,9 @@ FocusStatus, protocol 36):
   communication_notifications_entitlement=absent
                                              this build cannot read Focus
                                              status whatever you allow
+  is_focused=value or nil                    with the entitlement: whether
+                                             macOS gave a value (the value
+                                             itself is never logged)
 
 Nothing at all means the drift gate abstained and no offer was ever made — a
 different problem, one layer earlier. Check that with:

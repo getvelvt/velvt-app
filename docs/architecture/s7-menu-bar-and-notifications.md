@@ -326,6 +326,10 @@ What the app does about it:
 - **Launch self-check.** One line at launch under subsystem `com.velvt.mac`,
   category `FocusStatus`, values only:
   `focus_status_self_check authorization_status=… is_focused=… communication_notifications_entitlement=present|absent availability=…`.
+  `is_focused` is `value` or `nil` on a build with the entitlement, never the
+  person's Focus, because the line is public in the persisted log; without the
+  entitlement it is the raw value the system returned, which is not the
+  person's Focus. `availability` is the value the service is sent.
   `log show --last 1h --predicate 'subsystem == "com.velvt.mac" AND category == "FocusStatus"'`
   answers it on a signed build; `scripts/watch_notifications.sh` shows it too.
 - **Availability fact.** `FocusStateObserver` reports

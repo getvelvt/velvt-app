@@ -34,9 +34,10 @@ an offer for Focus, and macOS silenced offers recorded as delivered.
   decisions file, and `analyze_cohort.py` adds a descriptive breakdown of
   offers by it; no pre-registered denominator changes.
 - The app logs one line at launch (`focus_status_self_check`, subsystem
-  `com.velvt.mac`, category `FocusStatus`): authorization status, the raw
-  `isFocused`, whether the entitlement is present, and the availability.
-  Values only.
+  `com.velvt.mac`, category `FocusStatus`): authorization status, whether the
+  system gave an `isFocused` value (the raw value only on a build without the
+  entitlement, where it is not the person's Focus), whether the entitlement is
+  present, and the availability sent to the service. Values only.
 - Rust's `ClientMessage` denies unknown variants, so a 35 helper would answer
   the new message `malformed_message`: hence the version.
 

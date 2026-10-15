@@ -553,6 +553,16 @@ same version adds an `auth_failure` code, `rate_limited`, whose message says
 how long to wait, worked out from the cloud's `Retry-After`; it carries no
 credential.
 
+*Changed after this audit, 2026-10-15 (migration 0045, no protocol change):*
+each observation the drift gate sees records which rung of the classifier
+produced it (`work_block_observation.classification_source`: seed, heuristic,
+embedding, user_rule, declared_document_types, declared_app_category or
+fallback), and each decision row has `synced_rule_evidence`, a count that is 0
+on every row. The token names a rung, never the app, site, rule or label it
+matched. The CHECK also accepts `vault_rule`, which nothing in this build
+produces. Both columns are local records, read by no gate, no upload path and
+no export, and no request was added.
+
 `PRIVACY.md`'s list of what leaves the device was wrong in both directions: it
 named `/v1/auth/account/delete`, which nothing sends, and omitted
 `DELETE /v1/account`, `GET /v1/auth/session`, `GET /v1/insights/poll`,

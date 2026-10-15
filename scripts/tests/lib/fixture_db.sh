@@ -21,6 +21,8 @@
 #                `delivery_channel`), after protocol 34's upload owner (0042)
 #   protocol 36  what the service knew about Focus at each decision (0044,
 #                `intervention_decision_log.focus_state`)
+#   provenance   which classifier rung produced each observation, and the
+#                synced-rule evidence on each decision (0045, no protocol change)
 # shellcheck shell=bash
 
 FIXTURE_MIGRATIONS_PROTOCOL_25=17
@@ -30,6 +32,7 @@ FIXTURE_MIGRATIONS_PROTOCOL_31=38
 FIXTURE_MIGRATIONS_POLICY_V5=40
 FIXTURE_MIGRATIONS_PROTOCOL_35=43
 FIXTURE_MIGRATIONS_PROTOCOL_36=44
+FIXTURE_MIGRATIONS_PROVENANCE=45
 
 # migrate_fixture_db DB LAST_VERSION APPLIED_AT
 #   Applies every migration numbered <= LAST_VERSION that DB has not recorded,

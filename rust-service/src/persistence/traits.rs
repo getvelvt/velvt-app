@@ -14,7 +14,7 @@ use super::{
 use crate::abstraction::{EmbeddingSalt, StableKeySalt};
 use chrono::{DateTime, Utc};
 use std::collections::HashMap;
-use velvt_shared_types::WorkBlockResult;
+use velvt_shared_types::{ClassificationSource, WorkBlockResult};
 
 pub trait AbstractionMapRepo: Send + Sync {
     fn upsert(&self, mapping: &AbstractionMapping) -> Result<(), PersistenceError>;
@@ -656,10 +656,19 @@ pub trait WorkBlockRepo: Send + Sync {
         block_id: &str,
         at: DateTime<Utc>,
     ) -> Result<(), PersistenceError>;
+    /// Appends one observation, with the ladder rung that classified it
+    /// (`classification_source`, migration 0045).
+    ///
+    /// The source is written beside the row and never read back:
+    /// [`WorkBlockObservation`], which every gate and result reads, has no
+    /// field for it. It is a record of where the evidence came from, kept so
+    /// the decision log can show that no synced rule decided anything, and it
+    /// cannot become an input by accident.
     fn append_observation(
         &self,
         block_id: &str,
         observation: &WorkBlockObservation,
+        source: ClassificationSource,
     ) -> Result<(), PersistenceError>;
     fn observations(&self, block_id: &str) -> Result<Vec<WorkBlockObservation>, PersistenceError>;
     fn latest_observation(

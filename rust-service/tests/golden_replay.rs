@@ -35,6 +35,14 @@
 //! golden_replay`) only for a change meant to move decisions, which is a new
 //! `DRIFT_POLICY_VERSION`; the golden's first line names the version it was
 //! recorded under.
+//!
+//! **Provenance.** `decisions.golden` was recorded before migration 0045 added
+//! `work_block_observation.classification_source` and
+//! `intervention_decision_log.synced_rule_evidence`. Both record where
+//! evidence came from and decide nothing, so they are left out of it
+//! (`RECORD_ONLY_COLUMNS`), and it still proves that the decisions are the
+//! ones the code made before the columns existed. They are compared on their
+//! own in `provenance.golden`.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::PathBuf;
@@ -66,6 +74,7 @@ use velvt_shared_types::{
 
 const TRACE: &str = "trace.json";
 const DECISIONS_GOLDEN: &str = "decisions.golden";
+const PROVENANCE_GOLDEN: &str = "provenance.golden";
 const RECORD_ENV: &str = "VELVT_GOLDEN_REPLAY_RECORD";
 
 /// The tables the comparison reads, in the order the golden lists them.
@@ -73,6 +82,27 @@ const TABLES: [&str; 3] = [
     "work_block_intervention",
     "intervention_decision_log",
     "work_block_observation",
+];
+
+/// Columns that record where evidence came from and never decide anything
+/// (migration 0045), left out of `decisions.golden` and compared in
+/// `provenance.golden` instead. A column added to these tables later lands in
+/// `decisions.golden` and fails it, until it is listed here with tests of its
+/// own or the golden is re-recorded under a new policy version.
+const RECORD_ONLY_COLUMNS: [(&str, &str); 2] = [
+    ("work_block_observation", "classification_source"),
+    ("intervention_decision_log", "synced_rule_evidence"),
+];
+
+/// The sources the trace is written to produce: every rung a Mac reaches
+/// without a Tier 2 match. `vault_rule` is not among them and must never be.
+const EXPECTED_SOURCES: [&str; 6] = [
+    "'declared_app_category'",
+    "'declared_document_types'",
+    "'fallback'",
+    "'heuristic'",
+    "'seed'",
+    "'user_rule'",
 ];
 
 /// A fixed Tier 2 salt. The shipped service mints one at random per install;
@@ -580,8 +610,10 @@ impl Replayer<'_> {
 }
 
 /// The trace, replayed into a fresh database.
+#[derive(Debug, PartialEq)]
 struct Replayed {
     decisions: String,
+    provenance: String,
 }
 
 async fn replay(trace: &Trace) -> Replayed {
@@ -597,6 +629,7 @@ async fn replay(trace: &Trace) -> Replayed {
     let connection = Connection::open(&scratch.path).unwrap();
     Replayed {
         decisions: decisions_dump(&connection, &replayer.pushes),
+        provenance: provenance_dump(&connection),
     }
 }
 
@@ -688,7 +721,38 @@ fn decisions_dump(connection: &Connection, pushes: &[String]) -> String {
         out.push('\n');
     }
     for table in TABLES {
-        let columns = column_names(connection, table);
+        let columns: Vec<String> = column_names(connection, table)
+            .into_iter()
+            .filter(|column| !RECORD_ONLY_COLUMNS.contains(&(table, column.as_str())))
+            .collect();
+        out.push_str(&format!("\n[{table}]\n"));
+        for line in table_lines(connection, table, &columns, &ids) {
+            out.push_str(&line);
+            out.push('\n');
+        }
+    }
+    out
+}
+
+/// Each row's record-only columns, beside enough of the row to read them by.
+fn provenance_dump(connection: &Connection) -> String {
+    let ids = canonical_ids(connection);
+    let mut out =
+        format!("# provenance in the golden replay of tests/fixtures/golden_replay/{TRACE}\n");
+    for (table, context) in [
+        ("work_block_observation", ["id", "block_id", "category"]),
+        (
+            "intervention_decision_log",
+            ["decision_id", "block_id", "gate_verdict"],
+        ),
+    ] {
+        let mut columns: Vec<String> = context.iter().map(|&column| column.to_owned()).collect();
+        columns.extend(
+            RECORD_ONLY_COLUMNS
+                .iter()
+                .filter(|(owner, _)| *owner == table)
+                .map(|(_, column)| (*column).to_owned()),
+        );
         out.push_str(&format!("\n[{table}]\n"));
         for line in table_lines(connection, table, &columns, &ids) {
             out.push_str(&line);
@@ -775,7 +839,7 @@ async fn two_replays_of_the_trace_agree_exactly() {
     let trace = load_trace();
     let first = replay(&trace).await;
     let second = replay(&trace).await;
-    assert_eq!(first.decisions, second.decisions);
+    assert_eq!(first, second);
 }
 
 /// The golden would also hold for a harness that never reached the gate. It
@@ -829,4 +893,42 @@ async fn the_trace_reaches_the_gate_branches_it_was_written_for() {
         "a decision with an anchor was left unresolved"
     );
     assert!(dump.contains(": offer action_id=protect_next_10"));
+}
+
+/// Migration 0045: every observation records the rung that classified the
+/// report that opened it, as `provenance.golden` lists them. The trace reaches
+/// every rung a Mac reaches without a Tier 2 match, including the two rules it
+/// teaches, and nothing records `vault_rule`, which no build can produce.
+#[tokio::test]
+async fn every_observation_records_the_rung_that_classified_it() {
+    let provenance = replay(&load_trace()).await.provenance;
+    check_golden(PROVENANCE_GOLDEN, &provenance);
+
+    let observations = section(&provenance, "work_block_observation");
+    assert!(!observations.is_empty());
+    let sources: BTreeSet<&str> = observations
+        .iter()
+        .map(|row| row["classification_source"])
+        .collect();
+    assert_eq!(
+        sources,
+        EXPECTED_SOURCES.into_iter().collect::<BTreeSet<_>>(),
+        "an observation recorded no source, or one the trace does not produce"
+    );
+}
+
+/// Migration 0045: no decision counts any synced-rule evidence. Nothing can
+/// classify by a synced rule while the rung that would is not compiled in, so
+/// the column is 0 on every row the gate logged.
+#[tokio::test]
+async fn no_decision_counts_synced_rule_evidence() {
+    let provenance = replay(&load_trace()).await.provenance;
+    let decisions = section(&provenance, "intervention_decision_log");
+    assert!(!decisions.is_empty());
+    assert!(
+        decisions
+            .iter()
+            .all(|row| row["synced_rule_evidence"] == "0"),
+        "{decisions:?}"
+    );
 }

@@ -114,6 +114,12 @@ and the singular recovery action. At a block boundary it reads the reported
 dwells overlapping the block back from `raw_event_buffer` (start, duration,
 and category evidence only) to close the last observation where its dwell
 ended and to measure coverage against what was actually reported. Swift receives a ready-to-render snapshot.
+It also receives the ladder rung that produced each piece of evidence
+(`ClassificationSource`) and stores it on the observation row it opens
+(`work_block_observation.classification_source`, migration 0045). That is a
+record, not an input: `WorkBlockObservation`, which every gate and result
+reads, has no field for it, and `tests/golden_replay.rs` holds the decisions
+to the ones recorded before the column existed.
 Deadline scheduling uses a replaceable one-shot sleep rather than polling. See
 `docs/architecture/work-block-loop.md` for the state machine and field boundary.
 

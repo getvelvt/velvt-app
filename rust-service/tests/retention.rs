@@ -25,7 +25,8 @@ use velvt_service::retention::{
     LOCAL_SITE_NAME_RETENTION_DAYS,
 };
 use velvt_shared_types::{
-    ClassificationConfidence, ClassificationStatus, WorkBlockIntensity, WorkBlockPhase,
+    ClassificationConfidence, ClassificationSource, ClassificationStatus, WorkBlockIntensity,
+    WorkBlockPhase,
 };
 
 fn open_db() -> SqlitePersistence {
@@ -584,6 +585,7 @@ fn observe(db: &SqlitePersistence, block_id: &str, category: &str, at: chrono::D
                 classification_status: ClassificationStatus::Classified,
                 classification_confidence: ClassificationConfidence::High,
             },
+            ClassificationSource::Seed,
         )
         .unwrap();
 }

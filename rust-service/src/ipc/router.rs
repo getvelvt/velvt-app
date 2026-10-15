@@ -4941,6 +4941,7 @@ impl R7Router {
             abstracted.category(),
             abstracted.classification_status(),
             abstracted.classification_confidence(),
+            abstracted.classification_source(),
             occurred_at,
         ) {
             Ok(Some(outcome)) => {

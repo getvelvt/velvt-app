@@ -8,9 +8,16 @@ import SwiftUI
 ///
 /// Precedence when multiple underlying signals are simultaneously true:
 /// `deviceRevoked` (most severe, terminal) > `ipcDisconnected` (most
-/// actionable) > `collectionPaused` > `normal`.
+/// actionable) > `collectionPaused` > `offerWaiting` > `normal`.
 public enum MenuBarState: Equatable, Sendable, CaseIterable {
     case normal
+    /// A drift offer is live and nothing of it was put on screen outside the
+    /// popover: notifications are off, unanswered or set to alert style None,
+    /// the offer is quiet, or it was too old to post after a relaunch. The
+    /// glyph is passive: no sound, no badge count, no movement. It is the one
+    /// Velvt surface a person in another app can see, and without it the
+    /// offer existed only behind a click.
+    case offerWaiting
     case collectionPaused
     case ipcDisconnected
     case deviceRevoked
@@ -27,7 +34,8 @@ public struct MenuBarStateResolver {
         collectionStatus: CollectionStatus,
         connectionStatus: ConnectionStatus,
         accountState: AccountState,
-        isDeviceRevoked: Bool
+        isDeviceRevoked: Bool,
+        isOfferWaitingUnshown: Bool = false
     ) -> MenuBarState {
         if isDeviceRevoked {
             return .deviceRevoked
@@ -37,6 +45,9 @@ public struct MenuBarStateResolver {
         }
         if collectionStatus == .permissionRevoked {
             return .collectionPaused
+        }
+        if isOfferWaitingUnshown {
+            return .offerWaiting
         }
         return .normal
     }
@@ -66,20 +77,26 @@ enum MenuBarStateStream {
         collectionStatus: some Publisher<CollectionStatus, Never>,
         connectionStatus: some Publisher<ConnectionStatus, Never>,
         accountStateManager: AccountStateManager,
+        offerWaitingUnshown: AnyPublisher<Bool, Never> = Just(false).eraseToAnyPublisher(),
         debounceInterval: RunLoop.SchedulerTimeType.Stride = .milliseconds(50)
     ) -> AnyPublisher<MenuBarState, Never> {
-        Publishers.CombineLatest4(
-            collectionStatus,
-            connectionStatus,
-            accountStateManager.$accountState,
-            accountStateManager.$isDeviceRevoked
+        Publishers.CombineLatest(
+            Publishers.CombineLatest4(
+                collectionStatus,
+                connectionStatus,
+                accountStateManager.$accountState,
+                accountStateManager.$isDeviceRevoked
+            ),
+            offerWaitingUnshown.removeDuplicates()
         )
-        .map { collection, connection, account, isRevoked in
-            resolver.resolve(
+        .map { statuses, isOfferWaiting in
+            let (collection, connection, account, isRevoked) = statuses
+            return resolver.resolve(
                 collectionStatus: collection,
                 connectionStatus: connection,
                 accountState: account,
-                isDeviceRevoked: isRevoked
+                isDeviceRevoked: isRevoked,
+                isOfferWaitingUnshown: isOfferWaiting
             )
         }
         .debounce(for: debounceInterval, scheduler: RunLoop.main)
@@ -96,6 +113,7 @@ enum MenuBarIconProvider {
     static func symbolName(for state: MenuBarState) -> String {
         switch state {
         case .normal: return "circle.fill"
+        case .offerWaiting: return "text.bubble"
         case .collectionPaused: return "pause.circle"
         case .ipcDisconnected: return "wifi.slash"
         case .deviceRevoked: return "exclamationmark.triangle.fill"
@@ -105,6 +123,7 @@ enum MenuBarIconProvider {
     static func accessibilityDescription(for state: MenuBarState) -> String {
         switch state {
         case .normal: return "Velvt"
+        case .offerWaiting: return "Velvt — a nudge is waiting in the Velvt window"
         case .collectionPaused: return "Velvt — collection paused"
         case .ipcDisconnected: return "Velvt — service disconnected"
         case .deviceRevoked: return "Velvt — device revoked"
@@ -760,7 +779,8 @@ public final class MenuBarController: NSObject {
     public func observe(
         collectionStatus: some Publisher<CollectionStatus, Never>,
         connectionStatus _: some Publisher<ConnectionStatus, Never>,
-        accountStateManager: AccountStateManager
+        accountStateManager: AccountStateManager,
+        offerWaitingUnshown: AnyPublisher<Bool, Never> = Just(false).eraseToAnyPublisher()
     ) {
         let stableConnectionStatus = serviceConnectionStatus.$phase
             .map { phase -> ConnectionStatus in
@@ -778,7 +798,8 @@ public final class MenuBarController: NSObject {
             resolver: resolver,
             collectionStatus: collectionStatus,
             connectionStatus: stableConnectionStatus,
-            accountStateManager: accountStateManager
+            accountStateManager: accountStateManager,
+            offerWaitingUnshown: offerWaitingUnshown
         )
         .sink { [weak self] state in
             self?.applyIcon(for: state)

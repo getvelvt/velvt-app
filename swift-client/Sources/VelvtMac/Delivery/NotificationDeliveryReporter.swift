@@ -28,6 +28,14 @@ public enum NotificationDeliverySurface: String, Equatable, Sendable {
 public enum NotificationDeliveryOutcome: Equatable, Sendable {
     /// The request reached `UNUserNotificationCenter.add(_:)` and was accepted.
     case delivered
+    /// Accepted, but the alert style for Velvt is None: listed in
+    /// Notification Center and never shown on screen. Permission alone
+    /// cannot tell this from `delivered`.
+    case deliveredWithAlertStyleNone
+    /// The offer was already older than `InterventionNotifier.maximumPostingAge`
+    /// when this process first saw it (a relaunch while it was live), so no
+    /// banner was posted for a moment that has passed.
+    case skippedAsStale
     /// Deliberately not rung: reduced salience. A dismissal bought quiet, or
     /// Velvt's own quiet hours are in force. The in-app card still renders.
     case suppressedBySalience
@@ -73,9 +81,10 @@ public protocol NotificationDeliveryReporting: AnyObject, Sendable {
 /// delivered notification could not be told from one that was never
 /// attempted. A blocked or rejected
 /// delivery is `.error`, because a notification channel that silently
-/// delivers nothing is a product outage — the offer resolves as `returned` or
-/// `expired` and is recorded as delivered, which makes the primary outcome a
-/// measurement of a nudge nobody received.
+/// delivers nothing is a product outage. For a drift offer the same fact also
+/// goes to the service (proto v35, `intervention_delivery`), which stores it
+/// beside the offer's outcome; until then an offer that never rang was
+/// recorded exactly like one that did.
 ///
 /// Lines carry an outcome, a surface and at most a permission status, all
 /// fixed tokens, so they are logged public: there is no title, body, category
@@ -99,6 +108,10 @@ public final class OSLogNotificationDeliveryReporter: NotificationDeliveryReport
         switch outcome {
         case .delivered:
             return (.default, "notification_delivered \(surfaceName)")
+        case .deliveredWithAlertStyleNone:
+            return (.default, "notification_delivered \(surfaceName) alert_style=none")
+        case .skippedAsStale:
+            return (.default, "notification_skipped_stale \(surfaceName)")
         case .suppressedBySalience:
             return (.default, "notification_suppressed_by_salience \(surfaceName)")
         case .withdrawnBeforeDelivery:

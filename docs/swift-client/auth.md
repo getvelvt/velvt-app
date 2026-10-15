@@ -27,8 +27,8 @@ Only valid transitions are accepted through `transition(to:)`. Invalid transitio
 
 ## Sign-Up and Login Flow
 
-1. User enters email and password in the menu bar auth sheet.
-2. `AuthViewModel.signUp()` or `logIn()` validates non-empty fields.
+1. User enters email and password in the menu bar auth sheet or the onboarding account step. While creating an account both show "At least 12 characters" under the password field (`AuthViewModel.passwordHint`).
+2. `AuthViewModel.signUp()` or `logIn()` validates non-empty fields and the password's length against velvt-core's rule: 12 to 256 characters for a sign-up, at most 256 for a login, counted in Unicode scalars as velvt-core counts them (`AuthViewModel.passwordProblem`). A password that fails is answered in the form ("Use at least 12 characters for your password.") and nothing is sent; it used to reach velvt-core and come back as "Request validation failed." (1.0.14 simulation, B8).
 3. `AccountStateManager.beginAuthentication(email:)` moves state to `.loggingIn` and temporarily holds the email.
 4. Swift sends `.signUp` or `.logIn` over IPC.
 5. Rust performs cloud auth and device registration.

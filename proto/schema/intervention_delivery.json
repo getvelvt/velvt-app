@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$comment": "Direction: Swift to Rust (protocol 35). Local IPC only. What became of the OS notification for the drift offer in block_id: a delivery fact, never a response. The payload has a block id and one closed channel value and no place a user answer could be carried, so it can never be widened into an outcome the person did not give. Sent when an attempt to post the offer settles; the service timestamps it and answers nothing. notification_posted and alert_style_none mean the notification centre accepted the request (alert_style_none: the person's alert style for Velvt is None, so it is listed in Notification Center and never shown on screen); once either is stored, later reports for the same offer are ignored. Every other channel means nothing was posted, and a later report replaces it.",
+  "type": "object",
+  "required": ["type", "payload"],
+  "properties": {
+    "type": { "const": "intervention_delivery" },
+    "payload": {
+      "type": "object",
+      "required": ["block_id", "channel"],
+      "properties": {
+        "block_id": { "type": "string", "format": "uuid" },
+        "channel": {
+          "type": "string",
+          "enum": [
+            "notification_posted",
+            "alert_style_none",
+            "permission_denied",
+            "permission_unknown",
+            "rejected",
+            "withdrawn",
+            "quiet"
+          ]
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

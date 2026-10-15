@@ -1,5 +1,56 @@
 import Combine
 import Foundation
+import UserNotifications
+
+// MARK: - InterventionDeliveryRecording
+
+/// Where the notifier reports what became of each drift offer's notification
+/// (proto v35). `WorkBlockCoordinator` sends it to the service, which stores it
+/// beside the offer's outcome. Until this existed the fact reached only the
+/// unified log, and an offer that never rang was stored like one that did.
+@MainActor
+public protocol InterventionDeliveryRecording: AnyObject {
+    func reportInterventionDelivery(blockID: UUID, channel: InterventionDeliveryChannel)
+}
+
+// MARK: - NotificationAlertStyleReading
+
+/// The alert style the person chose for Velvt in System Settings.
+public enum NotificationAlertStyle: Equatable, Sendable {
+    /// "None": a posted notification is listed in Notification Center and
+    /// never shown on screen.
+    case none
+    case banner
+    case alert
+    case unknown
+}
+
+/// Reads the alert style, which the permission check cannot see: a Mac where
+/// notifications are allowed with alert style None reports `granted`, and the
+/// notification centre accepts every request without showing any of them.
+public protocol NotificationAlertStyleReading: AnyObject, Sendable {
+    func alertStyle() async -> NotificationAlertStyle
+}
+
+public final class SystemNotificationAlertStyleReader: NotificationAlertStyleReading, @unchecked Sendable {
+    private let center: UNUserNotificationCenter
+
+    public init(center: UNUserNotificationCenter = .current()) {
+        self.center = center
+    }
+
+    public func alertStyle() async -> NotificationAlertStyle {
+        let settings = await center.notificationSettings()
+        switch settings.alertStyle {
+        case .none: return .none
+        case .banner: return .banner
+        case .alert: return .alert
+        @unknown default: return .unknown
+        }
+    }
+}
+
+// MARK: - InterventionNotifier
 
 /// Delivers a live drift offer as an OS notification.
 ///
@@ -12,9 +63,11 @@ import Foundation
 ///
 /// Rust owns the decision and the copy. This type decides nothing about
 /// whether an offer is warranted, never rewrites the text, and adds no claim
-/// of its own — it moves an approved offer to a surface the person can see.
+/// of its own — it moves an approved offer to a surface the person can see,
+/// reports what became of it (proto v35), and takes the banner down once the
+/// offer is gone.
 @MainActor
-public final class InterventionNotifier {
+public final class InterventionNotifier: ObservableObject {
     /// Identity of an offer, used to notify exactly once for it.
     ///
     /// The snapshot carrying `active_intervention` is republished on every
@@ -48,16 +101,47 @@ public final class InterventionNotifier {
         /// request. The offer is still live, so the next snapshot for it —
         /// or notifications being turned on — tries again.
         case undelivered
+        /// Already older than `maximumPostingAge` when this process first saw
+        /// it: a relaunch while the offer was live. A banner then would be a
+        /// claim about a moment that has passed, so it is never posted. Sticky.
+        case expired
     }
+
+    /// How old an offer may be, when this process first sees it, and still be
+    /// posted. An offer reaches a running app within moments of being made,
+    /// so only a relaunch or a long-stalled connection meets an older one.
+    public static let maximumPostingAge: TimeInterval = 120
 
     private let scheduler: any InterventionNotificationScheduling
     private let permissionManager: any PermissionManagerProtocol
     private let reporter: any NotificationDeliveryReporting
+    private weak var deliveryFacts: (any InterventionDeliveryRecording)?
+    private let alertStyleReader: (any NotificationAlertStyleReading)?
+    private let now: () -> Date
     private var cancellables = Set<AnyCancellable>()
 
     private var currentKey: OfferKey?
-    private var currentOffer: ActiveIntervention?
-    private var disposition: Disposition?
+    private var currentOffer: ActiveIntervention? {
+        didSet { refreshOfferWaiting() }
+    }
+    private var disposition: Disposition? {
+        didSet { refreshOfferWaiting() }
+    }
+    /// The last channel this offer settled on, and the last one sent to the
+    /// service for it. Kept apart so a republished snapshot that retries a
+    /// denied offer does not send the same fact again.
+    private var settledChannel: InterventionDeliveryChannel? {
+        didSet { refreshOfferWaiting() }
+    }
+    private var reportedChannel: InterventionDeliveryChannel?
+
+    /// True while an offer is live and no banner or alert for it has been put
+    /// on screen: notifications are off, unanswered or set to alert style
+    /// None, the offer is quiet, or it was too old to post. The menu bar shows
+    /// a passive "offer waiting" state for it, the one surface outside the
+    /// popover the person can see while they are elsewhere. False while the
+    /// first attempt is still settling, so a posted offer never flickers it.
+    @Published public private(set) var isOfferWaitingUnshown = false
     /// The system prompt is asked for at most once per offer, so a retry loop
     /// cannot turn one offer into repeated authorization requests.
     private var hasRequestedPermission = false
@@ -71,14 +155,27 @@ public final class InterventionNotifier {
     /// permission-check/schedule work rather than racing it.
     public private(set) var inFlightTask: Task<Void, Never>?
 
+    /// - Parameters:
+    ///   - deliveryFacts: Receives what became of each offer's notification.
+    ///     Held weakly; `nil` reports to the log alone.
+    ///   - alertStyle: Tells a posted notification that was shown on screen
+    ///     from one listed silently under alert style None. `nil` reports
+    ///     every accepted request as `notification_posted`.
+    ///   - now: The clock an offer's age is read against.
     public init(
         scheduler: any InterventionNotificationScheduling,
         permissionManager: any PermissionManagerProtocol,
-        reporter: any NotificationDeliveryReporting = OSLogNotificationDeliveryReporter()
+        reporter: any NotificationDeliveryReporting = OSLogNotificationDeliveryReporter(),
+        deliveryFacts: (any InterventionDeliveryRecording)? = nil,
+        alertStyle: (any NotificationAlertStyleReading)? = nil,
+        now: @escaping () -> Date = Date.init
     ) {
         self.scheduler = scheduler
         self.permissionManager = permissionManager
         self.reporter = reporter
+        self.deliveryFacts = deliveryFacts
+        self.alertStyleReader = alertStyle
+        self.now = now
     }
 
     /// - Parameter snapshots: the coordinator's published work-block state.
@@ -117,9 +214,17 @@ public final class InterventionNotifier {
         }
 
         let key = OfferKey(blockID: blockID, offeredAt: intervention.offeredAt)
-        if key != currentKey {
+        let isFirstSight = key != currentKey
+        if isFirstSight {
+            // A different offer replaced this one without a snapshot in
+            // between: the old banner is no longer true either.
+            if let replaced = currentKey {
+                removeBanner(for: replaced)
+            }
             currentKey = key
             disposition = nil
+            settledChannel = nil
+            reportedChannel = nil
             hasRequestedPermission = false
         }
         currentOffer = intervention
@@ -131,7 +236,16 @@ public final class InterventionNotifier {
             if disposition != .suppressed {
                 disposition = .suppressed
                 reporter.report(.suppressedBySalience, surface: .driftOffer)
+                settle(.quiet, for: key)
             }
+            return nil
+        }
+        // Only a relaunch, or a connection that stalled for minutes, meets an
+        // offer this old the first time. Whatever an earlier process reported
+        // for it still stands, so nothing is sent: this is not an attempt.
+        if isFirstSight, now().timeIntervalSince(intervention.offeredAt) > Self.maximumPostingAge {
+            disposition = .expired
+            reporter.report(.skippedAsStale, surface: .driftOffer)
             return nil
         }
         guard disposition == nil || disposition == .undelivered else { return nil }
@@ -151,9 +265,19 @@ public final class InterventionNotifier {
     }
 
     private func forgetCurrentOffer() {
+        // The offer is over: answered, withdrawn by a return, or the block
+        // ended. A banner left in Notification Center would go on claiming
+        // drift that is no longer true, and a tap on it would open a popover
+        // with no card. The identifier is the offer's own, so this also takes
+        // down a banner an earlier process posted for it.
+        if let key = currentKey {
+            removeBanner(for: key)
+        }
         currentKey = nil
         currentOffer = nil
         disposition = nil
+        settledChannel = nil
+        reportedChannel = nil
         hasRequestedPermission = false
         // An attempt outlives the offer it was for. `requestPermission` waits
         // on a system alert the user may never answer, and until it returns
@@ -178,7 +302,7 @@ public final class InterventionNotifier {
         attemptNumber += 1
         let attempt = attemptNumber
 
-        let task = Task { @MainActor [weak self, scheduler, permissionManager, reporter] in
+        let task = Task { @MainActor [weak self, scheduler, permissionManager, reporter, alertStyleReader] in
             // `notDetermined` maps to `.unknown`. Onboarding can reach a first
             // work block without ever having asked about notifications, so
             // checking alone would drop the offer in silence. Ask once, at the
@@ -189,7 +313,7 @@ public final class InterventionNotifier {
             // left nothing on the log, which is exactly what the founder's Mac
             // showed on 2026-09-25 — one settings query, then silence.
             guard !Task.isCancelled else {
-                self?.finishAttempt(attempt, key: key, disposition: .undelivered)
+                self?.finishAttempt(attempt, key: key, disposition: .undelivered, channel: .withdrawn)
                 reporter.report(.withdrawnBeforeDelivery, surface: .driftOffer)
                 return
             }
@@ -199,14 +323,16 @@ public final class InterventionNotifier {
                 status = await permissionManager.requestPermission(for: .notifications)
             }
             guard !Task.isCancelled else {
-                self?.finishAttempt(attempt, key: key, disposition: .undelivered)
+                self?.finishAttempt(attempt, key: key, disposition: .undelivered, channel: .withdrawn)
                 reporter.report(.withdrawnBeforeDelivery, surface: .driftOffer)
                 return
             }
             guard status == .granted else {
                 // Not a decision this app made, so the offer is not spent:
                 // it stays eligible while it is still on screen.
-                self?.finishAttempt(attempt, key: key, disposition: .undelivered)
+                self?.finishAttempt(
+                    attempt, key: key, disposition: .undelivered,
+                    channel: status == .denied ? .permissionDenied : .permissionUnknown)
                 reporter.report(.blockedByPermission(status), surface: .driftOffer)
                 return
             }
@@ -215,15 +341,37 @@ public final class InterventionNotifier {
                 title: offer.title,
                 body: offer.body
             )
-            self?.finishAttempt(attempt, key: key, disposition: scheduled ? .delivered : .undelivered)
-            reporter.report(
-                scheduled ? .delivered : .rejectedByNotificationCentre, surface: .driftOffer)
+            guard scheduled else {
+                self?.finishAttempt(attempt, key: key, disposition: .undelivered, channel: .rejected)
+                reporter.report(.rejectedByNotificationCentre, surface: .driftOffer)
+                return
+            }
+            // Accepted is not the same as shown. Alert style None passes the
+            // permission check and takes every request, and shows none of them.
+            let style = await alertStyleReader?.alertStyle() ?? .unknown
+            let channel: InterventionDeliveryChannel = style == .none ? .alertStyleNone : .notificationPosted
+            self?.finishAttempt(attempt, key: key, disposition: .delivered, channel: channel)
+            reporter.report(style == .none ? .deliveredWithAlertStyleNone : .delivered, surface: .driftOffer)
         }
         inFlightTask = task
         return task
     }
 
-    private func finishAttempt(_ attempt: Int, key: OfferKey, disposition attempted: Disposition) {
+    private func finishAttempt(
+        _ attempt: Int,
+        key: OfferKey,
+        disposition attempted: Disposition,
+        channel: InterventionDeliveryChannel
+    ) {
+        // An offer withdrawn while its request was already on the way to the
+        // centre is posted after `forgetCurrentOffer` took its banner down.
+        // Take this one down too: it is no longer true.
+        if attempted == .delivered, currentKey != key {
+            removeBanner(for: key)
+        }
+        // Whatever became of the attempt is a fact about that offer, whether
+        // or not it is still the current one.
+        settle(channel, for: key)
         // An attempt `forgetCurrentOffer` cancelled still comes back here,
         // once the await it was in returns: the settings query and the system
         // alert both ignore cancellation. By then its slot was freed, and the
@@ -243,6 +391,41 @@ public final class InterventionNotifier {
         }
         guard disposition != .suppressed, disposition != .delivered else { return }
         disposition = attempted
+    }
+
+    /// Reports `channel` for `key`'s offer to the service, once per change.
+    ///
+    /// The current offer's last report is remembered, so the retry a
+    /// republished snapshot makes for a denied offer does not send the same
+    /// fact each time. A fact about an offer that is already gone (an attempt
+    /// that settled after the withdrawal) is sent as it is.
+    private func settle(_ channel: InterventionDeliveryChannel, for key: OfferKey) {
+        if key == currentKey {
+            settledChannel = channel
+            guard reportedChannel != channel else { return }
+            reportedChannel = channel
+        }
+        deliveryFacts?.reportInterventionDelivery(blockID: key.blockID, channel: channel)
+    }
+
+    private func removeBanner(for key: OfferKey) {
+        scheduler.removeDeliveredIntervention(id: Self.notificationID(for: key))
+    }
+
+    private func refreshOfferWaiting() {
+        let waiting: Bool
+        if currentOffer == nil {
+            waiting = false
+        } else if disposition == .expired {
+            waiting = true
+        } else if let settledChannel {
+            waiting = !settledChannel.wasShownOnScreen
+        } else {
+            waiting = false
+        }
+        if isOfferWaitingUnshown != waiting {
+            isOfferWaitingUnshown = waiting
+        }
     }
 
     private func attemptCurrentOfferIfUntried() {

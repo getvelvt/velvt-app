@@ -17,6 +17,8 @@
 #                stable keys (0037) and the egress ledger (0038)
 #   policy v5    velvt-app PR #62 (0040, site rules), the schema wave 1 is
 #                meant to run
+#   protocol 35  what became of each offer's notification (0043,
+#                `delivery_channel`), after protocol 34's upload owner (0042)
 # shellcheck shell=bash
 
 FIXTURE_MIGRATIONS_PROTOCOL_25=17
@@ -24,6 +26,7 @@ FIXTURE_MIGRATIONS_PROTOCOL_28=31
 FIXTURE_MIGRATIONS_PROTOCOL_30=36
 FIXTURE_MIGRATIONS_PROTOCOL_31=38
 FIXTURE_MIGRATIONS_POLICY_V5=40
+FIXTURE_MIGRATIONS_PROTOCOL_35=43
 
 # migrate_fixture_db DB LAST_VERSION APPLIED_AT
 #   Applies every migration numbered <= LAST_VERSION that DB has not recorded,

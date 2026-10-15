@@ -254,6 +254,8 @@ fn seed_intervention(
                     .then(|| offered_at + ChronoDuration::seconds(10)),
                 salience: InterventionSalience::Normal,
                 card_seen_at: None,
+                delivery_channel: None,
+                delivery_reported_at: None,
             },
         )
         .unwrap();

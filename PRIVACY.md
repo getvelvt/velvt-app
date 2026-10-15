@@ -359,7 +359,7 @@ three empty ones are — you will see them if you open the file.
 | `embedding_salt` | a 32-byte random value generated on this device by migration 0031: the per-install key the embedding feature hash is computed under, as described above. No activity data | singleton, and never rewritten: a second salt would invalidate every sketch stored under the first. No sweep |
 | `stable_key_salt` | a second 32-byte random value generated on this device, by migration 0037: the per-install key every stable key, application key, and bundle digest in this file is an HMAC under. It stops a guess being checked offline from this repository alone and stops two Macs' keys matching; it does not stop someone who holds this whole file, because it is in it. No activity data. Not in a Velvt 1.0.11 database, which stops at migration 0036; it starts with the first build after 1.0.11 | singleton, and never rewritten while it exists: a second salt would orphan every correction keyed under the first, so if the row is deleted by hand Velvt mints a new one and removes the corrections, mappings, site names and needs-a-category entries it can no longer match. No sweep |
 | `upload_host_backoff` | one row per upload host — the configured API hostname, its consecutive-failure count, and the earliest time a next attempt is allowed. No event content | removed for a host as soon as a batch upload to it succeeds; otherwise it persists |
-| `work_block_intervention` | the drift offer a block received: broad anchor category, switch count, window length, salience, the fixed action id, when it was offered, when its in-app card was first on screen (`card_seen_at`, migration 0032), and the outcome you gave it and when. The block id is the primary key, so a block holds at most one. No label, app identity, window title, URL, or intention text | removed with its block, and by Clear Local Work Blocks |
+| `work_block_intervention` | the drift offer a block received: broad anchor category, switch count, window length, salience, the fixed action id, when it was offered, when its in-app card was first on screen (`card_seen_at`, migration 0032), what became of its notification and when the app reported it (`delivery_channel`, `delivery_reported_at`, migration 0043: posted, posted with alert style None, notifications off or unanswered, refused by macOS, withdrawn before it was posted, or quiet), and the outcome you gave it and when. The block id is the primary key, so a block holds at most one. No label, app identity, window title, URL, or intention text | removed with its block, and by Clear Local Work Blocks |
 | `work_block_category_correction` | when you answer an offer with "wrong classification", the broad category that counts as focus work for that block. Categories only | removed with its block, and by Clear Local Work Blocks |
 | `intervention_demotion_state` | one row recording whether interventions are currently demoted, when that happened, and when you last reset it. The current state only, never a history | singleton; removed by Clear Local Work Blocks |
 | `focus_state_evidence` | coarse macOS Focus/DND transitions: active or inactive, the time floored to a five-minute bucket, and a local hour and date. No Focus mode name, schedule, or configuration is representable | 14 days, pruned when the next transition is reported rather than on a timer; removed by Clear Local Work Blocks |
@@ -449,9 +449,13 @@ only complete removal, and the procedure for it is at the end of this document.
   offer inside a focus session you started, the daily insight, and, at most
   once a day and never during a focus session, a reminder that something you
   used needs a category. The ones you receive are held by macOS Notification
-  Center, as any app's notifications are. The category reminder's text is
-  written by the Rust service from counts alone: it says how many sites and
-  apps need a category, and never names one.
+  Center, as any app's notifications are, until a drift offer's is over: the
+  app removes it once you answer, come back, or the session ends. The
+  category reminder's text is written by the Rust service from counts alone:
+  it says how many sites and apps need a category, and never names one. The
+  app reads your notification alert style for Velvt (None, banner, or alert)
+  when it posts a drift offer, and tells the service which kind of channel the
+  offer reached; nothing about it leaves the Mac.
 - **The socket.** `~/.velvt/velvt-service.sock` is the local connection between
   the app and the service. It holds no data.
 - **An optional Claude Code log.** Velvt.app never writes
@@ -524,7 +528,7 @@ fails until this list is updated in the same commit.
 | `weekly_digest` | `week_start_local_date`, `generated_at`, `blocks_declared`, `blocks_completed`, `recoveries`, `wrong_interventions`, `invitations_accepted`, `withheld`, `digest_version`, `delivered_at`, `acknowledged_at` |
 | `work_block` | `block_id`, `state_version`, `phase`, `intention`, `purpose`, `intensity`, `planned_duration_seconds`, `started_at`, `paused_at`, `total_paused_seconds`, `ended_at`, `recovered_after_restart`, `recovery_of`, `intention_expires_at`, `created_at`, `updated_at`, `origin` |
 | `work_block_category_correction` | `block_id`, `category`, `counts_as_category`, `corrected_at` |
-| `work_block_intervention` | `block_id`, `offered_at`, `action_id`, `anchor_category`, `switch_count`, `window_seconds`, `outcome`, `outcome_at`, `salience`, `card_seen_at` |
+| `work_block_intervention` | `block_id`, `offered_at`, `action_id`, `anchor_category`, `switch_count`, `window_seconds`, `outcome`, `outcome_at`, `salience`, `card_seen_at`, `delivery_channel`, `delivery_reported_at` |
 | `work_block_observation` | `id`, `block_id`, `occurred_at`, `ended_at`, `category`, `classification_status`, `classification_confidence` |
 | `work_block_result` | `block_id`, `payload`, `created_at` |
 

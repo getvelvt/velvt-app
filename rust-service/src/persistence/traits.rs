@@ -754,6 +754,21 @@ pub trait WorkBlockRepo: Send + Sync {
         at: DateTime<Utc>,
     ) -> Result<bool, PersistenceError>;
 
+    /// Records what became of the OS notification for `block_id`'s offer.
+    ///
+    /// A posted channel is final: once `notification_posted` or
+    /// `alert_style_none` is stored, later reports are ignored, because the
+    /// offer was posted whatever happened next. Any other stored channel is
+    /// replaced, so an offer that met a denied permission and was posted once
+    /// notifications were turned on reads as posted. Returns whether the row
+    /// changed.
+    fn record_intervention_delivery(
+        &self,
+        block_id: &str,
+        channel: velvt_shared_types::InterventionDeliveryChannel,
+        at: DateTime<Utc>,
+    ) -> Result<bool, PersistenceError>;
+
     fn resolve_intervention(
         &self,
         block_id: &str,

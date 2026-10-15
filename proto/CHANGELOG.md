@@ -1,5 +1,58 @@
 # IPC Protocol Changelog
 
+## Version 35 - 2026-10-14
+
+Whether a nudge was actually shown was never recorded (1.0.14 simulation,
+B7). Swift's notifier knew what became of each drift offer's notification
+(posted, blocked by a denied permission, withdrawn before it was posted, quiet
+by design) and wrote it only to the unified log on the tester's Mac, so an
+offer that never rang was stored exactly like one that did, and the export
+counted both as delivered.
+
+- Added `intervention_delivery {block_id, channel}` (Swift to Rust). `channel`
+  is one of `notification_posted` (the notification centre accepted the
+  request and the alert style for Velvt shows it on screen),
+  `alert_style_none` (accepted, but the alert style is None: listed in
+  Notification Center, never shown), `permission_denied`,
+  `permission_unknown` (never answered, or unreadable), `rejected` (the
+  centre refused the request), `withdrawn` (the offer ended while the attempt
+  was waiting on the permission check) or `quiet` (in-app card only, by
+  design). Swift sends it when an attempt settles, once per change for the
+  current offer, and also for an offer that is already gone (a withdrawal
+  settles after it). A delivery fact and never a response, like
+  `intervention_card_seen`: the payload has no place an answer could sit.
+- The service answers it with nothing. A `work_block_state` reply would
+  republish the snapshot, the notifier retries an unposted offer on every
+  republish, and each retry would provoke the next fact.
+- Stored on the offer's row as `work_block_intervention.delivery_channel` and
+  `delivery_reported_at` (migration 0043), beside `outcome` and `card_seen_at`,
+  changing neither. A posted channel (`notification_posted`,
+  `alert_style_none`) is final; any other is replaced by the next report, so an
+  offer that met a denied permission and was posted once notifications were
+  turned on reads as posted. A report for a block with no offer row, or one
+  that no longer exists, changes nothing and is not an error. NULL means
+  nothing was reported, never "not shown": every row before 0043, and every
+  decision Swift never received (held for Focus, withheld under demotion).
+- `export_cohort_evidence.sh` (export format 5) exports `delivery_channel`,
+  `delivery_reported_at` and the derived `notification_delivery` (the channel,
+  `not_reported`, or `unknown` before 0043), and `analyze_cohort.py` reports
+  them as an additional descriptive breakdown. No pre-registered denominator
+  changes: every delivered offer stays in them whatever became of its
+  notification.
+- Rust's `ClientMessage` denies unknown variants, so a 34 helper answers the
+  new message `malformed_message`: hence the version.
+- Behaviour on unchanged messages, in the same change: Swift takes a drift
+  offer's notification out of Notification Center once the offer is over, and
+  does not post an offer it first sees more than two minutes after it was made
+  (a relaunch while it was live). A daily insight no longer counts toward the
+  local interventions counter. The helper never puts an identifier in an
+  insight's text or notification: a `template` with no `label_references` is
+  not rendered, and the notification body falls back to the evidence's
+  `observation`. A sign-up or login refused with `422 validation_error` on the
+  email or the password answers `auth_failure` (`invalid_credentials`) in
+  words that name the field and the rule, never velvt-core's "Request
+  validation failed." None of this changes which offers are made.
+
 ## Version 34 - 2026-10-14
 
 Account safety before any tester signs in. Activity queued under one account

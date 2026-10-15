@@ -23,26 +23,48 @@ final class UNNotificationSchedulerTests: XCTestCase {
             doNotDisturbUntil: nil
         )
 
-        // `AppMetricsStore` republishes its `@Published` mirror on the main
-        // queue, and `schedule` does not run there, so the mirror is read after
-        // that hop rather than before it -- waiting on the publisher, not on a
-        // clock.
-        let reachedOne = expectation(description: "interventions mirror reaches 1")
-        reachedOne.assertForOverFulfill = false
-        let cancellable = metrics.$interventions
-            .filter { $0 == 1 }
-            .sink { _ in reachedOne.fulfill() }
-
         await sut.schedule(payload)
 
         XCTAssertEqual(center.addedRequests.count, 1)
         XCTAssertNil(center.addedRequests.first?.trigger)
         XCTAssertEqual(center.addedRequests.first?.identifier, payload.notificationID.uuidString)
+    }
 
-        await fulfillment(of: [reachedOne], timeout: 5)
-        cancellable.cancel()
+    /// A daily insight is not a nudge inside a block. Counting it as one
+    /// (critic-05, 1.0.14 simulation) inflated the one number that says how
+    /// often Velvt interrupted; a drift offer is still counted.
+    func testADailyInsightIsNotCountedAsAnIntervention() async {
+        let center = FakeUNUserNotificationCenter()
+        let defaults = UserDefaults(suiteName: "NotificationSchedulerTests.\(UUID().uuidString)")!
+        let metrics = AppMetricsStore(defaults: defaults)
+        let sut = UNNotificationScheduler(center: center, metrics: metrics)
 
-        XCTAssertEqual(metrics.interventions, 1)
+        await sut.schedule(
+            NotificationPayload(
+                notificationID: UUID(),
+                title: "Your Velvt insight is ready",
+                body: "Stayed focused through the afternoon.",
+                insightDate: "2026-06-15",
+                doNotDisturbUntil: nil
+            ))
+        await sut.scheduleIntervention(id: "velvt.intervention.test", title: "t", body: "b")
+
+        XCTAssertEqual(center.addedRequests.count, 2)
+        // The stored count is written under the store's lock as the increment
+        // happens; the `@Published` mirror follows on a later main-queue hop.
+        XCTAssertEqual(
+            defaults.integer(forKey: "velvt.metrics.interventions"), 1, "the drift offer only")
+    }
+
+    /// A drift offer's banner can be taken down by its identifier once the
+    /// offer is over.
+    func testARemovedInterventionIsTakenOutOfNotificationCenter() {
+        let center = FakeUNUserNotificationCenter()
+        let sut = UNNotificationScheduler(center: center)
+
+        sut.removeDeliveredIntervention(id: "velvt.intervention.block.1000")
+
+        XCTAssertEqual(center.removedDeliveredIdentifiers, ["velvt.intervention.block.1000"])
     }
 
     func testSchedulesImmediatelyWhenDoNotDisturbAlreadyElapsed() async {

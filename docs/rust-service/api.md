@@ -315,6 +315,17 @@ The scheduler tracks the last delivered insight ID in memory and suppresses an
 immediate duplicate if velvt-core unexpectedly returns the same ID again.
 velvt-core remains the source of truth for durable delivered-state.
 
+The insight's text is velvt-core's `text`, except when `template` is copy with
+`{token}`s and `label_references` has labels to fill, in which case it is that
+template rendered with this Mac's names (`delivery::insight_text`). A template
+with no references, or one that is an identifier, is never rendered:
+velvt-core sends the template id (`reference_activity`,
+`stable_focus_period`) as the template of every template insight, and the
+notification used to read it (1.0.14 simulation, critic-01). The notification's
+body is that text; if it is empty or still an identifier, the evidence's
+`observation` (what the in-app card shows first); and if that is unavailable
+too, "Open Velvt to read it." It is never an identifier.
+
 Long-poll configuration:
 
 | Env var | Default | Description |

@@ -7,7 +7,9 @@ use velvt_shared_types::{ConfidenceLevel, EmotionalStage, InsightEvidence, Insig
 
 use crate::auth::{AuthError, AuthState, HttpClient, HttpRequest};
 
-use super::{parser, InsightLabelReference, LocalInsightRehydrator, PushAdapter};
+use super::{
+    looks_like_template_id, parser, InsightLabelReference, LocalInsightRehydrator, PushAdapter,
+};
 
 #[derive(Clone, Debug)]
 pub struct PollConfig {
@@ -297,12 +299,12 @@ fn parse_polled_insight(
     let fallback_text = raw
         .text
         .ok_or(parser::ParseError::MissingField { field: "text" })?;
-    let text = match (raw.template, raw.label_references, rehydrator) {
-        (Some(template), Some(references), Some(rehydrator)) => {
-            rehydrator.rehydrate(&template, &references)
-        }
-        _ => fallback_text,
-    };
+    let text = super::rehydrate::insight_text(
+        fallback_text,
+        raw.template,
+        raw.label_references,
+        rehydrator,
+    );
     let payload = InsightPayload {
         date: raw
             .date
@@ -389,7 +391,7 @@ pub async fn deliver_polled_insight(
     let title = "Your Velvt insight is ready";
     let should_notify = insight.payload.evidence.tone_stage != EmotionalStage::Early
         && insight.payload.evidence.observation_type != "recorded_activity";
-    let body = insight.payload.text.clone();
+    let body = notification_body(&insight.payload);
     let date = insight.payload.date;
     push_adapter.push_insight(insight.payload).await;
     if should_notify {
@@ -397,6 +399,32 @@ pub async fn deliver_polled_insight(
             .push_notification(notification_id, title, &body, date, do_not_disturb_until)
             .await;
     }
+}
+
+/// What the notification says when neither the insight's text nor its
+/// observation is copy a person could read.
+pub const INSIGHT_NOTIFICATION_FALLBACK_BODY: &str = "Open Velvt to read it.";
+
+/// The insight notification's body, which is never an identifier.
+///
+/// The insight's text, as the in-app card would show it; when that is empty
+/// or an identifier (the template id the 1.0.14 simulation found in every
+/// daily-insight notification, critic-01), the evidence's observation, which
+/// is what the card shows first; and when that is unavailable too, a line that
+/// sends the person to the app.
+fn notification_body(payload: &InsightPayload) -> String {
+    let readable = |value: &str| {
+        let value = value.trim();
+        !value.is_empty() && !looks_like_template_id(value) && value != payload.evidence.template_id
+    };
+    if readable(&payload.text) {
+        return payload.text.clone();
+    }
+    let observation = &payload.evidence.observation;
+    if readable(observation) && *observation != InsightEvidence::default().observation {
+        return observation.clone();
+    }
+    INSIGHT_NOTIFICATION_FALLBACK_BODY.into()
 }
 
 #[cfg(test)]
@@ -855,5 +883,110 @@ mod tests {
             queue.try_pop().await.is_none(),
             "generic activity recaps are UI content, not interruption-worthy notifications"
         );
+    }
+
+    /// Everything `deliver_polled_insight` pushed, as (insight text,
+    /// notification body), oldest first.
+    async fn delivered(queue: &crate::delivery::PushQueue) -> (Vec<String>, Vec<String>) {
+        let mut insights = Vec::new();
+        let mut bodies = Vec::new();
+        while let Some(message) = queue.try_pop().await {
+            match message {
+                ServerMessage::InsightPayload(payload) => insights.push(payload.text),
+                ServerMessage::NotificationPayload(payload) => bodies.push(payload.body),
+                _ => {}
+            }
+        }
+        (insights, bodies)
+    }
+
+    /// The poll response velvt-core sends for a `TemplateInsightProvider`
+    /// row, field for field (`insight_to_dict`): the template id where the
+    /// template belongs, no label references, and the copy in `text` and in
+    /// the evidence. Fed through the parser with the rehydrator `main.rs`
+    /// always wires, the notification read "reference_activity" (1.0.14
+    /// simulation, critic-01).
+    #[tokio::test]
+    async fn a_template_insight_from_velvt_core_never_notifies_its_template_id() {
+        let persistence = crate::persistence::SqlitePersistence::open_in_memory().unwrap();
+        let rehydrator = LocalInsightRehydrator::new(persistence.abstraction_map_repo());
+        let text = "Reference work accounted for 15 minutes today. That stayed within your \
+                    usual range. Try protecting your next 20 minutes for one work lane.";
+        let evidence = InsightEvidence {
+            observation: "Reference work accounted for 15 minutes today.".into(),
+            tone_stage: EmotionalStage::Stable,
+            observation_type: "category_share".into(),
+            template_id: "reference_activity".into(),
+            ..InsightEvidence::default()
+        };
+        let body = json!({
+            "id": "insight-template",
+            "date": "2026-10-14",
+            "text": text,
+            "template": "reference_activity",
+            "label_references": [],
+            "meta": {
+                "confidence_level": "high",
+                "low_confidence": false,
+                "quality_metadata": {"evidence": evidence},
+            },
+        });
+        let insight = parse_polled_insight(body, Some(&rehydrator)).unwrap();
+        let queue = crate::delivery::PushQueue::new(10);
+        let push = crate::delivery::PushAdapter::new(Arc::clone(&queue));
+
+        deliver_polled_insight(&push, &mut InsightDedupeGuard::default(), insight, None).await;
+
+        let (insights, bodies) = delivered(&queue).await;
+        assert_eq!(insights, [text]);
+        assert_eq!(bodies, [text]);
+    }
+
+    fn payload(text: &str, observation: &str) -> InsightPayload {
+        InsightPayload {
+            date: Utc::now().date_naive(),
+            text: text.into(),
+            evidence: InsightEvidence {
+                observation: observation.into(),
+                tone_stage: EmotionalStage::Stable,
+                observation_type: "focus_block".into(),
+                template_id: "stable_focus_period".into(),
+                ..InsightEvidence::default()
+            },
+            confidence_level: ConfidenceLevel::High,
+            low_confidence: false,
+            generated_at: Utc::now(),
+        }
+    }
+
+    /// Whatever reaches the helper, the body is copy: the text, else the
+    /// observation the card shows, else a line that sends the person to the
+    /// app. Never an identifier.
+    #[test]
+    fn the_notification_body_is_never_an_identifier() {
+        let sentence = "Your longest uninterrupted work block was 40 minutes today.";
+        for (text, observation, expected) in [
+            (sentence, "Unused observation.", sentence),
+            ("stable_focus_period", sentence, sentence),
+            ("", sentence, sentence),
+            ("  ", sentence, sentence),
+            (
+                "stable_focus_period",
+                "Evidence unavailable",
+                INSIGHT_NOTIFICATION_FALLBACK_BODY,
+            ),
+            (
+                "stable_focus_period",
+                "stable_focus_period",
+                INSIGHT_NOTIFICATION_FALLBACK_BODY,
+            ),
+            ("unavailable", "", INSIGHT_NOTIFICATION_FALLBACK_BODY),
+        ] {
+            assert_eq!(
+                notification_body(&payload(text, observation)),
+                expected,
+                "text {text:?}, observation {observation:?}"
+            );
+        }
     }
 }

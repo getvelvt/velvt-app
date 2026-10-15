@@ -1,7 +1,7 @@
 use chrono::{DateTime, Utc};
 use velvt_shared_types::{
-    ClassificationConfidence, ClassificationStatus, CorrectionScope, InterventionSalience,
-    WorkBlockIntensity, WorkBlockPhase, WorkBlockPurpose, WorkBlockResult,
+    ClassificationConfidence, ClassificationStatus, CorrectionScope, InterventionDeliveryChannel,
+    InterventionSalience, WorkBlockIntensity, WorkBlockPhase, WorkBlockPurpose, WorkBlockResult,
 };
 
 #[derive(Clone, PartialEq, Eq)]
@@ -974,6 +974,13 @@ pub struct WorkBlockIntervention {
     /// them", which `no_response` alone cannot. Orthogonal to `outcome`: this
     /// records delivery, never an answer.
     pub card_seen_at: Option<DateTime<Utc>>,
+    /// What became of the OS notification, as Swift reported it (protocol
+    /// 35, migration 0043), and when the service received that report.
+    ///
+    /// `None` means nothing was reported, never "not shown". Orthogonal to
+    /// `outcome` and to `card_seen_at`: delivery, never an answer.
+    pub delivery_channel: Option<InterventionDeliveryChannel>,
+    pub delivery_reported_at: Option<DateTime<Utc>>,
 }
 
 /// The closed verdict vocabulary of the drift gate.

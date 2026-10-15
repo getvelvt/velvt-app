@@ -11,9 +11,10 @@ use tokio::sync::watch;
 use uuid::Uuid;
 use velvt_shared_types::{
     ActiveIntervention, ClassificationConfidence, ClassificationStatus, ConfidenceLevel,
-    InterventionResponse, InterventionSalience, StartWorkBlock, WorkBlockCoverage,
-    WorkBlockDndOutcome, WorkBlockIntensity, WorkBlockLifecycleEvent, WorkBlockNextAction,
-    WorkBlockPhase, WorkBlockPurpose, WorkBlockResult, WorkBlockSnapshot, WORK_BLOCK_STATE_VERSION,
+    InterventionDeliveryChannel, InterventionResponse, InterventionSalience, StartWorkBlock,
+    WorkBlockCoverage, WorkBlockDndOutcome, WorkBlockIntensity, WorkBlockLifecycleEvent,
+    WorkBlockNextAction, WorkBlockPhase, WorkBlockPurpose, WorkBlockResult, WorkBlockSnapshot,
+    WORK_BLOCK_STATE_VERSION,
 };
 
 use velvt_shared_types::{DemotionState, DemotionStateKind};
@@ -708,6 +709,27 @@ impl WorkBlockManager {
         self.snapshot_for(record, now)
     }
 
+    /// Records what became of the OS notification for `block_id`'s offer.
+    ///
+    /// Not an answer, and never treated as one: it is the delivery fact that
+    /// tells an offer that rang from one that never could (notifications off,
+    /// an alert style of None, a quiet offer, an offer withdrawn before it was
+    /// posted). Without it every offer that was not withheld was counted as
+    /// delivered. A report for a block with no offer, or for one that no longer
+    /// exists, changes nothing and is not an error: the notifier and the
+    /// offer race on separate surfaces, as the card does. Returns whether the
+    /// stored channel changed.
+    pub fn record_intervention_delivery(
+        &self,
+        block_id: Uuid,
+        channel: InterventionDeliveryChannel,
+        now: DateTime<Utc>,
+    ) -> Result<bool, WorkBlockError> {
+        Ok(self
+            .repo
+            .record_intervention_delivery(&block_id.to_string(), channel, now)?)
+    }
+
     pub fn report_intervention_outcome(
         &self,
         block_id: Uuid,
@@ -950,6 +972,8 @@ impl WorkBlockManager {
                     // counts, which is why this stays None rather than becoming
                     // a delivery failure.
                     card_seen_at: None,
+                    delivery_channel: None,
+                    delivery_reported_at: None,
                 },
             )?;
             return Ok(None);
@@ -991,6 +1015,8 @@ impl WorkBlockManager {
                     // Held by Focus/DND and delivered by no channel, so there
                     // was no card to see.
                     card_seen_at: None,
+                    delivery_channel: None,
+                    delivery_reported_at: None,
                 },
             )?;
             return Ok(None);
@@ -1017,6 +1043,8 @@ impl WorkBlockManager {
                 // actually renders, and until then this row honestly says the
                 // offer has not been shown to reach anyone.
                 card_seen_at: None,
+                delivery_channel: None,
+                delivery_reported_at: None,
             },
         )?;
         // `now` is the value just recorded as `offered_at`, so the re-render
@@ -2649,6 +2677,154 @@ mod tests {
         assert!(repo.intervention(&block_id.to_string()).unwrap().is_none());
     }
 
+    /// The notification's fate is recorded beside the outcome, never as one.
+    /// Until protocol 35 it reached only the unified log, so an offer that
+    /// never rang was stored exactly like one that did.
+    #[test]
+    fn a_delivery_fact_is_recorded_without_answering_the_offer() {
+        let (manager, repo) = manager_with_repo();
+        let active = manager.start(request(3_600), at(0)).unwrap();
+        let block_id = active.block_id.unwrap();
+        drift_into_offer(&manager).expect("the gate offered");
+
+        let changed = manager
+            .record_intervention_delivery(
+                block_id,
+                InterventionDeliveryChannel::PermissionDenied,
+                at(900),
+            )
+            .unwrap();
+
+        assert!(changed);
+        let stored = repo
+            .intervention(&block_id.to_string())
+            .unwrap()
+            .expect("the offer row exists");
+        assert_eq!(
+            stored.delivery_channel,
+            Some(InterventionDeliveryChannel::PermissionDenied)
+        );
+        assert_eq!(stored.delivery_reported_at, Some(at(900)));
+        assert_eq!(
+            stored.outcome,
+            WorkBlockInterventionOutcome::Offered,
+            "a delivery fact must never resolve the offer"
+        );
+        assert_eq!(stored.card_seen_at, None);
+    }
+
+    /// An offer blocked by a denied permission is retried, and posts once the
+    /// person turns notifications on. The row then has to say it was posted.
+    #[test]
+    fn a_later_post_replaces_an_earlier_failure() {
+        let (manager, repo) = manager_with_repo();
+        let active = manager.start(request(3_600), at(0)).unwrap();
+        let block_id = active.block_id.unwrap();
+        drift_into_offer(&manager).expect("the gate offered");
+
+        for (channel, second) in [
+            (InterventionDeliveryChannel::PermissionUnknown, 800),
+            (InterventionDeliveryChannel::PermissionDenied, 850),
+            (InterventionDeliveryChannel::NotificationPosted, 900),
+        ] {
+            manager
+                .record_intervention_delivery(block_id, channel, at(second))
+                .unwrap();
+        }
+
+        let stored = repo.intervention(&block_id.to_string()).unwrap().unwrap();
+        assert_eq!(
+            stored.delivery_channel,
+            Some(InterventionDeliveryChannel::NotificationPosted)
+        );
+        assert_eq!(stored.delivery_reported_at, Some(at(900)));
+    }
+
+    /// Once the notification centre had the offer, nothing reported after it
+    /// (a relaunch's attempt, a withdrawal) can unsay that it was posted, and
+    /// a repeated report keeps the time of the first.
+    #[test]
+    fn a_posted_offer_stays_posted() {
+        let (manager, repo) = manager_with_repo();
+        let active = manager.start(request(3_600), at(0)).unwrap();
+        let block_id = active.block_id.unwrap();
+        drift_into_offer(&manager).expect("the gate offered");
+
+        assert!(manager
+            .record_intervention_delivery(
+                block_id,
+                InterventionDeliveryChannel::AlertStyleNone,
+                at(900),
+            )
+            .unwrap());
+        for channel in [
+            InterventionDeliveryChannel::Withdrawn,
+            InterventionDeliveryChannel::PermissionDenied,
+            InterventionDeliveryChannel::NotificationPosted,
+            InterventionDeliveryChannel::AlertStyleNone,
+        ] {
+            assert!(
+                !manager
+                    .record_intervention_delivery(block_id, channel, at(1_500))
+                    .unwrap(),
+                "{channel:?} rewrote a posted offer"
+            );
+        }
+
+        let stored = repo.intervention(&block_id.to_string()).unwrap().unwrap();
+        assert_eq!(
+            stored.delivery_channel,
+            Some(InterventionDeliveryChannel::AlertStyleNone)
+        );
+        assert_eq!(stored.delivery_reported_at, Some(at(900)));
+    }
+
+    /// The fact usually arrives after the offer resolved: a withdrawal is
+    /// reported once the attempt it interrupted returns. It is still recorded,
+    /// and the outcome the machine wrote is left alone.
+    #[test]
+    fn a_delivery_fact_for_a_resolved_offer_is_still_recorded() {
+        let (manager, repo) = manager_with_repo();
+        let active = manager.start(request(3_600), at(0)).unwrap();
+        let block_id = active.block_id.unwrap();
+        drift_into_offer(&manager).expect("the gate offered");
+        manager.end(block_id, at(1_000)).unwrap();
+        let resolved = repo.intervention(&block_id.to_string()).unwrap().unwrap();
+
+        manager
+            .record_intervention_delivery(
+                block_id,
+                InterventionDeliveryChannel::Withdrawn,
+                at(1_001),
+            )
+            .unwrap();
+
+        let stored = repo.intervention(&block_id.to_string()).unwrap().unwrap();
+        assert_eq!(
+            stored.delivery_channel,
+            Some(InterventionDeliveryChannel::Withdrawn)
+        );
+        assert_eq!(stored.outcome, resolved.outcome);
+        assert_eq!(stored.outcome_at, resolved.outcome_at);
+    }
+
+    /// The notifier and the offer race on separate surfaces, and a block can
+    /// be cleared while an attempt is in flight. A report with no offer row is
+    /// a no-op, never an error.
+    #[test]
+    fn a_delivery_fact_without_an_offer_is_a_no_op() {
+        let (manager, repo) = manager_with_repo();
+        let active = manager.start(request(3_600), at(0)).unwrap();
+        let block_id = active.block_id.unwrap();
+
+        for block in [block_id, Uuid::new_v4()] {
+            assert!(!manager
+                .record_intervention_delivery(block, InterventionDeliveryChannel::Quiet, at(600))
+                .expect("a report with no offer must not error"));
+        }
+        assert!(repo.intervention(&block_id.to_string()).unwrap().is_none());
+    }
+
     #[test]
     fn the_delivered_offer_and_its_re_render_read_identically() {
         let manager = manager();
@@ -4229,6 +4405,14 @@ mod tests {
         ) -> Result<bool, PersistenceError> {
             self.0.mark_intervention_card_seen(block_id, at)
         }
+        fn record_intervention_delivery(
+            &self,
+            block_id: &str,
+            channel: InterventionDeliveryChannel,
+            at: DateTime<Utc>,
+        ) -> Result<bool, PersistenceError> {
+            self.0.record_intervention_delivery(block_id, channel, at)
+        }
         fn get(&self, block_id: &str) -> Result<WorkBlockRecord, PersistenceError> {
             self.0.get(block_id)
         }
@@ -4451,6 +4635,8 @@ mod tests {
                 outcome_at: Some(offered_at + Duration::seconds(30)),
                 salience: InterventionSalience::Normal,
                 card_seen_at: None,
+                delivery_channel: None,
+                delivery_reported_at: None,
             },
         )
         .unwrap();

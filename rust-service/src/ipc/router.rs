@@ -3882,6 +3882,26 @@ impl MessageRouter for R7Router {
                 manager.record_intervention_card_seen(request.block_id, Utc::now())
             }),
 
+            // Answered with nothing. A `work_block_state` reply would republish
+            // the snapshot, and the notifier retries an unposted offer on every
+            // republish; a fact that provoked a republish would provoke the
+            // next fact.
+            ClientMessage::InterventionDelivery(report) => {
+                let Some(manager) = &self.work_blocks else {
+                    return Ok(None);
+                };
+                if manager
+                    .record_intervention_delivery(report.block_id, report.channel, Utc::now())
+                    .is_err()
+                {
+                    tracing::warn!(
+                        error_code = "intervention_delivery_record_failed",
+                        "drift offer delivery fact was not recorded"
+                    );
+                }
+                Ok(None)
+            }
+
             ClientMessage::WorkBlockLifecycle(request) => {
                 self.work_block_response(|manager| manager.lifecycle(request.event, Utc::now()))
             }

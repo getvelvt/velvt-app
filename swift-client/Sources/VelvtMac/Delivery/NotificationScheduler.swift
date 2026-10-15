@@ -28,6 +28,9 @@ public protocol NotificationSchedulerProtocol: AnyObject {
 public protocol InterventionNotificationScheduling: AnyObject {
     @discardableResult
     func scheduleIntervention(id: String, title: String, body: String) async -> Bool
+    /// Takes a posted offer's notification out of Notification Center once
+    /// the offer is over. A no-op for an identifier that was never posted.
+    func removeDeliveredIntervention(id: String)
 }
 
 /// `userInfo` marker identifying a notification as a drift offer, so the
@@ -70,6 +73,7 @@ public let categoryPromptNotificationIdentifier = "velvt.category_prompt"
 public protocol UNUserNotificationCenterProtocol: AnyObject {
     func add(_ request: UNNotificationRequest) async throws
     func removeAllPendingNotificationRequests()
+    func removeDeliveredNotifications(withIdentifiers identifiers: [String])
 }
 
 extension UNUserNotificationCenter: UNUserNotificationCenterProtocol {}
@@ -123,8 +127,10 @@ public final class UNNotificationScheduler: NotificationSchedulerProtocol {
             trigger: trigger
         )
         do {
+            // The interventions counter is left alone: a daily insight is not
+            // a nudge inside a block, and counting it as one inflated the one
+            // number that says how often Velvt interrupted (critic-05).
             try await center.add(request)
-            metrics?.incrementInterventions()
             return true
         } catch {
             // A swallowed rejection is how a channel that delivers nothing
@@ -180,6 +186,10 @@ extension UNNotificationScheduler: InterventionNotificationScheduling {
             return false
         }
     }
+
+    public func removeDeliveredIntervention(id: String) {
+        center.removeDeliveredNotifications(withIdentifiers: [id])
+    }
 }
 
 extension UNNotificationScheduler: CategoryPromptNotificationScheduling {
@@ -218,6 +228,7 @@ public final class FakeNotificationScheduler: NotificationSchedulerProtocol, @un
     public private(set) var cancelAllCallCount = 0
     fileprivate var scheduledInterventionsStorage: [ScheduledIntervention] = []
     fileprivate var scheduledCategoryPromptsStorage: [ScheduledCategoryPrompt] = []
+    fileprivate var removedInterventionIDsStorage: [String] = []
     fileprivate let lock = NSLock()
 
     public init() {}
@@ -252,6 +263,16 @@ extension FakeNotificationScheduler: InterventionNotificationScheduling {
     public var scheduledInterventions: [ScheduledIntervention] {
         lock.withLock { scheduledInterventionsStorage }
     }
+
+    public func removeDeliveredIntervention(id: String) {
+        lock.withLock { removedInterventionIDsStorage.append(id) }
+    }
+
+    /// Every identifier `removeDeliveredIntervention(id:)` was asked to take
+    /// down, in order.
+    public var removedInterventionIDs: [String] {
+        lock.withLock { removedInterventionIDsStorage }
+    }
 }
 
 extension FakeNotificationScheduler: CategoryPromptNotificationScheduling {
@@ -280,6 +301,8 @@ extension FakeNotificationScheduler: CategoryPromptNotificationScheduling {
 public final class FakeUNUserNotificationCenter: UNUserNotificationCenterProtocol, @unchecked Sendable {
     public private(set) var addedRequests: [UNNotificationRequest] = []
     public private(set) var removeAllCallCount = 0
+    /// Every identifier passed to `removeDeliveredNotifications(withIdentifiers:)`.
+    public private(set) var removedDeliveredIdentifiers: [String] = []
     private var rejection: Error?
     private let lock = NSLock()
 
@@ -304,5 +327,9 @@ public final class FakeUNUserNotificationCenter: UNUserNotificationCenterProtoco
 
     public func removeAllPendingNotificationRequests() {
         lock.withLock { removeAllCallCount += 1 }
+    }
+
+    public func removeDeliveredNotifications(withIdentifiers identifiers: [String]) {
+        lock.withLock { removedDeliveredIdentifiers.append(contentsOf: identifiers) }
     }
 }

@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 /// Current breaking-change version of the local IPC contract.
-pub const PROTOCOL_VERSION: u32 = 34;
+pub const PROTOCOL_VERSION: u32 = 35;
 
 /// Client-to-server messages accepted by the Rust service.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -81,6 +81,11 @@ pub enum ClientMessage {
     /// Reports that the in-app drift card was actually rendered on screen.
     /// A delivery fact, not a response: it can never become an outcome.
     InterventionCardSeen(InterventionCardSeen),
+    /// Reports what became of the OS notification for a drift offer
+    /// (protocol 35): posted, refused by the person's settings, withdrawn
+    /// before it could be posted, or quiet by design. A delivery fact, not a
+    /// response: it can never become an outcome.
+    InterventionDelivery(InterventionDelivery),
     /// Reports an OS lifecycle boundary relevant to honest elapsed time.
     WorkBlockLifecycle(WorkBlockLifecycle),
     /// Clears local work-block state, observations, results, and intention text.
@@ -1335,6 +1340,82 @@ pub struct InterventionCardSeen {
     pub block_id: Uuid,
 }
 
+/// What became of the OS notification for the drift offer in `block_id`
+/// (protocol 35).
+///
+/// Like [`InterventionCardSeen`], a delivery fact and never a response: the
+/// payload names the block and one closed channel value, and has no place a
+/// user answer could sit. Swift reports it when an attempt to post the offer
+/// settles; the service timestamps it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct InterventionDelivery {
+    pub block_id: Uuid,
+    pub channel: InterventionDeliveryChannel,
+}
+
+/// How a drift offer reached, or failed to reach, the notification centre.
+///
+/// Until protocol 35 Swift wrote this only to the unified log, so an offer
+/// that never rang was stored exactly like one that did. Closed: every value
+/// is a branch Swift's notifier can actually end in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InterventionDeliveryChannel {
+    /// The notification centre accepted the request, and the person's alert
+    /// style for Velvt shows a banner or an alert.
+    NotificationPosted,
+    /// The notification centre accepted the request, but the person's alert
+    /// style for Velvt is None: listed in Notification Center, never shown
+    /// on screen.
+    AlertStyleNone,
+    /// Notifications were turned off for Velvt, so nothing was posted.
+    PermissionDenied,
+    /// Notification permission was never answered, or could not be read, so
+    /// nothing was posted.
+    PermissionUnknown,
+    /// The notification centre refused the request.
+    Rejected,
+    /// The offer was withdrawn (the person came back, answered, or the block
+    /// ended) while the attempt was still waiting on the permission check.
+    Withdrawn,
+    /// A quiet offer: in-app card only, by design, never posted.
+    Quiet,
+}
+
+impl InterventionDeliveryChannel {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::NotificationPosted => "notification_posted",
+            Self::AlertStyleNone => "alert_style_none",
+            Self::PermissionDenied => "permission_denied",
+            Self::PermissionUnknown => "permission_unknown",
+            Self::Rejected => "rejected",
+            Self::Withdrawn => "withdrawn",
+            Self::Quiet => "quiet",
+        }
+    }
+
+    pub fn from_db_value(value: &str) -> Option<Self> {
+        Some(match value {
+            "notification_posted" => Self::NotificationPosted,
+            "alert_style_none" => Self::AlertStyleNone,
+            "permission_denied" => Self::PermissionDenied,
+            "permission_unknown" => Self::PermissionUnknown,
+            "rejected" => Self::Rejected,
+            "withdrawn" => Self::Withdrawn,
+            "quiet" => Self::Quiet,
+            _ => return None,
+        })
+    }
+
+    /// Whether the request reached the notification centre. A posted offer
+    /// stays posted: nothing reported after it can unsay that it was posted.
+    pub fn was_posted(self) -> bool {
+        matches!(self, Self::NotificationPosted | Self::AlertStyleNone)
+    }
+}
+
 /// A live drift offer, rendered in-app. Present only while unanswered.
 ///
 /// The in-app surface is the primary path: it always renders, whereas an OS
@@ -2318,7 +2399,7 @@ mod v28_demotion_receipts_probe_contract {
 
     #[test]
     fn protocol_version_is_current() {
-        assert_eq!(PROTOCOL_VERSION, 34);
+        assert_eq!(PROTOCOL_VERSION, 35);
     }
 
     #[test]
@@ -2940,7 +3021,7 @@ mod v30_classification_contract {
 
     #[test]
     fn protocol_version_is_current() {
-        assert_eq!(PROTOCOL_VERSION, 34);
+        assert_eq!(PROTOCOL_VERSION, 35);
     }
 
     /// A v29 raw event — no declared metadata at all — must decode, and must
@@ -3263,7 +3344,7 @@ mod v32_in_progress_contract {
 
     #[test]
     fn protocol_version_is_current() {
-        assert_eq!(PROTOCOL_VERSION, 34);
+        assert_eq!(PROTOCOL_VERSION, 35);
     }
 
     /// A closed dwell is the only thing a pre-32 client ever sent, and it has
@@ -3309,7 +3390,7 @@ mod v33_needs_a_category_contract {
 
     #[test]
     fn protocol_version_is_current() {
-        assert_eq!(PROTOCOL_VERSION, 34);
+        assert_eq!(PROTOCOL_VERSION, 35);
     }
 
     /// Both kinds on one list, in the exact wire shape: `kind` and
@@ -3515,5 +3596,101 @@ mod v33_needs_a_category_contract {
             r#"{"prompt_id":"x","response":"dismissed"}"#
         )
         .is_err());
+    }
+}
+
+#[cfg(test)]
+mod v35_intervention_delivery_contract {
+    use super::*;
+
+    #[test]
+    fn protocol_version_is_current() {
+        assert_eq!(PROTOCOL_VERSION, 35);
+    }
+
+    /// The exact frame Swift sends, for every channel, both ways.
+    #[test]
+    fn every_channel_round_trips_in_the_wire_shape() {
+        for (channel, wire) in [
+            (
+                InterventionDeliveryChannel::NotificationPosted,
+                "notification_posted",
+            ),
+            (
+                InterventionDeliveryChannel::AlertStyleNone,
+                "alert_style_none",
+            ),
+            (
+                InterventionDeliveryChannel::PermissionDenied,
+                "permission_denied",
+            ),
+            (
+                InterventionDeliveryChannel::PermissionUnknown,
+                "permission_unknown",
+            ),
+            (InterventionDeliveryChannel::Rejected, "rejected"),
+            (InterventionDeliveryChannel::Withdrawn, "withdrawn"),
+            (InterventionDeliveryChannel::Quiet, "quiet"),
+        ] {
+            let message = ClientMessage::InterventionDelivery(InterventionDelivery {
+                block_id: Uuid::nil(),
+                channel,
+            });
+            let encoded = serde_json::to_string(&message).unwrap();
+            assert_eq!(
+                encoded,
+                format!(
+                    r#"{{"type":"intervention_delivery","payload":{{"block_id":"00000000-0000-0000-0000-000000000000","channel":"{wire}"}}}}"#
+                )
+            );
+            assert_eq!(
+                serde_json::from_str::<ClientMessage>(&encoded).unwrap(),
+                message
+            );
+            assert_eq!(channel.as_str(), wire);
+            assert_eq!(
+                InterventionDeliveryChannel::from_db_value(wire),
+                Some(channel)
+            );
+        }
+    }
+
+    /// A delivery fact has no room for an answer, a title or a timestamp the
+    /// client chose: anything beyond the block and the channel is refused.
+    #[test]
+    fn the_delivery_fact_refuses_fields_it_does_not_declare() {
+        for extra in [
+            r#"{"block_id":"00000000-0000-0000-0000-000000000000","channel":"quiet","response":"dismissed"}"#,
+            r#"{"block_id":"00000000-0000-0000-0000-000000000000","channel":"quiet","title":"t"}"#,
+            r#"{"block_id":"00000000-0000-0000-0000-000000000000","channel":"shown"}"#,
+        ] {
+            assert!(
+                serde_json::from_str::<InterventionDelivery>(extra).is_err(),
+                "{extra} decoded"
+            );
+        }
+    }
+
+    #[test]
+    fn only_the_two_channels_that_reached_the_centre_count_as_posted() {
+        let posted: Vec<_> = [
+            InterventionDeliveryChannel::NotificationPosted,
+            InterventionDeliveryChannel::AlertStyleNone,
+            InterventionDeliveryChannel::PermissionDenied,
+            InterventionDeliveryChannel::PermissionUnknown,
+            InterventionDeliveryChannel::Rejected,
+            InterventionDeliveryChannel::Withdrawn,
+            InterventionDeliveryChannel::Quiet,
+        ]
+        .into_iter()
+        .filter(|channel| channel.was_posted())
+        .collect();
+        assert_eq!(
+            posted,
+            [
+                InterventionDeliveryChannel::NotificationPosted,
+                InterventionDeliveryChannel::AlertStyleNone
+            ]
+        );
     }
 }

@@ -39,6 +39,34 @@ public final class AuthViewModel: ObservableObject {
         !isLoading && !email.isEmpty && !password.isEmpty
     }
 
+    /// velvt-core's password rule for a new account (`SignupRequest`): 12 to
+    /// 256 characters. A sign-in accepts any password up to 256, so an
+    /// account made under an older rule can still sign in.
+    public static let minimumPasswordLength = 12
+    public static let maximumPasswordLength = 256
+    public static let passwordRequirementHint = "At least 12 characters"
+
+    /// Shown under the password field while creating an account. A short
+    /// password used to be sent anyway and answered with "Request validation
+    /// failed.", which named neither the field nor the rule.
+    public var passwordHint: String? {
+        authMode == .signUp ? Self.passwordRequirementHint : nil
+    }
+
+    /// What is wrong with `password` before anything is sent, in the words the
+    /// service uses when velvt-core refuses it. Counted in Unicode scalars, as
+    /// velvt-core counts a string, so the two never disagree about an emoji.
+    public static func passwordProblem(_ password: String, forSignUp: Bool) -> String? {
+        let length = password.unicodeScalars.count
+        if forSignUp, length < minimumPasswordLength {
+            return "Use at least \(minimumPasswordLength) characters for your password."
+        }
+        if length > maximumPasswordLength {
+            return "Use at most \(maximumPasswordLength) characters for your password."
+        }
+        return nil
+    }
+
     private let accountStateManager: AccountStateManager
     private let ipcClient: any IPCClientProtocol
     private let authResponseTimeout: TimeInterval
@@ -71,6 +99,10 @@ public final class AuthViewModel: ObservableObject {
             errorMessage = "Email and password are required."
             return
         }
+        if let problem = Self.passwordProblem(password, forSignUp: true) {
+            errorMessage = problem
+            return
+        }
         guard accountStateManager.beginAuthentication(email: email) else {
             errorMessage = "Authentication is already in progress."
             return
@@ -92,6 +124,10 @@ public final class AuthViewModel: ObservableObject {
         guard !isLoading else { return }
         guard !email.trimmingCharacters(in: .whitespaces).isEmpty, !password.isEmpty else {
             errorMessage = "Email and password are required."
+            return
+        }
+        if let problem = Self.passwordProblem(password, forSignUp: false) {
+            errorMessage = problem
             return
         }
         guard accountStateManager.beginAuthentication(email: email) else {

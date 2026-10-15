@@ -21,6 +21,8 @@ pub use poll::{PollClient, PollConfig, PollScheduler};
 #[cfg(any(test, feature = "test-helpers"))]
 pub use push::FakePushAdapter;
 pub use push::{PushAdapter, PushAdapterAlertSink, PushConfig, PushQueue};
-pub use rehydrate::{InsightLabelReference, LocalInsightRehydrator};
+pub use rehydrate::{
+    insight_text, looks_like_template_id, InsightLabelReference, LocalInsightRehydrator,
+};
 pub use scheduler::FetchScheduler;
 pub use shaper::{ValidatePayload, ValidatedPayload, ValidationError};

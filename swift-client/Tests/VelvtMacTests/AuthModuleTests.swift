@@ -914,7 +914,7 @@ final class AuthViewModelTests: XCTestCase {
         manager.startListening(to: client)
         let sut = AuthViewModel(accountStateManager: manager, ipcClient: client)
         sut.email = "user@example.com"
-        sut.password = "secret"
+        sut.password = "secret-pass-12"
 
         let loggedIn = expectation(description: "loggedIn")
         var cancellable: AnyCancellable?
@@ -1042,7 +1042,7 @@ final class AuthViewModelTests: XCTestCase {
     func testSignUpBlockedWhenEmailEmpty() async {
         let (sut, manager, client) = makeViewModelWithDependencies()
         sut.email = ""
-        sut.password = "secret"
+        sut.password = "secret-pass-12"
         await sut.signUp()
         XCTAssertEqual(manager.accountState, .loggedOut, "must not leave loggedOut")
         XCTAssertFalse(
@@ -1057,10 +1057,80 @@ final class AuthViewModelTests: XCTestCase {
     func testSignUpBlockedWhenEmailIsWhitespaceOnly() async {
         let (sut, manager, _) = makeViewModelWithDependencies()
         sut.email = "   "
-        sut.password = "secret"
+        sut.password = "secret-pass-12"
         await sut.signUp()
         XCTAssertEqual(manager.accountState, .loggedOut)
         XCTAssertNotNil(sut.errorMessage)
+    }
+
+    // MARK: Client-side validation (password length, 1.0.14 simulation B8)
+
+    /// An 11-character password used to go to velvt-core and come back as
+    /// "Request validation failed.", naming neither the field nor the rule.
+    /// It is now caught before anything is sent, in the service's own words.
+    func testSignUpRefusesAPasswordShorterThanTwelveCharactersBeforeSending() async throws {
+        let (sut, manager, client) = makeViewModelWithDependencies()
+        try await client.connect()
+        sut.email = "user@example.com"
+        for short in ["short-pw-11", "a", "🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂"] {
+            sut.password = short
+            await sut.signUp()
+            XCTAssertEqual(sut.errorMessage, "Use at least 12 characters for your password.", short)
+            XCTAssertEqual(manager.accountState, .loggedOut)
+            XCTAssertFalse(sut.isLoading)
+        }
+        XCTAssertFalse(
+            client.sentMessages.contains(where: {
+                if case .signUp = $0 { return true }
+                return false
+            }),
+            "nothing is sent for a password the service would refuse")
+
+        sut.password = "twelve-chars"
+        await sut.signUp()
+        XCTAssertNil(sut.errorMessage)
+        XCTAssertTrue(
+            client.sentMessages.contains(.signUp(SignUpRequest(email: "user@example.com", password: "twelve-chars"))))
+    }
+
+    /// velvt-core counts characters as Unicode scalars, and so does the check:
+    /// a password that is 12 scalars but fewer grapheme clusters is allowed.
+    func testThePasswordLengthIsCountedInUnicodeScalars() {
+        let combining = String(repeating: "e\u{301}", count: 6)
+        XCTAssertEqual(combining.count, 6)
+        XCTAssertNil(AuthViewModel.passwordProblem(combining, forSignUp: true))
+        XCTAssertNotNil(AuthViewModel.passwordProblem(String(repeating: "e\u{301}", count: 5), forSignUp: true))
+    }
+
+    /// Signing in accepts what velvt-core's login accepts, 1 to 256: an account
+    /// made under an older rule must still be able to sign in.
+    func testLogInAllowsAShortPasswordButNotOneOverTheLimit() async throws {
+        let (sut, _, client) = makeViewModelWithDependencies()
+        try await client.connect()
+        sut.authMode = .logIn
+        sut.email = "user@example.com"
+        sut.password = "short"
+        await sut.logIn()
+        XCTAssertNil(sut.errorMessage)
+        XCTAssertTrue(client.sentMessages.contains(.logIn(LogInRequest(email: "user@example.com", password: "short"))))
+
+        let (tooLong, _, longClient) = makeViewModelWithDependencies()
+        tooLong.authMode = .logIn
+        tooLong.email = "user@example.com"
+        tooLong.password = String(repeating: "x", count: 257)
+        await tooLong.logIn()
+        XCTAssertEqual(tooLong.errorMessage, "Use at most 256 characters for your password.")
+        XCTAssertTrue(longClient.sentMessages.isEmpty)
+    }
+
+    /// Both credential forms show the rule while creating an account, and
+    /// neither shows it while signing in.
+    func testThePasswordHintShowsOnlyWhileCreatingAnAccount() {
+        let sut = makeViewModel()
+        sut.authMode = .signUp
+        XCTAssertEqual(sut.passwordHint, "At least 12 characters")
+        sut.authMode = .logIn
+        XCTAssertNil(sut.passwordHint)
     }
 
     func testSignUpBlockedWhenPasswordEmpty() async {
@@ -1075,7 +1145,7 @@ final class AuthViewModelTests: XCTestCase {
     func testLogInBlockedWhenEmailEmpty() async {
         let (sut, manager, _) = makeViewModelWithDependencies()
         sut.email = ""
-        sut.password = "secret"
+        sut.password = "secret-pass-12"
         await sut.logIn()
         XCTAssertEqual(manager.accountState, .loggedOut)
         XCTAssertNotNil(sut.errorMessage)
@@ -1095,7 +1165,7 @@ final class AuthViewModelTests: XCTestCase {
     func testCredentialsRemainSubmittableWhileServiceIsDisconnected() {
         let sut = makeViewModel()
         sut.email = "user@example.com"
-        sut.password = "secret"
+        sut.password = "secret-pass-12"
 
         XCTAssertEqual(sut.connectionStatus, .disconnected)
         XCTAssertTrue(sut.canSubmitCredentials)
@@ -1106,7 +1176,7 @@ final class AuthViewModelTests: XCTestCase {
         client.shouldThrowOnSend = IPCError.notConnected
         let (sut, manager, _) = makeViewModelWithDependencies(client: client)
         sut.email = "user@example.com"
-        sut.password = "secret"
+        sut.password = "secret-pass-12"
 
         await sut.signUp()
 
@@ -1120,7 +1190,7 @@ final class AuthViewModelTests: XCTestCase {
         client.shouldThrowOnSend = IPCError.notConnected
         let (sut, manager, _) = makeViewModelWithDependencies(client: client)
         sut.email = "user@example.com"
-        sut.password = "secret"
+        sut.password = "secret-pass-12"
 
         await sut.logIn()
 
@@ -1132,7 +1202,7 @@ final class AuthViewModelTests: XCTestCase {
     func testSignUpDoesNotSendWhenAuthenticationIsAlreadyInProgress() async {
         let (sut, manager, client) = makeViewModelWithDependencies()
         sut.email = "user@example.com"
-        sut.password = "secret"
+        sut.password = "secret-pass-12"
         manager.transition(to: .loggingIn)
 
         await sut.signUp()
@@ -1156,7 +1226,7 @@ final class AuthViewModelTests: XCTestCase {
         manager.startListening(to: client)
         let sut = AuthViewModel(accountStateManager: manager, ipcClient: client)
         sut.email = "user@example.com"
-        sut.password = "secret"
+        sut.password = "secret-pass-12"
 
         let reverted = expectation(description: "state reverted to loggedOut")
         var cancellable: AnyCancellable?
@@ -1181,7 +1251,7 @@ final class AuthViewModelTests: XCTestCase {
     func testSignUpTimesOutWhenServiceNeverResponds() async {
         let (sut, manager, client) = makeViewModelWithDependencies(timeout: 0.05)
         sut.email = "user@example.com"
-        sut.password = "secret"
+        sut.password = "secret-pass-12"
         client.setConnectionStatus(.connected)
 
         let errorSet = expectation(description: "timeout error")
@@ -1207,7 +1277,7 @@ final class AuthViewModelTests: XCTestCase {
         manager.startListening(to: client)
         let sut = AuthViewModel(accountStateManager: manager, ipcClient: client, authResponseTimeout: 0.05)
         sut.email = "user@example.com"
-        sut.password = "secret"
+        sut.password = "secret-pass-12"
         client.setConnectionStatus(.connected)
 
         let loggedIn = expectation(description: "logged in before timeout")

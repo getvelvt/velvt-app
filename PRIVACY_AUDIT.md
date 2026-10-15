@@ -509,6 +509,16 @@ device-local columns (`upload_batch.owner_user_id`,
 session may send a queued batch; no outbound body carries it
 (`serialized_batch_holds_exactly_the_documented_keys`).
 
+*Changed after this audit, 2026-10-14 (protocol 35):* the app reports to the
+local service what became of each drift offer's notification
+(`intervention_delivery {block_id, channel}`), and the service stores the
+channel and the time it heard it on the offer's row
+(`work_block_intervention.delivery_channel`, `delivery_reported_at`,
+migration 0043). Both are closed values about delivery: no copy, no name, no
+title. The app reads its own notification alert style
+(`UNNotificationSettings.alertStyle`) to tell a banner from alert style None.
+No upload path reads the table, and no request was added.
+
 `PRIVACY.md`'s list of what leaves the device was wrong in both directions: it
 named `/v1/auth/account/delete`, which nothing sends, and omitted
 `DELETE /v1/account`, `GET /v1/auth/session`, `GET /v1/insights/poll`,

@@ -103,6 +103,37 @@ final class MenuBarStateResolverTests: XCTestCase {
         XCTAssertEqual(state, .ipcDisconnected)
     }
 
+    // MARK: - A drift offer nothing put on screen
+
+    /// A live offer that rang nowhere outside the popover is the one fact the
+    /// menu bar used to have no state for. It is passive, so every state that
+    /// asks the person to fix something still wins over it.
+    func testOfferWaitingShowsOnlyWhenNothingMoreSevereIsTrue() {
+        for collection in Self.collectionStatuses {
+            for connection in Self.connectionStatuses {
+                for isRevoked in [false, true] {
+                    let state = sut.resolve(
+                        collectionStatus: collection,
+                        connectionStatus: connection,
+                        accountState: .loggedIn(userId: "u1"),
+                        isDeviceRevoked: isRevoked,
+                        isOfferWaitingUnshown: true
+                    )
+                    let withoutOffer = sut.resolve(
+                        collectionStatus: collection,
+                        connectionStatus: connection,
+                        accountState: .loggedIn(userId: "u1"),
+                        isDeviceRevoked: isRevoked
+                    )
+                    XCTAssertEqual(
+                        state, withoutOffer == .normal ? .offerWaiting : withoutOffer,
+                        "collection=\(collection) connection=\(connection) revoked=\(isRevoked)"
+                    )
+                }
+            }
+        }
+    }
+
     // MARK: - Oracle
 
     private static func expectedState(

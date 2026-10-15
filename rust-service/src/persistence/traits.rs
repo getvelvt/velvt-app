@@ -758,8 +758,10 @@ pub trait WorkBlockRepo: Send + Sync {
     ///
     /// A posted channel is final: once `notification_posted` or
     /// `alert_style_none` is stored, later reports are ignored, because the
-    /// offer was posted whatever happened next. Any other stored channel is
-    /// replaced, so an offer that met a denied permission and was posted once
+    /// offer was posted whatever happened next. `withdrawn` and `stale` fill
+    /// only an empty channel: neither replaces what an attempt found or what
+    /// an earlier process reported. Any other stored channel is replaced, so
+    /// an offer that met a denied permission and was posted once
     /// notifications were turned on reads as posted. Returns whether the row
     /// changed.
     fn record_intervention_delivery(

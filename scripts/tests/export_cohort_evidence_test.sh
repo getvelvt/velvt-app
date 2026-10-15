@@ -487,10 +487,20 @@ DELIVERY_MIGRATED_AT=$((T0 + 20000))
 migrate_fixture_db "$db35" "$FIXTURE_MIGRATIONS_PROTOCOL_35" "$DELIVERY_MIGRATED_AT"
 sqlite3 "$db35" "UPDATE work_block_intervention SET delivery_channel = 'quiet', delivery_reported_at = $((T0 + 30401)) WHERE block_id = 'block-4';
                  UPDATE work_block_intervention SET delivery_channel = 'permission_denied', delivery_reported_at = $((T0 + 63601)) WHERE block_id = 'block-7';"
-# The CHECK constraint holds the vocabulary closed.
+# The CHECK constraint holds the vocabulary closed, and takes every channel
+# the analyser knows (checked on a copy, so the export below is unchanged).
 if sqlite3 "$db35" "UPDATE work_block_intervention SET delivery_channel = 'shown' WHERE block_id = 'block-1';" 2>/dev/null; then
   fail "migration 0043 accepted a channel outside its vocabulary"
 fi
+cp "$db35" "$work/p35-vocabulary.sqlite3"
+for channel in $(python3 -c "import ast, sys
+tree = ast.parse(open(sys.argv[1]).read())
+print(' '.join(next(ast.literal_eval(n.value) for n in tree.body if isinstance(n, ast.Assign)
+                    and getattr(n.targets[0], 'id', '') == 'DELIVERY_CHANNELS')))" "$analyze"); do
+  sqlite3 "$work/p35-vocabulary.sqlite3" \
+    "UPDATE work_block_intervention SET delivery_channel = '$channel' WHERE block_id = 'block-1';" \
+    || fail "migration 0043 refused the analyser's channel $channel"
+done
 mkdir -p "$work/p35"
 run_export "$db35" "$work/p35/export.csv" "$work/p35/log.txt"
 check_header "$work/p35/export.csv" "$OFFERS_HEADER"
@@ -522,7 +532,8 @@ nd = r["notification_delivery"]
 offers = {k: v["offers"] for k, v in nd["by_channel"].items() if v["offers"]}
 assert offers == {"unknown": 1, "quiet": 1, "permission_denied": 1}, offers
 assert nd["by_channel"]["quiet"]["no_response"] == 1, nd
-assert (nd["shown_on_screen"], nd["not_shown_on_screen"], nd["not_recorded"]) == (0, 2, 1), nd
+assert (nd["posted_with_visible_alert_style"], nd["not_posted_with_visible_alert_style"],
+        nd["not_recorded"]) == (0, 2, 1), nd
 PY
 
 # ===========================================================================

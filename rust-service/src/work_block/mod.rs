@@ -2779,6 +2779,119 @@ mod tests {
         assert_eq!(stored.delivery_reported_at, Some(at(900)));
     }
 
+    /// A withdrawal is reported by the attempt the offer's end cut short,
+    /// and that can be the retry of an offer already found denied; a stale
+    /// skip is a relaunch declining to try. Neither is something an attempt
+    /// found, so neither replaces what one did, while each still fills a row
+    /// that holds nothing.
+    #[test]
+    fn a_withdrawal_or_a_stale_skip_never_replaces_what_an_attempt_found() {
+        for found in [
+            InterventionDeliveryChannel::PermissionDenied,
+            InterventionDeliveryChannel::PermissionUnknown,
+            InterventionDeliveryChannel::Rejected,
+            InterventionDeliveryChannel::Quiet,
+        ] {
+            let (manager, repo) = manager_with_repo();
+            let active = manager.start(request(3_600), at(0)).unwrap();
+            let block_id = active.block_id.unwrap();
+            drift_into_offer(&manager).expect("the gate offered");
+            manager
+                .record_intervention_delivery(block_id, found, at(900))
+                .unwrap();
+
+            for late in [
+                InterventionDeliveryChannel::Withdrawn,
+                InterventionDeliveryChannel::Stale,
+            ] {
+                assert!(
+                    !manager
+                        .record_intervention_delivery(block_id, late, at(1_000))
+                        .unwrap(),
+                    "{late:?} replaced {found:?}"
+                );
+            }
+            let stored = repo.intervention(&block_id.to_string()).unwrap().unwrap();
+            assert_eq!(stored.delivery_channel, Some(found));
+            assert_eq!(stored.delivery_reported_at, Some(at(900)));
+        }
+
+        for late in [
+            InterventionDeliveryChannel::Withdrawn,
+            InterventionDeliveryChannel::Stale,
+        ] {
+            let (manager, repo) = manager_with_repo();
+            let active = manager.start(request(3_600), at(0)).unwrap();
+            let block_id = active.block_id.unwrap();
+            drift_into_offer(&manager).expect("the gate offered");
+            assert!(manager
+                .record_intervention_delivery(block_id, late, at(1_000))
+                .unwrap());
+            assert_eq!(
+                repo.intervention(&block_id.to_string())
+                    .unwrap()
+                    .unwrap()
+                    .delivery_channel,
+                Some(late)
+            );
+        }
+    }
+
+    /// A withdrawal holds the row only until an attempt finds something: an
+    /// offer withdrawn and then seen live again (the same offer in a later
+    /// snapshot) is posted by the attempt that follows.
+    #[test]
+    fn an_attempt_that_follows_a_withdrawal_replaces_it() {
+        let (manager, repo) = manager_with_repo();
+        let active = manager.start(request(3_600), at(0)).unwrap();
+        let block_id = active.block_id.unwrap();
+        drift_into_offer(&manager).expect("the gate offered");
+
+        for (channel, second) in [
+            (InterventionDeliveryChannel::Withdrawn, 800),
+            (InterventionDeliveryChannel::NotificationPosted, 900),
+        ] {
+            assert!(manager
+                .record_intervention_delivery(block_id, channel, at(second))
+                .unwrap());
+        }
+
+        let stored = repo.intervention(&block_id.to_string()).unwrap().unwrap();
+        assert_eq!(
+            stored.delivery_channel,
+            Some(InterventionDeliveryChannel::NotificationPosted)
+        );
+    }
+
+    /// Every value the Rust enum can send is one migration 0043's CHECK
+    /// accepts and the repository reads back. A spelling drift between the
+    /// two would otherwise surface only on a tester's Mac, as a CHECK error
+    /// the router logs and drops.
+    #[test]
+    fn every_delivery_channel_is_stored_and_read_back() {
+        for channel in InterventionDeliveryChannel::ALL {
+            let (manager, repo) = manager_with_repo();
+            let active = manager.start(request(3_600), at(0)).unwrap();
+            let block_id = active.block_id.unwrap();
+            drift_into_offer(&manager).expect("the gate offered");
+
+            assert!(
+                manager
+                    .record_intervention_delivery(block_id, channel, at(900))
+                    .unwrap(),
+                "{channel:?} was not stored"
+            );
+
+            let stored = repo.intervention(&block_id.to_string()).unwrap().unwrap();
+            assert_eq!(stored.delivery_channel, Some(channel));
+            assert_eq!(
+                repo.recent_interventions(1).unwrap()[0].delivery_channel,
+                Some(channel),
+                "the listing reads {channel:?} back too"
+            );
+        }
+    }
+
     /// The fact usually arrives after the offer resolved: a withdrawal is
     /// reported once the attempt it interrupted returns. It is still recorded,
     /// and the outcome the machine wrote is left alone.

@@ -818,7 +818,9 @@ final class InterventionNotifierTests: XCTestCase {
 
     /// The request was already on its way to the centre when the offer was
     /// withdrawn, so it lands after the withdrawal took the banner down. It
-    /// is taken down as soon as it lands.
+    /// is taken down as soon as it lands, and reported as withdrawn: the
+    /// outcome was decided before the banner existed, so counting it as
+    /// posted would credit the notification with a return it never caused.
     func test_a_post_that_lands_after_the_withdrawal_is_taken_down() async throws {
         let scheduler = GatedScheduler()
         let facts = RecordingDeliveryFacts()
@@ -840,16 +842,17 @@ final class InterventionNotifierTests: XCTestCase {
         await attempt?.value
 
         XCTAssertEqual(scheduler.removedIDs, [id, id], "and again once the late post lands")
-        XCTAssertEqual(facts.reports, [.init(blockID: block, channel: .notificationPosted)])
+        XCTAssertEqual(facts.reports, [.init(blockID: block, channel: .withdrawn)])
     }
 
     // MARK: - An offer too old to post
 
     /// A relaunch while an offer is live used to post it again, however old.
     /// An offer first seen more than two minutes after it was made is a claim
-    /// about a moment that has passed: no banner, no fact (what an earlier
-    /// process reported for it stands), and no later grant revives it. Its
-    /// banner from before the relaunch still leaves with it.
+    /// about a moment that has passed: no banner, one `stale` fact (which the
+    /// service lets fill only an empty row, so what an earlier process
+    /// reported stands), and no later grant revives it. Its banner from
+    /// before the relaunch still leaves with it.
     func test_an_offer_first_seen_after_two_minutes_is_not_posted() async throws {
         let offeredAt = Date(timeIntervalSince1970: 10_000)
         let center = FakeUNUserNotificationCenter()
@@ -873,13 +876,47 @@ final class InterventionNotifierTests: XCTestCase {
         XCTAssertNil(notifier.handle(snapshot(blockID: block, offeredAt: offeredAt)))
 
         XCTAssertTrue(center.addedRequests.isEmpty)
-        XCTAssertTrue(facts.reports.isEmpty)
+        XCTAssertEqual(facts.reports, [.init(blockID: block, channel: .stale)])
         XCTAssertEqual(reporter.entries, [.init(outcome: .skippedAsStale, surface: .driftOffer)])
         XCTAssertTrue(notifier.isOfferWaitingUnshown, "the card is still live, and nothing rang")
 
         _ = notifier.handle(snapshot(blockID: block, offeredAt: nil))
         XCTAssertEqual(center.removedDeliveredIdentifiers, ["velvt.intervention.\(block.uuidString).10000"])
         XCTAssertFalse(notifier.isOfferWaitingUnshown)
+    }
+
+    /// `offeredAt` is the start of the dwell the gate decided on, not the
+    /// moment it decided. A running app meets an old offer whenever the gate
+    /// decided on a long dwell's closed report, after `EventRelay` dropped the
+    /// in-progress one. It is not posted, and it is reported as `stale`: with
+    /// no fact the export called it `not_reported`, which says the app never
+    /// heard of it.
+    func test_a_running_app_reports_an_offer_decided_on_old_evidence_as_stale() async {
+        let clock = MutableClock(Date(timeIntervalSince1970: 10_010))
+        let scheduler = FakeNotificationScheduler()
+        let facts = RecordingDeliveryFacts()
+        let notifier = InterventionNotifier(
+            scheduler: scheduler,
+            permissionManager: StubPermissionManager(status: .granted),
+            deliveryFacts: facts,
+            now: { clock.now }
+        )
+        let earlier = UUID()
+        let block = UUID()
+
+        await notifier.handle(snapshot(blockID: earlier, offeredAt: Date(timeIntervalSince1970: 10_000)))?.value
+        _ = notifier.handle(snapshot(blockID: earlier, offeredAt: nil))
+        // A 300-second dwell, decided when its closed report arrived.
+        clock.now = Date(timeIntervalSince1970: 10_400)
+        for _ in 0..<3 {
+            XCTAssertNil(notifier.handle(snapshot(blockID: block, offeredAt: Date(timeIntervalSince1970: 10_100))))
+        }
+
+        XCTAssertEqual(scheduler.scheduledInterventions.count, 1, "only the earlier offer was posted")
+        XCTAssertEqual(
+            facts.reports,
+            [.init(blockID: earlier, channel: .notificationPosted), .init(blockID: block, channel: .stale)])
+        XCTAssertTrue(notifier.isOfferWaitingUnshown, "the card is live, and nothing rang")
     }
 
     func test_an_offer_first_seen_within_two_minutes_is_still_posted() async {
@@ -898,16 +935,19 @@ final class InterventionNotifierTests: XCTestCase {
 
     // MARK: - The menu bar's "offer waiting" state
 
-    /// Whether a live offer reached the screen outside the popover. Quiet,
-    /// denied, unanswered and alert style None all leave it only in the
-    /// window; a posted banner does not.
+    /// Whether a live offer reached the screen outside the popover. Denied,
+    /// unanswered and alert style None all leave it only in the window; a
+    /// posted banner does not. A quiet offer never shows the glyph: quiet
+    /// means the card alone, and the cohort compares quiet offers with
+    /// normal ones.
     func test_an_offer_is_waiting_unshown_only_while_live_and_not_on_screen() async {
         for (status, alertStyle, salience, waiting) in [
             (PermissionStatus.granted, NotificationAlertStyle.banner, InterventionSalience.normal, false),
             (.granted, .none, .normal, true),
             (.denied, .banner, .normal, true),
             (.unknown, .banner, .normal, true),
-            (.granted, .banner, .quiet, true),
+            (.granted, .banner, .quiet, false),
+            (.denied, .banner, .quiet, false),
         ] {
             let (notifier, _, _, _) = makeRecordingNotifier(status: status, alertStyle: alertStyle)
             let block = UUID()
@@ -918,6 +958,94 @@ final class InterventionNotifierTests: XCTestCase {
             _ = notifier.handle(snapshot(blockID: block, offeredAt: nil))
             XCTAssertFalse(notifier.isOfferWaitingUnshown, "the offer is gone")
         }
+    }
+
+    /// A posted offer whose later push carries Velvt's quiet hours took the
+    /// quiet branch and settled as `quiet`: the glyph came on under a banner
+    /// already on screen, and the service was told a posted offer was quiet.
+    /// A denied one had its denial replaced. An offer turned quiet after it
+    /// was tried keeps the fact its attempt found, and shows no glyph.
+    func test_an_offer_that_turns_quiet_after_its_attempt_keeps_what_the_attempt_found() async {
+        for (status, found) in [
+            (PermissionStatus.granted, InterventionDeliveryChannel.notificationPosted),
+            (.denied, .permissionDenied),
+        ] {
+            let (notifier, _, facts, _) = makeRecordingNotifier(status: status)
+            let block = UUID()
+            let offeredAt = Date(timeIntervalSince1970: 1000)
+
+            await notifier.handle(snapshot(blockID: block, offeredAt: offeredAt))?.value
+            XCTAssertNil(notifier.handle(snapshot(blockID: block, offeredAt: offeredAt, salience: .quiet)))
+
+            XCTAssertEqual(facts.reports, [.init(blockID: block, channel: found)], "\(status)")
+            XCTAssertFalse(notifier.isOfferWaitingUnshown, "\(status): a quiet offer shows no glyph")
+        }
+    }
+
+    /// A denied offer is retried on every republish, so the withdrawal can
+    /// land while a retry's settings query is in flight. The cancelled retry
+    /// reports `withdrawn` after the denial; the service lets `withdrawn`
+    /// fill only an empty row, so the denial is what the row keeps
+    /// (`a_withdrawal_or_a_stale_skip_never_replaces_what_an_attempt_found`).
+    func test_a_denied_offer_withdrawn_mid_retry_reports_the_withdrawal_after_the_denial() async throws {
+        let permissions = GatedPermissionManager()
+        let facts = RecordingDeliveryFacts()
+        let notifier = InterventionNotifier(
+            scheduler: FakeNotificationScheduler(),
+            permissionManager: permissions,
+            deliveryFacts: facts,
+            now: notifierTestClock
+        )
+        let block = UUID()
+        let offeredAt = Date(timeIntervalSince1970: 1000)
+
+        let first = notifier.handle(snapshot(blockID: block, offeredAt: offeredAt))
+        try await waitUntil { permissions.checkCount == 1 }
+        permissions.release(with: .denied)
+        await first?.value
+        let retry = notifier.handle(snapshot(blockID: block, offeredAt: offeredAt))
+        try await waitUntil { permissions.checkCount == 2 }
+        XCTAssertNil(notifier.handle(snapshot(blockID: block, offeredAt: nil)))
+        permissions.release(with: .granted)
+        await retry?.value
+
+        XCTAssertEqual(
+            facts.reports,
+            [.init(blockID: block, channel: .permissionDenied), .init(blockID: block, channel: .withdrawn)])
+        XCTAssertFalse(notifier.isOfferWaitingUnshown)
+    }
+
+    /// An offer forgotten and then seen again keeps its identity. The attempt
+    /// the forgetting cancelled can return after the new attempt posted; it
+    /// used to settle `withdrawn` on the live offer, turning the glyph on
+    /// under a banner on screen and telling the service the offer was over.
+    func test_a_cancelled_attempt_cannot_overwrite_the_offer_seen_again() async throws {
+        let permissions = GatedPermissionManager()
+        let facts = RecordingDeliveryFacts()
+        let scheduler = FakeNotificationScheduler()
+        let notifier = InterventionNotifier(
+            scheduler: scheduler,
+            permissionManager: permissions,
+            deliveryFacts: facts,
+            now: notifierTestClock
+        )
+        let block = UUID()
+        let offeredAt = Date(timeIntervalSince1970: 1000)
+
+        let cancelled = notifier.handle(snapshot(blockID: block, offeredAt: offeredAt))
+        try await waitUntil { permissions.checkCount == 1 }
+        XCTAssertNil(notifier.handle(snapshot(blockID: block, offeredAt: nil)))
+        let current = notifier.handle(snapshot(blockID: block, offeredAt: offeredAt))
+        try await waitUntil { permissions.checkCount == 2 }
+
+        permissions.releaseNewest(with: .granted)
+        await current?.value
+        permissions.release(with: .granted)
+        await cancelled?.value
+
+        XCTAssertEqual(scheduler.scheduledInterventions.count, 1)
+        XCTAssertEqual(facts.reports, [.init(blockID: block, channel: .notificationPosted)])
+        XCTAssertFalse(notifier.isOfferWaitingUnshown, "the banner is on screen")
     }
 
     /// Retrying must not become a way to re-ask for authorization: the system
@@ -1025,6 +1153,13 @@ private final class GatedPermissionManager: PermissionManagerProtocol, @unchecke
         let oldest = lock.withLock { pending.isEmpty ? nil : pending.removeFirst() }
         oldest?.resume(returning: status)
     }
+
+    /// Answers the newest query still waiting, so a later attempt can settle
+    /// before an earlier one returns.
+    func releaseNewest(with status: PermissionStatus) {
+        let newest = lock.withLock { pending.isEmpty ? nil : pending.removeLast() }
+        newest?.resume(returning: status)
+    }
 }
 
 /// A notification-settings query that answers `.granted` after a fixed
@@ -1057,6 +1192,15 @@ private final class LatencyPermissionManager: PermissionManagerProtocol, @unchec
 
     func requestPermission(for permission: PermissionType) async -> PermissionStatus {
         .granted
+    }
+}
+
+/// A clock a test moves by hand. Read and written on the main actor only.
+private final class MutableClock: @unchecked Sendable {
+    var now: Date
+
+    init(_ now: Date) {
+        self.now = now
     }
 }
 

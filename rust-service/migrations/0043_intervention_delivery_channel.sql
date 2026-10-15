@@ -15,13 +15,20 @@
 --   permission_denied    notifications are turned off for Velvt
 --   permission_unknown   permission never answered, or could not be read
 --   rejected             the notification centre refused the request
---   withdrawn            the offer ended while the attempt was still waiting
---                        on the permission check, so nothing was posted
+--   withdrawn            the offer was over before the notification centre
+--                        had it: it ended while the attempt was still
+--                        waiting on the permission check, or the post landed
+--                        after it ended and was taken down at once
 --   quiet                a quiet offer: in-app card only, by design
+--   stale                not posted: `offered_at` (the time of the evidence
+--                        the gate decided on, not of the decision) was more
+--                        than two minutes past when the app first saw it
 -- The two posted channels are final: a later report for the same offer is
--- ignored once either is stored. Any other channel is replaced by the next
--- report, so an offer that met a denied permission and was posted once the
--- person turned notifications on reads `notification_posted`.
+-- ignored once either is stored. `withdrawn` and `stale` fill only an empty
+-- channel, so neither replaces what an attempt found, nor what an earlier
+-- process reported before a relaunch. Any other channel is replaced by the
+-- next report, so an offer that met a denied permission and was posted once
+-- the person turned notifications on reads `notification_posted`.
 --
 -- `delivery_reported_at` is when the service received the channel it holds.
 --
@@ -45,7 +52,8 @@ ALTER TABLE work_block_intervention ADD COLUMN delivery_channel TEXT
         'permission_unknown',
         'rejected',
         'withdrawn',
-        'quiet'
+        'quiet',
+        'stale'
     ));
 
 ALTER TABLE work_block_intervention ADD COLUMN delivery_reported_at INTEGER;

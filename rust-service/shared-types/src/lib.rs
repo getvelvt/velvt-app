@@ -1376,11 +1376,20 @@ pub enum InterventionDeliveryChannel {
     PermissionUnknown,
     /// The notification centre refused the request.
     Rejected,
-    /// The offer was withdrawn (the person came back, answered, or the block
-    /// ended) while the attempt was still waiting on the permission check.
+    /// The offer was over (the person came back, answered, the block ended,
+    /// or another offer replaced it) before the notification centre had it:
+    /// withdrawn while the attempt was still waiting on the permission check,
+    /// or posted after the withdrawal and taken down at once. Fills only an
+    /// empty channel: it never replaces what an attempt already found.
     Withdrawn,
     /// A quiet offer: in-app card only, by design, never posted.
     Quiet,
+    /// Not posted: `offered_at`, the time of the evidence the gate decided
+    /// on, was already more than two minutes past when the app first saw the
+    /// offer. A relaunch while the offer was live, or a decision made on a
+    /// long dwell's closed report. Fills only an empty channel, so a relaunch
+    /// never replaces what an earlier process reported.
+    Stale,
 }
 
 impl InterventionDeliveryChannel {
@@ -1393,6 +1402,7 @@ impl InterventionDeliveryChannel {
             Self::Rejected => "rejected",
             Self::Withdrawn => "withdrawn",
             Self::Quiet => "quiet",
+            Self::Stale => "stale",
         }
     }
 
@@ -1405,6 +1415,7 @@ impl InterventionDeliveryChannel {
             "rejected" => Self::Rejected,
             "withdrawn" => Self::Withdrawn,
             "quiet" => Self::Quiet,
+            "stale" => Self::Stale,
             _ => return None,
         })
     }
@@ -1414,6 +1425,18 @@ impl InterventionDeliveryChannel {
     pub fn was_posted(self) -> bool {
         matches!(self, Self::NotificationPosted | Self::AlertStyleNone)
     }
+
+    /// Every channel, in the order the vocabulary lists them.
+    pub const ALL: [Self; 8] = [
+        Self::NotificationPosted,
+        Self::AlertStyleNone,
+        Self::PermissionDenied,
+        Self::PermissionUnknown,
+        Self::Rejected,
+        Self::Withdrawn,
+        Self::Quiet,
+        Self::Stale,
+    ];
 }
 
 /// A live drift offer, rendered in-app. Present only while unanswered.
@@ -3631,6 +3654,7 @@ mod v35_intervention_delivery_contract {
             (InterventionDeliveryChannel::Rejected, "rejected"),
             (InterventionDeliveryChannel::Withdrawn, "withdrawn"),
             (InterventionDeliveryChannel::Quiet, "quiet"),
+            (InterventionDeliveryChannel::Stale, "stale"),
         ] {
             let message = ClientMessage::InterventionDelivery(InterventionDelivery {
                 block_id: Uuid::nil(),
@@ -3673,18 +3697,10 @@ mod v35_intervention_delivery_contract {
 
     #[test]
     fn only_the_two_channels_that_reached_the_centre_count_as_posted() {
-        let posted: Vec<_> = [
-            InterventionDeliveryChannel::NotificationPosted,
-            InterventionDeliveryChannel::AlertStyleNone,
-            InterventionDeliveryChannel::PermissionDenied,
-            InterventionDeliveryChannel::PermissionUnknown,
-            InterventionDeliveryChannel::Rejected,
-            InterventionDeliveryChannel::Withdrawn,
-            InterventionDeliveryChannel::Quiet,
-        ]
-        .into_iter()
-        .filter(|channel| channel.was_posted())
-        .collect();
+        let posted: Vec<_> = InterventionDeliveryChannel::ALL
+            .into_iter()
+            .filter(|channel| channel.was_posted())
+            .collect();
         assert_eq!(
             posted,
             [

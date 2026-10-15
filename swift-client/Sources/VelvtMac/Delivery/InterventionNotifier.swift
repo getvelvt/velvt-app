@@ -102,14 +102,21 @@ public final class InterventionNotifier: ObservableObject {
         /// or notifications being turned on — tries again.
         case undelivered
         /// Already older than `maximumPostingAge` when this process first saw
-        /// it: a relaunch while the offer was live. A banner then would be a
-        /// claim about a moment that has passed, so it is never posted. Sticky.
+        /// it. A banner then would be a claim about a moment that has passed,
+        /// so it is reported as `stale` and never posted. Sticky.
         case expired
     }
 
     /// How old an offer may be, when this process first sees it, and still be
-    /// posted. An offer reaches a running app within moments of being made,
-    /// so only a relaunch or a long-stalled connection meets an older one.
+    /// posted.
+    ///
+    /// `offeredAt` is not when the gate decided: Rust stamps it with the time
+    /// of the evidence it decided on, the start of the dwell that tripped it.
+    /// A relaunch while the offer was live meets an old one, and so does a
+    /// running app whenever the gate decided on a long dwell's closed report,
+    /// which is what happens once `EventRelay.sendLive` has dropped the
+    /// in-progress one. Either way the offer is reported as `stale`, so its
+    /// row does not read as an offer the app never heard about.
     public static let maximumPostingAge: TimeInterval = 120
 
     private let scheduler: any InterventionNotificationScheduling
@@ -127,20 +134,28 @@ public final class InterventionNotifier: ObservableObject {
     private var disposition: Disposition? {
         didSet { refreshOfferWaiting() }
     }
-    /// The last channel this offer settled on, and the last one sent to the
-    /// service for it. Kept apart so a republished snapshot that retries a
+    /// The last channel this offer settled on, which is also the last one
+    /// sent to the service for it, so a republished snapshot that retries a
     /// denied offer does not send the same fact again.
     private var settledChannel: InterventionDeliveryChannel? {
         didSet { refreshOfferWaiting() }
     }
-    private var reportedChannel: InterventionDeliveryChannel?
+    /// Whether an attempt to post the current offer has started. A `quiet`
+    /// fact says the offer was never going to ring, which is not true of one
+    /// already tried.
+    private var hasAttemptedCurrentOffer = false
 
-    /// True while an offer is live and no banner or alert for it has been put
-    /// on screen: notifications are off, unanswered or set to alert style
-    /// None, the offer is quiet, or it was too old to post. The menu bar shows
-    /// a passive "offer waiting" state for it, the one surface outside the
+    /// True while a normal-salience offer is live and no banner or alert for
+    /// it has been put on screen: notifications are off, unanswered or set to
+    /// alert style None, or it was too old to post. The menu bar shows a
+    /// passive "offer waiting" state for it, the one surface outside the
     /// popover the person can see while they are elsewhere. False while the
     /// first attempt is still settling, so a posted offer never flickers it.
+    ///
+    /// Never true for a quiet offer. Quiet means the in-app card alone (a
+    /// dismissal's backoff, or Velvt's quiet hours), and the cohort analysis
+    /// compares quiet offers with normal ones; a glyph would change what a
+    /// quiet offer delivers.
     @Published public private(set) var isOfferWaitingUnshown = false
     /// The system prompt is asked for at most once per offer, so a retry loop
     /// cannot turn one offer into repeated authorization requests.
@@ -224,7 +239,7 @@ public final class InterventionNotifier: ObservableObject {
             currentKey = key
             disposition = nil
             settledChannel = nil
-            reportedChannel = nil
+            hasAttemptedCurrentOffer = false
             hasRequestedPermission = false
         }
         currentOffer = intervention
@@ -236,16 +251,23 @@ public final class InterventionNotifier: ObservableObject {
             if disposition != .suppressed {
                 disposition = .suppressed
                 reporter.report(.suppressedBySalience, surface: .driftOffer)
-                settle(.quiet, for: key)
+                // An offer that turned quiet after it was tried already has
+                // its fact: `quiet` would replace why it did not ring, or
+                // claim that a posted offer never rang.
+                if !hasAttemptedCurrentOffer, settledChannel == nil {
+                    settleCurrentOffer(on: .quiet)
+                }
             }
             return nil
         }
-        // Only a relaunch, or a connection that stalled for minutes, meets an
-        // offer this old the first time. Whatever an earlier process reported
-        // for it still stands, so nothing is sent: this is not an attempt.
+        // `offeredAt` is the time of the evidence, not of the decision (see
+        // `maximumPostingAge`), so a running app can meet an offer this old
+        // the first time too. The service lets `stale` fill only a row that
+        // holds nothing, so what an earlier process reported still stands.
         if isFirstSight, now().timeIntervalSince(intervention.offeredAt) > Self.maximumPostingAge {
             disposition = .expired
             reporter.report(.skippedAsStale, surface: .driftOffer)
+            settleCurrentOffer(on: .stale)
             return nil
         }
         guard disposition == nil || disposition == .undelivered else { return nil }
@@ -277,7 +299,7 @@ public final class InterventionNotifier: ObservableObject {
         currentOffer = nil
         disposition = nil
         settledChannel = nil
-        reportedChannel = nil
+        hasAttemptedCurrentOffer = false
         hasRequestedPermission = false
         // An attempt outlives the offer it was for. `requestPermission` waits
         // on a system alert the user may never answer, and until it returns
@@ -301,6 +323,9 @@ public final class InterventionNotifier: ObservableObject {
         isAttempting = true
         attemptNumber += 1
         let attempt = attemptNumber
+        if key == currentKey {
+            hasAttemptedCurrentOffer = true
+        }
 
         let task = Task { @MainActor [weak self, scheduler, permissionManager, reporter, alertStyleReader] in
             // `notDetermined` maps to `.unknown`. Onboarding can reach a first
@@ -346,6 +371,15 @@ public final class InterventionNotifier: ObservableObject {
                 reporter.report(.rejectedByNotificationCentre, surface: .driftOffer)
                 return
             }
+            // The request landed after the offer ended. The outcome was
+            // decided before the banner existed, and `finishAttempt` takes it
+            // down at once, so the offer was over before the centre had it:
+            // withdrawn, not posted.
+            guard self?.currentKey == key else {
+                self?.finishAttempt(attempt, key: key, disposition: .delivered, channel: .withdrawn)
+                reporter.report(.delivered, surface: .driftOffer)
+                return
+            }
             // Accepted is not the same as shown. Alert style None passes the
             // permission check and takes every request, and shows none of them.
             let style = await alertStyleReader?.alertStyle() ?? .unknown
@@ -363,22 +397,29 @@ public final class InterventionNotifier: ObservableObject {
         disposition attempted: Disposition,
         channel: InterventionDeliveryChannel
     ) {
-        // An offer withdrawn while its request was already on the way to the
-        // centre is posted after `forgetCurrentOffer` took its banner down.
-        // Take this one down too: it is no longer true.
-        if attempted == .delivered, currentKey != key {
-            removeBanner(for: key)
-        }
-        // Whatever became of the attempt is a fact about that offer, whether
-        // or not it is still the current one.
-        settle(channel, for: key)
         // An attempt `forgetCurrentOffer` cancelled still comes back here,
         // once the await it was in returns: the settings query and the system
         // alert both ignore cancellation. By then its slot was freed, and the
         // next offer's attempt may hold it. Clearing the slot here let that
         // offer start a second attempt and orphan the first, which could then
         // post after that offer was withdrawn too.
-        guard attempt == attemptNumber, isAttempting else { return }
+        let holdsSlot = attempt == attemptNumber && isAttempting
+        if currentKey != key {
+            // The offer is over: withdrawn, or replaced by another. A banner
+            // that reached the centre for it is no longer true; take it down.
+            // What the attempt found is still a fact about that offer, and
+            // the service decides what it may replace.
+            if attempted == .delivered {
+                removeBanner(for: key)
+            }
+            report(channel, for: key)
+        } else if holdsSlot {
+            settleCurrentOffer(on: channel)
+        }
+        // Otherwise the offer was forgotten and then seen again while this
+        // attempt was cancelled: it describes the offer's earlier life, and
+        // the attempt that holds the slot now speaks for it.
+        guard holdsSlot else { return }
         isAttempting = false
         // The offer may have been answered or replaced while the permission
         // round trip was in flight; that newer state wins.
@@ -393,18 +434,22 @@ public final class InterventionNotifier: ObservableObject {
         disposition = attempted
     }
 
-    /// Reports `channel` for `key`'s offer to the service, once per change.
+    /// Settles the current offer on `channel` and reports it, once per change.
     ///
-    /// The current offer's last report is remembered, so the retry a
-    /// republished snapshot makes for a denied offer does not send the same
-    /// fact each time. A fact about an offer that is already gone (an attempt
-    /// that settled after the withdrawal) is sent as it is.
-    private func settle(_ channel: InterventionDeliveryChannel, for key: OfferKey) {
-        if key == currentKey {
-            settledChannel = channel
-            guard reportedChannel != channel else { return }
-            reportedChannel = channel
-        }
+    /// The retry a republished snapshot makes for a denied offer settles on
+    /// the same channel and sends nothing. A posted offer stays posted, as the
+    /// service keeps it: nothing settled after the post can unsay that the
+    /// centre had it.
+    private func settleCurrentOffer(on channel: InterventionDeliveryChannel) {
+        guard let key = currentKey,
+            settledChannel != channel,
+            settledChannel?.wasPosted != true
+        else { return }
+        settledChannel = channel
+        report(channel, for: key)
+    }
+
+    private func report(_ channel: InterventionDeliveryChannel, for key: OfferKey) {
         deliveryFacts?.reportInterventionDelivery(blockID: key.blockID, channel: channel)
     }
 
@@ -414,11 +459,7 @@ public final class InterventionNotifier: ObservableObject {
 
     private func refreshOfferWaiting() {
         let waiting: Bool
-        if currentOffer == nil {
-            waiting = false
-        } else if disposition == .expired {
-            waiting = true
-        } else if let settledChannel {
+        if currentOffer?.salience == .normal, let settledChannel {
             waiting = !settledChannel.wasShownOnScreen
         } else {
             waiting = false

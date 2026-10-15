@@ -299,7 +299,7 @@ CARD_SEEN_BUCKETS = ("seen", "unseen", "unknown")
 
 # `notification_delivery` as the exporter derives it from `delivery_channel`
 # (migration 0043, protocol 35): what Swift reported became of the offer's OS
-# notification. The first seven are the channels Swift can report;
+# notification. The first eight are the channels Swift can report;
 # not_reported = NULL on a row offered after the Mac applied 0043; unknown =
 # NULL before that, or an export without the column (every export before
 # format 5). Unknown is never folded into not_reported. Descriptive only: no
@@ -312,10 +312,14 @@ DELIVERY_CHANNELS = (
     "rejected",
     "withdrawn",
     "quiet",
+    "stale",
 )
 DELIVERY_BUCKETS = DELIVERY_CHANNELS + ("not_reported", "unknown")
-# The one channel under which a banner or an alert was put on screen.
-DELIVERY_SHOWN = ("notification_posted",)
+# The one channel posted under an alert style that puts it on screen. Posted
+# is not seen: a Focus mode Velvt could not detect (no Focus-status
+# permission) holds a posted notification in Notification Center, and it is
+# still recorded as notification_posted. An upper bound on offers seen.
+DELIVERY_POSTED_VISIBLE = ("notification_posted",)
 
 BLOCK_TERMINAL_PHASES = ("completed", "abandoned", "expired")
 BLOCK_OPEN_PHASES = ("active", "paused")
@@ -1673,7 +1677,7 @@ def analyse(cohort: Cohort, cohort_start: datetime | None = None, cohort_weeks: 
             "returned_within_10min": sum(1 for o in subset if o.returned_within_window),
             "no_response": sum(1 for o in subset if o.outcome == "no_response"),
         }
-    shown = sum(by_delivery[b]["offers"] for b in DELIVERY_SHOWN)
+    posted_visible = sum(by_delivery[b]["offers"] for b in DELIVERY_POSTED_VISIBLE)
     unrecorded = by_delivery["not_reported"]["offers"] + by_delivery["unknown"]["offers"]
 
     withheld_counts = Counter(o.outcome for o in withheld)
@@ -1790,17 +1794,22 @@ def analyse(cohort: Cohort, cohort_start: datetime | None = None, cohort_weeks: 
             "definition": (
                 "From delivery_channel (migration 0043, protocol 35): what the app "
                 "reported became of each offer's OS notification. "
-                "notification_posted: posted, and the alert style shows it on screen. "
-                "alert_style_none: posted, listed in Notification Center, never shown. "
-                "permission_denied / permission_unknown: notifications off or never "
-                "answered, nothing posted. rejected: the notification centre refused it. "
-                "withdrawn: the offer ended before it was posted. quiet: in-app card "
-                "only, by design. not_reported: no report on a Mac that records them. "
-                "unknown: recorded before migration 0043. Never folded into not_reported."
+                "notification_posted: posted with an alert style that shows it (banner "
+                "or alert). Posted is not seen: a Focus mode Velvt could not detect "
+                "still holds it in Notification Center, so this is an upper bound on "
+                "offers seen. alert_style_none: posted, listed in Notification Center, "
+                "never shown. permission_denied / permission_unknown: notifications off "
+                "or never answered, nothing posted. rejected: the notification centre "
+                "refused it. withdrawn: the offer was over before the notification "
+                "centre had it. quiet: in-app card only, by design. stale: not posted, "
+                "because the app first saw the offer more than 2 minutes after the "
+                "evidence it was decided on. not_reported: no report on a Mac that "
+                "records them. unknown: recorded before migration 0043. Never folded "
+                "into not_reported."
             ),
             "by_channel": by_delivery,
-            "shown_on_screen": shown,
-            "not_shown_on_screen": denominator - shown - unrecorded,
+            "posted_with_visible_alert_style": posted_visible,
+            "not_posted_with_visible_alert_style": denominator - posted_visible - unrecorded,
             "not_recorded": unrecorded,
             "delivered": denominator,
         },
@@ -2034,9 +2043,12 @@ def render(result: dict) -> str:
         add(f"  {bucket:20} offers={stats['offers']:4} "
             f"returned_unanswered={stats['returned_within_10min']:4} "
             f"no_response={stats['no_response']:4}")
-    add(f"  shown on screen: {delivery['shown_on_screen']}, not shown: "
-        f"{delivery['not_shown_on_screen']}, not recorded: {delivery['not_recorded']}, "
-        f"of delivered={delivery['delivered']}")
+    add(f"  posted with a visible alert style: {delivery['posted_with_visible_alert_style']}, "
+        f"not: {delivery['not_posted_with_visible_alert_style']}, "
+        f"not recorded: {delivery['not_recorded']}, of delivered={delivery['delivered']}")
+    add("  Posted is not seen: a Focus mode Velvt could not detect holds a posted")
+    add("  notification in Notification Center, so the first figure is an upper")
+    add("  bound on offers seen.")
 
     held = result["withheld"]
     heading("WITHHELD (recorded, never delivered)")

@@ -15,11 +15,14 @@ counted both as delivered.
   `alert_style_none` (accepted, but the alert style is None: listed in
   Notification Center, never shown), `permission_denied`,
   `permission_unknown` (never answered, or unreadable), `rejected` (the
-  centre refused the request), `withdrawn` (the offer ended while the attempt
-  was waiting on the permission check) or `quiet` (in-app card only, by
-  design). Swift sends it when an attempt settles, once per change for the
-  current offer, and also for an offer that is already gone (a withdrawal
-  settles after it). A delivery fact and never a response, like
+  centre refused the request), `withdrawn` (the offer was over before the
+  centre had it: it ended while the attempt was waiting on the permission
+  check, or the post landed after it ended and was taken down at once),
+  `quiet` (in-app card only, by design) or `stale` (not posted: `offered_at`,
+  the time of the evidence the gate decided on and not of the decision, was
+  more than two minutes past when the app first saw the offer). Swift sends
+  it when an attempt settles, once per change for the current offer, and also
+  for an offer that is already gone (a withdrawal settles after it). A delivery fact and never a response, like
   `intervention_card_seen`: the payload has no place an answer could sit.
 - The service answers it with nothing. A `work_block_state` reply would
   republish the snapshot, the notifier retries an unposted offer on every
@@ -27,9 +30,12 @@ counted both as delivered.
 - Stored on the offer's row as `work_block_intervention.delivery_channel` and
   `delivery_reported_at` (migration 0043), beside `outcome` and `card_seen_at`,
   changing neither. A posted channel (`notification_posted`,
-  `alert_style_none`) is final; any other is replaced by the next report, so an
-  offer that met a denied permission and was posted once notifications were
-  turned on reads as posted. A report for a block with no offer row, or one
+  `alert_style_none`) is final. `withdrawn` and `stale` fill only an empty
+  channel, so neither replaces what an attempt found (a denial a cancelled
+  retry followed) or what an earlier process reported before a relaunch. Any
+  other is replaced by the next report, so an offer that met a denied
+  permission and was posted once notifications were turned on reads as
+  posted. A report for a block with no offer row, or one
   that no longer exists, changes nothing and is not an error. NULL means
   nothing was reported, never "not shown": every row before 0043, and every
   decision Swift never received (held for Focus, withheld under demotion).
@@ -43,15 +49,23 @@ counted both as delivered.
   new message `malformed_message`: hence the version.
 - Behaviour on unchanged messages, in the same change: Swift takes a drift
   offer's notification out of Notification Center once the offer is over, and
-  does not post an offer it first sees more than two minutes after it was made
-  (a relaunch while it was live). A daily insight no longer counts toward the
-  local interventions counter. The helper never puts an identifier in an
-  insight's text or notification: a `template` with no `label_references` is
-  not rendered, and the notification body falls back to the evidence's
-  `observation`. A sign-up or login refused with `422 validation_error` on the
-  email or the password answers `auth_failure` (`invalid_credentials`) in
-  words that name the field and the rule, never velvt-core's "Request
-  validation failed." None of this changes which offers are made.
+  does not post an offer it first sees more than two minutes after its
+  `offered_at` (a relaunch while it was live, or a decision made on a long
+  dwell's closed report), reporting it as `stale`. A daily insight no longer
+  counts toward the local interventions counter. The helper never puts an
+  identifier in an insight's text or notification: a `template` with no
+  `label_references` is not rendered, and the notification body falls back to
+  the evidence's `observation`. A sign-up or login refused with
+  `422 validation_error` on the email or the password answers `auth_failure`
+  (`invalid_credentials`) in words that name the field and the rule, never
+  velvt-core's "Request validation failed." None of this changes which offers
+  are made.
+- One change to how an offer is delivered, which the 1.4 pre-registration
+  amendment names: the menu bar shows a passive "offer waiting" glyph
+  (`text.bubble`, no sound, badge or animation) while a normal-salience offer
+  is live and was not posted with a visible alert style (notifications off or
+  unanswered, alert style None, or `stale`). A quiet offer never shows it, so
+  the quiet arm still receives the in-app card alone.
 
 ## Version 34 - 2026-10-14
 

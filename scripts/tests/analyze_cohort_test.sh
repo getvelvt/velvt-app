@@ -29,11 +29,6 @@
 #  11. The 2026-08-17 measure 3, corrections made per participant, was
 #      pre-registered and unmeasurable: no export carried it. It is counted from
 #      the corrections CSV, as a count, and a missing file is never a zero.
-#  13. Whether a nudge was shown was never recorded (1.0.14 simulation, B7).
-#      From protocol 35 the export carries what became of each offer's
-#      notification. It is reported as an ADDITIONAL descriptive breakdown and
-#      changes no pre-registered denominator; an older export is unknown,
-#      never not_reported.
 #  12. The primary outcome was reported as NOT COMPUTED because no export
 #      carried the ledger it needs. It is computed from the outcomes CSV the
 #      exporter works out on the Mac: numerator and denominator on policy v5
@@ -42,6 +37,12 @@
 #      wrong, which is reported and never imputed. Every result carries the
 #      2026-08-21 label: associational, since every eligible point was offered
 #      and there is no silence arm. observer_gap is broken down by cause.
+#  13. Whether a nudge was shown was never recorded (1.0.14 simulation, B7).
+#      From protocol 35 the export carries what became of each offer's
+#      notification. It is reported as an ADDITIONAL descriptive breakdown and
+#      changes no pre-registered denominator; an older export is unknown,
+#      never not_reported. A posted notification is not called shown: a Focus
+#      Velvt could not detect still holds it.
 #
 # Fixtures are CSVs written the way export_cohort_evidence.sh writes them.
 # export_cohort_evidence_test.sh covers the databases behind them, across
@@ -244,7 +245,7 @@ eq("card_seen.delivered", r["card_seen"]["delivered"], {"seen": 0, "unseen": 0, 
 # And one from before delivery_channel says "unknown", never "not_reported".
 nd = r["notification_delivery"]
 eq("notification_delivery.unknown", nd["by_channel"]["unknown"]["offers"], 2)
-eq("notification_delivery.not_recorded", (nd["shown_on_screen"], nd["not_shown_on_screen"], nd["not_recorded"]), (0, 0, 2))
+eq("notification_delivery.not_recorded", (nd["posted_with_visible_alert_style"], nd["not_posted_with_visible_alert_style"], nd["not_recorded"]), (0, 0, 2))
 
 if problems:
     raise SystemExit("\n".join(problems))
@@ -1075,6 +1076,7 @@ delivery_spec='{"blocks": [
    {"block_id": "denied",    "started_at": 1800020000},
    {"block_id": "quiet",     "started_at": 1800030000},
    {"block_id": "withdrawn", "started_at": 1800040000},
+   {"block_id": "stale",     "started_at": 1800045000},
    {"block_id": "silent",    "started_at": 1800050000},
    {"block_id": "raw-only",  "started_at": 1800060000},
    {"block_id": "held",      "started_at": 1800070000}
@@ -1085,6 +1087,7 @@ delivery_spec='{"blocks": [
    {"block_id": "denied",    "outcome": "returned", "outcome_at": 1800020700, "delivery_channel": "permission_denied", "notification_delivery": "permission_denied"},
    {"block_id": "quiet",     "outcome": "no_response", "salience": "quiet", "delivery_channel": "quiet", "notification_delivery": "quiet"},
    {"block_id": "withdrawn", "outcome": "returned", "outcome_at": 1800040601, "delivery_channel": "withdrawn", "notification_delivery": "withdrawn"},
+   {"block_id": "stale",     "outcome": "no_response", "delivery_channel": "stale", "notification_delivery": "stale"},
    {"block_id": "silent",    "outcome": "dismissed", "notification_delivery": "not_reported"},
    {"block_id": "raw-only",  "outcome": "was_focused", "delivery_channel": "permission_unknown"},
    {"block_id": "held",      "outcome": "delivery_suppressed_dnd", "notification_delivery": "not_reported"}
@@ -1095,6 +1098,7 @@ delivery_spec='{"blocks": [
    {"block_id": "denied",    "gate_verdict": "offered"},
    {"block_id": "quiet",     "gate_verdict": "offered"},
    {"block_id": "withdrawn", "gate_verdict": "offered"},
+   {"block_id": "stale",     "gate_verdict": "offered"},
    {"block_id": "silent",    "gate_verdict": "offered"},
    {"block_id": "raw-only",  "gate_verdict": "offered"},
    {"block_id": "held",      "gate_verdict": "suppressed_dnd"}
@@ -1117,15 +1121,21 @@ nd = r["notification_delivery"]
 assert nd["status"].startswith("DESCRIPTIVE"), nd["status"]
 by = nd["by_channel"]
 offers = {k: v["offers"] for k, v in by.items() if v["offers"]}
-# Seven delivered offers; the Focus-held decision stays out, as it does of
+# Eight delivered offers; the Focus-held decision stays out, as it does of
 # every delivered figure. raw-only has the channel but not the derived column.
 assert offers == {"notification_posted": 1, "alert_style_none": 1, "permission_denied": 1,
-                  "permission_unknown": 1, "quiet": 1, "withdrawn": 1, "not_reported": 1}, offers
+                  "permission_unknown": 1, "quiet": 1, "withdrawn": 1, "stale": 1,
+                  "not_reported": 1}, offers
 assert by["notification_posted"]["returned_within_10min"] == 1, by
 assert by["permission_denied"]["returned_within_10min"] == 1, by
 assert by["alert_style_none"]["no_response"] == 1, by
-assert (nd["shown_on_screen"], nd["not_shown_on_screen"], nd["not_recorded"], nd["delivered"]) == (1, 5, 1, 7), nd
-assert r["decisions_recorded"]["delivered"] == 7, r["decisions_recorded"]
+assert (nd["posted_with_visible_alert_style"], nd["not_posted_with_visible_alert_style"],
+        nd["not_recorded"], nd["delivered"]) == (1, 6, 1, 8), nd
+# Posted is not seen: the definition says a Focus Velvt could not detect still
+# holds a posted notification, so the figure is an upper bound.
+assert "Focus" in nd["definition"] and "upper bound" in nd["definition"], nd["definition"]
+assert "shown_on_screen" not in nd, nd
+assert r["decisions_recorded"]["delivered"] == 8, r["decisions_recorded"]
 PY
 python3 - "$work/delivery.json" "$work/no-delivery.json" <<'PY' || fail "the delivery breakdown changed a pre-registered figure"
 import json, sys
@@ -1137,7 +1147,8 @@ PY
 delivery_report="$("$analyze" "$work/delivery/p-delivery")"
 for needle in "NOTIFICATION DELIVERY (descriptive, protocol 35)" \
               "Changes no" \
-              "shown on screen: 1, not shown: 5, not recorded: 1, of delivered=7"; do
+              "posted with a visible alert style: 1, not: 6, not recorded: 1, of delivered=8" \
+              "Posted is not seen: a Focus mode Velvt could not detect holds a posted"; do
   grep -qF -- "$needle" <<<"$delivery_report" || fail "delivery report omits: $needle"
 done
 

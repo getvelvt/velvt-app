@@ -869,9 +869,9 @@ Contains: block id, purpose, intensity, planned duration, block phase, block
 start and end times, total time paused, offer time, how much of the block was
 left when the offer fired, anchor category, switch count, salience, outcome,
 outcome time, when the nudge card was first on screen, and what became of the
-nudge's notification (shown, listed without a banner, blocked by your
-notification settings, quiet, or withdrawn before it was posted). Times are
-plain epoch seconds.
+nudge's notification (posted, listed without a banner, blocked by your
+notification settings, quiet, withdrawn before it was posted, or too old to
+post). Times are plain epoch seconds.
 
 The decisions file adds each time the detector looked: when, the broad anchor
 category, switch count, elapsed and remaining seconds, the policy version, the

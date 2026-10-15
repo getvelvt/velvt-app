@@ -11,12 +11,12 @@ import SwiftUI
 /// actionable) > `collectionPaused` > `offerWaiting` > `normal`.
 public enum MenuBarState: Equatable, Sendable, CaseIterable {
     case normal
-    /// A drift offer is live and nothing of it was put on screen outside the
-    /// popover: notifications are off, unanswered or set to alert style None,
-    /// the offer is quiet, or it was too old to post after a relaunch. The
-    /// glyph is passive: no sound, no badge count, no movement. It is the one
-    /// Velvt surface a person in another app can see, and without it the
-    /// offer existed only behind a click.
+    /// A normal-salience drift offer is live and nothing of it was put on
+    /// screen outside the popover: notifications are off, unanswered or set
+    /// to alert style None, or it was too old to post. The glyph is passive:
+    /// no sound, no badge count, no movement. It is the one Velvt surface a
+    /// person in another app can see, and without it the offer existed only
+    /// behind a click. A quiet offer never shows it: quiet is the card alone.
     case offerWaiting
     case collectionPaused
     case ipcDisconnected
@@ -958,13 +958,14 @@ public final class MenuBarController: NSObject {
     /// The icon itself carries the state, not only the tooltip.
     ///
     /// `.normal` keeps the brand mark: the overwhelmingly common case should
-    /// look like Velvt and nothing else. The three states that are asking for
-    /// something render as that state's SF Symbol at `iconConfiguration`'s
-    /// fixed point size, so switching between them never shifts the item's
-    /// apparent position in the menu bar. Every image is a template, so the
-    /// menu bar tints it for the current appearance instead of the app
-    /// choosing a colour, and every image carries the state's accessibility
-    /// description so VoiceOver reads the same fact the glyph shows.
+    /// look like Velvt and nothing else. Every other state, the three that
+    /// report a problem and the passive `.offerWaiting`, renders as its SF
+    /// Symbol at `iconConfiguration`'s fixed point size, so switching between
+    /// them never shifts the item's apparent position in the menu bar. Every
+    /// image is a template, so the menu bar tints it for the current
+    /// appearance instead of the app choosing a colour, and every image
+    /// carries the state's accessibility description so VoiceOver reads the
+    /// same fact the glyph shows.
     static func statusItemImage(for state: MenuBarState) -> NSImage? {
         let description = MenuBarIconProvider.accessibilityDescription(for: state)
         if state == .normal, let brand = brandImage(description: description) {

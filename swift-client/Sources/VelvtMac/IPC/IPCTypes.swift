@@ -2385,10 +2385,16 @@ public enum InterventionDeliveryChannel: String, Codable, Equatable, Sendable, C
     case permissionUnknown = "permission_unknown"
     /// The notification centre refused the request.
     case rejected
-    /// The offer ended while the attempt was waiting on the permission check.
+    /// The offer was over before the notification centre had it: it ended
+    /// while the attempt was waiting on the permission check, or the post
+    /// landed after it ended and was taken down at once.
     case withdrawn
     /// A quiet offer: in-app card only, by design.
     case quiet
+    /// Not posted: the offer's `offeredAt` was already more than
+    /// `InterventionNotifier.maximumPostingAge` past when this process first
+    /// saw it.
+    case stale
 
     /// Whether the notification centre accepted the request.
     public var wasPosted: Bool {

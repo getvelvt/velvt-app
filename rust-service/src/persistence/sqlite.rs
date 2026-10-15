@@ -3708,12 +3708,20 @@ impl WorkBlockRepo for SqliteWorkBlockRepo {
         // an attempt for the same offer can follow a posted one (a relaunch
         // while the offer is live). What happened after a post cannot unsay
         // that the notification centre had it.
+        //
+        // `withdrawn` and `stale` fill only an empty channel. Neither is
+        // something an attempt found: a withdrawal is reported by an attempt
+        // the offer's end cut short, which can be the retry of an offer that
+        // was already denied, and a stale skip is a relaunch declining to
+        // try. Either replacing `permission_denied` would erase the one thing
+        // known about why the offer did not ring.
         let changed = connection.execute(
             "UPDATE work_block_intervention
              SET delivery_channel = ?2, delivery_reported_at = ?3
              WHERE block_id = ?1
                AND (delivery_channel IS NULL
-                    OR delivery_channel NOT IN ('notification_posted', 'alert_style_none'))
+                    OR (delivery_channel NOT IN ('notification_posted', 'alert_style_none')
+                        AND ?2 NOT IN ('withdrawn', 'stale')))
                AND delivery_channel IS NOT ?2",
             params![block_id, channel.as_str(), at.timestamp()],
         )?;

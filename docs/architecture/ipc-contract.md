@@ -615,13 +615,16 @@ version in brackets is where the message or field arrived.
   became of the offer's OS notification when an attempt to post it settled:
   `notification_posted`, `alert_style_none` (posted, and the alert style for
   Velvt is None), `permission_denied`, `permission_unknown`, `rejected`,
-  `withdrawn` (the offer ended before it was posted) or `quiet`. A delivery
-  fact, never a response, and answered with nothing: a `work_block_state`
-  reply would republish the snapshot, and the notifier retries an unposted
-  offer on every republish. Stored as `work_block_intervention.delivery_channel`
-  (migration 0043); a posted channel is final, any other is replaced by the
-  next report. Swift sends it once per change for the current offer, and for
-  a block with no offer row it changes nothing.
+  `withdrawn` (the offer was over before the notification centre had it),
+  `quiet` or `stale` (not posted: `offered_at`, the time of the evidence the
+  gate decided on, was more than two minutes past when the app first saw the
+  offer). A delivery fact, never a response, and answered with nothing: a
+  `work_block_state` reply would republish the snapshot, and the notifier
+  retries an unposted offer on every republish. Stored as
+  `work_block_intervention.delivery_channel` (migration 0043); a posted channel
+  is final, `withdrawn` and `stale` fill only an empty one, and any other is
+  replaced by the next report. Swift sends it once per change for the current
+  offer, and for a block with no offer row it changes nothing.
 - `request_intervention_explanation` / `intervention_explanation` [28]: one
   grounded sentence explaining the block's most recent shown offer. Accepts no
   user text.

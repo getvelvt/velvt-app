@@ -48,12 +48,17 @@ is a pure function with the following precedence:
 | 5 (default) | none of the above | `.normal` | `circle.fill` |
 
 `.offerWaiting` (1.0.14 simulation, drift-no-fallback) is the passive "offer
-waiting" state: a drift offer is live and nothing of it reached the screen
-outside the popover, because notifications are off or unanswered, the alert
-style for Velvt is None, the offer is quiet, or it was too old to post after a
-relaunch. `InterventionNotifier.isOfferWaitingUnshown` drives it, and is false
+waiting" state: a normal-salience drift offer is live and nothing of it
+reached the screen outside the popover, because notifications are off or
+unanswered, the alert style for Velvt is None, or it was too old to post
+(`stale`). `InterventionNotifier.isOfferWaitingUnshown` drives it, and is false
 while the first attempt for an offer is still settling and once a banner was
-posted, so a delivered offer never shows it. The glyph is the only change:
+posted, so a delivered offer never shows it. A quiet offer (a dismissal's
+backoff, or Velvt's quiet hours) never shows it either: quiet means the in-app
+card alone, and `analyze_cohort.py` compares quiet offers with normal ones, so
+a glyph on them would change what the quiet arm receives. The glyph is a new
+delivery surface for normal offers that were not posted visibly, and the 1.4
+pre-registration amendment names it. The glyph is the only change:
 no sound, no badge count, no animation. Until it existed, the menu bar icon
 had no state for a live offer at all, and an offer that did not ring existed
 only behind a click on it. Its tooltip and VoiceOver description read "Velvt
@@ -224,10 +229,22 @@ offer's row (`work_block_intervention.delivery_channel`, migration 0043) and
 answers with nothing. `channel` is `notification_posted`, `alert_style_none`
 (posted, and the alert style for Velvt is None, read from
 `UNNotificationSettings.alertStyle` after the post), `permission_denied`,
-`permission_unknown` (`unknown` or `restricted`), `rejected`, `withdrawn` or
-`quiet`. It is sent once per change for the current offer, so the retry a
-republished snapshot makes for a denied offer does not repeat it; a posted
-channel is final in Rust, and any other is replaced by the next report. The
+`permission_unknown` (`unknown` or `restricted`), `rejected`, `withdrawn`,
+`quiet` or `stale`. It is sent once per change for the current offer, so the
+retry a republished snapshot makes for a denied offer does not repeat it. Only
+the attempt that holds the one-at-a-time slot settles the current offer: one
+that `forgetCurrentOffer` cancelled can return after the same offer was seen
+again, and says nothing about it. `quiet` is sent only for an offer that was
+never tried, so an offer that turns quiet after an attempt keeps what the
+attempt found. A post that lands after its offer ended is reported as
+`withdrawn`, not posted: the outcome was decided before the banner existed,
+and the banner is taken down at once (its log line is still
+`notification_delivered`, since the centre did accept it). In Rust a posted channel is final,
+`withdrawn` and `stale` fill only an empty channel (so a cancelled retry
+cannot replace a denial, and a relaunch cannot replace what an earlier process
+reported), and any other is replaced by the next report. A posted channel is
+not proof the person saw it: a Focus mode Velvt could not detect holds it in
+Notification Center, and it is still `notification_posted`. The
 cohort export carries it (`delivery_channel`, `notification_delivery`) and
 `analyze_cohort.py` reports it as a descriptive breakdown beside the
 pre-registered figures, whose denominators it does not change. Until it
@@ -240,11 +257,14 @@ identifier, which also removes one an earlier process posted for it. An offer
 replaced by another without a snapshot between them is removed the same way,
 and so is a post that lands after its offer was withdrawn. An offer this
 process first sees more than `InterventionNotifier.maximumPostingAge` (120
-seconds) after it was made, which only a relaunch or a long-stalled
-connection produces, is not posted: the banner would be a claim about a
-moment that has passed. Nothing is reported for it, since whatever an earlier
-process reported still stands, and a later grant of permission does not
-revive it.
+seconds) after its `offered_at` is not posted: the banner would be a claim
+about a moment that has passed, and a later grant of permission does not
+revive it. `offered_at` is the time of the evidence the gate decided on (the
+start of the dwell that tripped it), not of the decision, so this happens on
+a relaunch while the offer is live and also in a running app whenever the
+gate decided on a long dwell's closed report, after `EventRelay.sendLive`
+dropped the in-progress one. It is reported as `stale`, so the export does not
+call it `not_reported`.
 
 Every attempt ends in exactly one line under subsystem `com.velvt.mac`,
 category `NotificationDelivery`, at a persisted level, so
@@ -256,7 +276,7 @@ it):
 |---|---|---|
 | `notification_delivered` | notice | `UNUserNotificationCenter.add(_:)` accepted the request |
 | `notification_delivered alert_style=none` | notice | accepted, and the alert style for Velvt is None: listed, never shown on screen |
-| `notification_skipped_stale` | notice | the offer was over two minutes old when this process first saw it; not posted |
+| `notification_skipped_stale` | notice | the offer was over two minutes past its `offered_at` when this process first saw it; not posted, reported as `stale` |
 | `notification_suppressed_by_salience` | notice | quiet offer: card only, by design |
 | `notification_withdrawn_before_delivery` | notice | the offer ended while the permission check was in flight; nothing posted |
 | `error_code=notification_permission_blocked status=…` | error | notifications not authorised; the offer stays eligible |

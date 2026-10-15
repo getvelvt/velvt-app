@@ -45,8 +45,10 @@ override VELVT_SOURCE_COMMIT = $(shell ./scripts/release_provenance.sh source-co
 VELVT_ALLOW_DIRTY_TREE ?= 0
 VELVT_ALLOW_LOCAL_DMG ?= 0
 # alpha-dmg and release refuse to build unless the API URL they compile in
-# answers GET /v1/ready with 200 (scripts/check_api_ready.sh). Setting this to 1
-# skips that request, for an offline test of the build pipeline only.
+# answers GET /v1/ready with 200 and {"status": "ready"}
+# (scripts/check_api_ready.sh). Setting this to 1 skips that request, for a
+# pipeline test while the API is down only; both targets repeat the warning
+# when they finish.
 VELVT_ALLOW_UNREACHABLE_API ?= 0
 VELVT_GENERATE_APPCAST_SHA256 ?=
 VELVT_SIGN_UPDATE_SHA256 ?=
@@ -234,14 +236,17 @@ dmg: check-swift-toolchain
 # See docs/shipping-a-testable-dmg.md for obtaining both. It builds the version
 # in swift-client/Configs/Version.xcconfig from a clean commit, refuses a
 # version or build that already shipped (docs/RELEASES.md), refuses an API URL
-# that does not answer /v1/ready with 200 (VELVT_ALLOW_UNREACHABLE_API above),
-# and tags the commit locally once the DMG is notarized and verified.
+# that is not ready (VELVT_ALLOW_UNREACHABLE_API above) and a Mac that cannot
+# run every slice of the helper (Rosetta 2 on Apple Silicon;
+# scripts/check_release_host.sh), and tags the commit locally once the DMG is
+# notarized and verified.
 alpha-dmg: check-swift-toolchain
 	@./scripts/release_provenance.sh check-release "$(VELVT_BUILD_MARKETING_VERSION)" "$(VELVT_BUILD_NUMBER)"
 	@$(MAKE) prepare-dmg-tool
 	@test -n "$(VELVT_CODESIGN_IDENTITY)" || (echo "ERROR: set VELVT_CODESIGN_IDENTITY to a 'Developer ID Application: NAME (TEAMID)' identity. See docs/shipping-a-testable-dmg.md." >&2; exit 1)
 	@test -n "$(VELVT_NOTARY_PROFILE)" || (echo "ERROR: set VELVT_NOTARY_PROFILE to a notarytool Keychain profile. See docs/shipping-a-testable-dmg.md." >&2; exit 1)
 	@test ! -e "$(VELVT_DMG_PATH)" && test ! -e "$(VELVT_DMG_PATH).sha256" || (echo "ERROR: $(VELVT_DMG_PATH) already exists; choose a new versioned VELVT_DMG_PATH." >&2; exit 1)
+	@./scripts/check_release_host.sh "$(VELVT_RELEASE_ARCHS)"
 	@VELVT_ALLOW_UNREACHABLE_API="$(VELVT_ALLOW_UNREACHABLE_API)" ./scripts/check_api_ready.sh "$(VELVT_API_BASE_URL)"
 	$(MAKE) package-release
 	./scripts/sign_release.sh production $(VELVT_APP_PATH)
@@ -260,6 +265,7 @@ alpha-dmg: check-swift-toolchain
 	@echo "Notarized alpha DMG ready: $(VELVT_DMG_PATH)"
 	@echo "Verify on a Mac that has never built Velvt, downloaded via a browser"
 	@echo "so it carries a real quarantine flag. Do not run xattr on it."
+	@test "$(VELVT_ALLOW_UNREACHABLE_API)" != "1" || echo "WARNING: VELVT_ALLOW_UNREACHABLE_API=1: $(VELVT_API_BASE_URL)/v1/ready was never checked. Do not give this build to anyone until it answers 200 and ready." >&2
 
 # Production is intentionally credential-gated. It never falls back to ad-hoc
 # signing and only succeeds after Apple accepts and the DMG is stapled.
@@ -286,6 +292,7 @@ release: check-swift-toolchain
 	@test -n "$(VELVT_GENERATE_APPCAST_SHA256)" || (echo "ERROR: set VELVT_GENERATE_APPCAST_SHA256 to the approved Sparkle 2.9.4 tool checksum." >&2; exit 1)
 	@test -n "$(VELVT_SIGN_UPDATE_SHA256)" || (echo "ERROR: set VELVT_SIGN_UPDATE_SHA256 to the approved Sparkle 2.9.4 tool checksum." >&2; exit 1)
 	@test ! -e "$(VELVT_DMG_PATH)" && test ! -e "$(VELVT_DMG_PATH).sha256" || (echo "ERROR: production DMG outputs are immutable; choose a new versioned VELVT_DMG_PATH." >&2; exit 1)
+	@./scripts/check_release_host.sh "$(VELVT_RELEASE_ARCHS)"
 	@VELVT_ALLOW_UNREACHABLE_API="$(VELVT_ALLOW_UNREACHABLE_API)" ./scripts/check_api_ready.sh "$(VELVT_PRODUCTION_API_BASE_URL)"
 	$(MAKE) package-release VELVT_API_BASE_URL="$(VELVT_PRODUCTION_API_BASE_URL)" VELVT_UPDATER_ENABLED=YES VELVT_UPDATE_FEED_URL="$(VELVT_UPDATE_FEED_URL)" VELVT_UPDATE_PUBLIC_ED_KEY="$(VELVT_UPDATE_PUBLIC_ED_KEY)" VELVT_BUILD_MARKETING_VERSION="$(VELVT_RELEASE_VERSION)" VELVT_BUILD_NUMBER="$(VELVT_RELEASE_BUILD)"
 	./scripts/sign_release.sh production $(VELVT_APP_PATH)
@@ -303,6 +310,7 @@ release: check-swift-toolchain
 	$(MAKE) update-appcast
 	$(MAKE) verify-update-release
 	./scripts/release_provenance.sh tag "$(VELVT_RELEASE_VERSION)" "$(VELVT_RELEASE_BUILD)" $(VELVT_DMG_PATH)
+	@test "$(VELVT_ALLOW_UNREACHABLE_API)" != "1" || echo "WARNING: VELVT_ALLOW_UNREACHABLE_API=1: $(VELVT_PRODUCTION_API_BASE_URL)/v1/ready was never checked. Do not publish this release until it answers 200 and ready." >&2
 
 update-archive:
 	./scripts/create_update_archive.sh \
@@ -333,6 +341,7 @@ verify-update-release:
 test-update-release:
 	./scripts/tests/release_provenance_test.sh
 	./scripts/tests/check_api_ready_test.sh
+	./scripts/tests/check_release_host_test.sh
 	./scripts/tests/build_rust_helper_test.sh
 	./scripts/tests/verify_release_slices_test.sh
 	./scripts/tests/verify_update_readiness_test.sh

@@ -89,8 +89,10 @@ from it, and `rust-service/build.rs` stamps the helper from it.
      higher than every build in it.
 
    `make alpha-dmg` then refuses an API URL that does not answer
-   `GET /v1/ready` with 200 (`scripts/check_api_ready.sh`), since that URL is
-   compiled into the helper.
+   `GET /v1/ready` with 200 and `{"status": "ready"}`
+   (`scripts/check_api_ready.sh`), since that URL is compiled into the helper,
+   and a build Mac that cannot run both slices of the helper
+   (`scripts/check_release_host.sh`).
 
    The app records the commit in `Info.plist` as `VelvtSourceCommit`, the helper
    reports the same commit from `velvt-service --source-commit`, and

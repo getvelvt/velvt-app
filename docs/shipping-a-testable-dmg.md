@@ -112,11 +112,20 @@ Push the tag and add the release to `RELEASES.md`.
 `https://dev-api.getvelvt.com`) is compiled into the helper, and nobody who
 installs the build can point it anywhere else. So before it builds anything,
 `make alpha-dmg` requests `<that URL>/v1/ready` and stops unless the answer is
-200 (`scripts/check_api_ready.sh`; `make release` does the same for
+200 with `{"status": "ready"}`, which is what the helper itself treats as ready
+(`scripts/check_api_ready.sh`; `make release` does the same for
 `VELVT_PRODUCTION_API_BASE_URL`). If it stops, restore the backend and run the
 target again. `VELVT_ALLOW_UNREACHABLE_API=1` skips the request; it exists for
-an offline test of the build pipeline only, and a build made with it has not
-been checked against a live backend.
+a pipeline test while the API is down only, a build made with it has not been
+checked against a live backend, and the target says so again when it finishes.
+
+**Build on an Apple Silicon Mac with Rosetta 2.** The verification asks both
+slices of the universal helper (arm64 and x86_64) for their protocol, version
+and source commit, and for a tester build it refuses a slice it cannot run. An
+Apple Silicon Mac runs the x86_64 slice under Rosetta 2; an Intel Mac cannot
+run the arm64 slice at all. `make alpha-dmg` and `make release` check this
+before they build (`scripts/check_release_host.sh`). If Rosetta is missing,
+install it with `softwareupdate --install-rosetta --agree-to-license`.
 
 **Pick a new `VELVT_DMG_PATH` for every attempt.** DMG outputs are treated as
 immutable and the target refuses to overwrite one.

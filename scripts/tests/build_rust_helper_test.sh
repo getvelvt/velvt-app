@@ -3,7 +3,9 @@
 # helper cargo just built into the app. The defect this pins: it copied from a
 # hard-coded rust-service/target, so with CARGO_TARGET_DIR set the build either
 # failed (no ./target) or bundled whatever older helper ./target still held, and
-# a helper left in the app by an earlier build survived a failed one.
+# a helper left in the app by an earlier build survived a failed one. It now
+# asks cargo where it writes, so CARGO_BUILD_TARGET_DIR and build.target-dir
+# count too.
 #
 # cargo and rustup are shims, so this needs no Rust toolchain. The universal
 # (YES) path needs clang and lipo, and is skipped without them.
@@ -13,7 +15,7 @@ repo_root="$(cd "$(dirname "$0")/../.." && pwd)"
 script="$repo_root/scripts/build_rust_helper.sh"
 # Each case sets its own. One inherited from the caller's shell would send the
 # shim's fake helpers into a real target directory.
-unset CARGO_TARGET_DIR
+unset CARGO_TARGET_DIR CARGO_BUILD_TARGET_DIR CARGO_ENCODED_RUSTFLAGS RUSTFLAGS
 fixture_dir="$(mktemp -d)"
 trap 'rm -rf "$fixture_dir"' EXIT
 
@@ -24,17 +26,25 @@ fail() {
 
 # --- Shims -------------------------------------------------------------------
 
-# A cargo that, like the real one, writes where CARGO_TARGET_DIR says (relative
-# to the directory it runs in), and otherwise into ./target. It "builds" by
-# copying $FIXTURE_FRESH_<triple> (or $FIXTURE_FRESH for the host build), and
-# fails when FIXTURE_CARGO_FAILS=1.
+# A cargo that, like the real one, writes where CARGO_TARGET_DIR says, else
+# where CARGO_BUILD_TARGET_DIR says (either relative to the directory it runs
+# in), else into ./target, and reports that directory from `cargo metadata`. It
+# "builds" by copying $FIXTURE_FRESH_<triple> (or $FIXTURE_FRESH for the host
+# build), records the rustflags of a cross build in $FIXTURE_RUSTFLAGS_LOG, and
+# fails a build when FIXTURE_CARGO_FAILS=1.
 shim_bin="$fixture_dir/bin"
 mkdir -p "$shim_bin"
 cat >"$shim_bin/cargo" <<'SHIM'
 #!/usr/bin/env bash
 set -euo pipefail
+target_dir="${CARGO_TARGET_DIR:-${CARGO_BUILD_TARGET_DIR:-target}}"
+[[ "$target_dir" == /* ]] || target_dir="$PWD/$target_dir"
+if [[ "${1:-}" == "metadata" ]]; then
+  printf '{"packages":[],"workspace_members":[],"resolve":null,"target_directory":"%s","version":1,"workspace_root":"%s","metadata":null}\n' \
+    "$target_dir" "$PWD"
+  exit 0
+fi
 [[ "${FIXTURE_CARGO_FAILS:-0}" != "1" ]] || { echo "error: could not compile velvt-service" >&2; exit 101; }
-target_dir="${CARGO_TARGET_DIR:-target}"
 triple=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -46,14 +56,20 @@ if [[ -z "$triple" ]]; then
   mkdir -p "$target_dir/release"
   cp "$FIXTURE_FRESH" "$target_dir/release/velvt-service"
 else
+  printf '%s\n' "${CARGO_ENCODED_RUSTFLAGS:-}" >>"${FIXTURE_RUSTFLAGS_LOG:-/dev/null}"
   source_var="FIXTURE_FRESH_${triple//-/_}"
   mkdir -p "$target_dir/$triple/release"
   cp "${!source_var}" "$target_dir/$triple/release/velvt-service"
 fi
 SHIM
+# One line per write with a pause between, as rustup's line-buffered stdout
+# can arrive: a reader that stops at the first line makes the second write take
+# SIGPIPE, which under pipefail failed the check for an installed target.
 cat >"$shim_bin/rustup" <<'SHIM'
 #!/usr/bin/env bash
-printf '%s\n' aarch64-apple-darwin x86_64-apple-darwin
+echo aarch64-apple-darwin
+sleep 0.2
+echo x86_64-apple-darwin
 SHIM
 chmod +x "$shim_bin/cargo" "$shim_bin/rustup"
 
@@ -97,6 +113,19 @@ CARGO_TARGET_DIR=build-elsewhere run_script "$rust_dir" "$out" NO >/dev/null ||
   fail "NO mode failed with a relative CARGO_TARGET_DIR."
 [[ "$("$out")" == "FRESH" && -x "$rust_dir/build-elsewhere/release/velvt-service" ]] ||
   fail "NO mode did not resolve a relative CARGO_TARGET_DIR from the crate."
+
+# CARGO_BUILD_TARGET_DIR (or build.target-dir in a cargo config, which cargo
+# reports the same way) moves it as well. The script never reads that variable:
+# only asking cargo finds it.
+rust_dir="$(new_rust_dir build-target-dir)"
+mkdir -p "$rust_dir/target/release"
+printf '#!/bin/sh\necho STALE\n' >"$rust_dir/target/release/velvt-service"
+chmod +x "$rust_dir/target/release/velvt-service"
+out="$fixture_dir/build-target-dir-out/velvt-service"
+CARGO_BUILD_TARGET_DIR="$fixture_dir/configured target" run_script "$rust_dir" "$out" NO >/dev/null ||
+  fail "NO mode failed with CARGO_BUILD_TARGET_DIR set."
+[[ "$("$out")" == "FRESH" ]] ||
+  fail "NO mode bundled the helper in ./target, not the one cargo built in CARGO_BUILD_TARGET_DIR."
 
 # Unset, it is ./target, as before.
 rust_dir="$(new_rust_dir default-target)"
@@ -165,5 +194,22 @@ fi
 if grep -q STALE "$out"; then
   fail "YES mode bundled a stale slice."
 fi
+
+# The same with the directory from CARGO_BUILD_TARGET_DIR, whose path has a
+# space; the build machine's path to it is remapped out of the helper.
+rust_dir="$(new_rust_dir universal-build-target-dir)"
+mkdir -p "$rust_dir/target/aarch64-apple-darwin/release" "$rust_dir/target/x86_64-apple-darwin/release"
+compile_stub arm64 STALE-ARM64-SLICE "$rust_dir/target/aarch64-apple-darwin/release/velvt-service"
+compile_stub x86_64 STALE-X86-SLICE "$rust_dir/target/x86_64-apple-darwin/release/velvt-service"
+out="$fixture_dir/universal-build-target-dir-out/velvt-service"
+export FIXTURE_RUSTFLAGS_LOG="$fixture_dir/rustflags.log"
+: >"$FIXTURE_RUSTFLAGS_LOG"
+CARGO_BUILD_TARGET_DIR="$fixture_dir/configured universal target" run_script "$rust_dir" "$out" YES "arm64 x86_64" >/dev/null ||
+  fail "YES mode failed with CARGO_BUILD_TARGET_DIR set."
+if ! grep -q FRESH-ARM64-SLICE "$out" || ! grep -q FRESH-X86-SLICE "$out" || grep -q STALE "$out"; then
+  fail "YES mode lipo'd the slices in ./target, not the ones cargo built in CARGO_BUILD_TARGET_DIR."
+fi
+[[ "$(grep -c -F -- "--remap-path-prefix=$fixture_dir/configured universal target=/velvt/target" "$FIXTURE_RUSTFLAGS_LOG")" == 2 ]] ||
+  fail "YES mode did not remap the target directory cargo reported: $(tr '\037' ' ' <"$FIXTURE_RUSTFLAGS_LOG")"
 
 echo "build_rust_helper tests passed"

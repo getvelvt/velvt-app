@@ -1,12 +1,15 @@
 #!/usr/bin/env bash
-# verify_release.sh asks the embedded helper for its protocol, version and
-# source commit and compares them with the app. The defect this pins: it asked
-# only the slice the build machine runs natively, so on Apple Silicon a universal
-# helper whose x86_64 slice was from another build passed, and every Intel tester
-# would have hit a version-mismatch alert on each launch.
+# verify_release.sh asks every slice of the embedded helper for its protocol,
+# version and source commit and compares them with the app. The defect this
+# pins: it asked only the slice the build machine ran natively, so on Apple
+# Silicon a universal helper whose x86_64 slice was from another build passed,
+# and every Intel tester would have hit a version-mismatch alert on each launch.
+# Which slice ran natively also depended on the perl and arch(1) first on PATH.
 #
 # The fixture is an ad-hoc signed Velvt.app whose helper is lipo'd from two
-# small C programs, so this needs clang, lipo and codesign, and no Rust.
+# small C programs, so this needs clang, lipo and codesign, and no Rust. It
+# passes on Apple Silicon (with or without Rosetta 2, natively or from a Rosetta
+# shell) and on Intel; each case says what it needs.
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "$0")/../.." && pwd)"
@@ -93,94 +96,166 @@ PLIST
   printf '%s' "$app"
 }
 
-run_verify() { # <app> -> output on stdout, status as the function's
-  VELVT_RELEASE_ARCHS="arm64 x86_64" bash "$verify" --mode local --app "$1" 2>&1
-}
-
 good_arm64="$(slice arm64 "$app_protocol" "$app_version" "$app_commit")"
 good_x86_64="$(slice x86_64 "$app_protocol" "$app_version" "$app_commit")"
 
-# Whether this Mac can run the x86_64 slice at all: natively on Intel, under
-# Rosetta 2 on Apple Silicon.
-can_run_x86_64=0
-if [[ "$(uname -m)" == "x86_64" ]] || arch -x86_64 /usr/bin/true >/dev/null 2>&1; then
-  can_run_x86_64=1
-fi
+# Which slices this Mac can run: on Apple Silicon arm64, and x86_64 under
+# Rosetta 2; on Intel x86_64 alone. Asked of arch(1) itself, not uname, which
+# says x86_64 in a Rosetta shell on Apple Silicon.
+can_run() { /usr/bin/arch "-$1" /usr/bin/true >/dev/null 2>&1; }
+runnable=""
+for candidate in arm64 x86_64; do
+  if can_run "$candidate"; then runnable+="${runnable:+ }$candidate"; fi
+done
+[[ -n "$runnable" ]] || fail "this Mac can run neither slice, so nothing here can be checked."
 
-# --- Matching slices pass -------------------------------------------------------
+# A stand-in for arch(1) that cannot run the slices named in FIXTURE_NO_SLICES,
+# as on a Mac without Rosetta 2 (x86_64) or an Intel Mac (arm64). Only the
+# tests point VELVT_TEST_ARCH_BIN at it.
+limited_arch="$fixture_dir/limited-arch"
+cat >"$limited_arch" <<'SHIM'
+#!/bin/sh
+for slice in $FIXTURE_NO_SLICES; do
+  if [ "$1" = "-$slice" ]; then
+    echo "arch: posix_spawnp: $2: Bad CPU type in executable" >&2
+    exit 1
+  fi
+done
+exec /usr/bin/arch "$@"
+SHIM
+chmod +x "$limited_arch"
+
+run_verify() { # <app> [mode] -> output on stdout, status as the function's
+  VELVT_RELEASE_ARCHS="arm64 x86_64" bash "$verify" --mode "${2:-local}" --app "$1" 2>&1
+}
+
+run_verify_without() { # <slices this Mac cannot run> <app> [mode]
+  FIXTURE_NO_SLICES="$1" VELVT_TEST_ARCH_BIN="$limited_arch" run_verify "$2" "${3:-local}"
+}
+
+# --- Matching slices pass, and the summary names each slice that was run --------
 
 app="$(make_app matching "$good_arm64" "$good_x86_64")"
 output="$(run_verify "$app")" || fail "a helper whose slices both match the app was refused: $output"
-if [[ "$(uname -m)" == "arm64" && "$can_run_x86_64" == "1" ]]; then
-  grep -q 'helper slices run: arm64 x86_64' <<<"$output" ||
-    fail "the summary does not say the x86_64 slice was run: $output"
-fi
+grep -q "helper slices run: $runnable\$" <<<"$output" ||
+  fail "the summary does not say the slices this Mac can run ($runnable) were run: $output"
 
-# --- A mismatched x86_64 slice is refused, whatever the build machine -----------
+# --- A mismatched slice is refused, whatever the build machine ------------------
 
-expect_x86_64_refusal() { # <case> <x86_64 slice> <message fragment>
+expect_slice_refusal() { # <case> <slice> <arm64 slice> <x86_64 slice> <message fragment>
   local app output
-  app="$(make_app "$1" "$good_arm64" "$2")"
+  app="$(make_app "$1" "$3" "$4")"
   if output="$(run_verify "$app")"; then
-    if [[ "$can_run_x86_64" == "1" ]]; then
-      fail "$1: a helper whose x86_64 slice does not match the app passed verification."
+    if can_run "$2"; then
+      fail "$1: a helper whose $2 slice does not match the app passed verification."
     fi
-    # Apple Silicon without Rosetta cannot run the slice. Local mode says so
-    # rather than passing silently.
-    grep -q 'WARNING: .*x86_64 slice' <<<"$output" ||
-      fail "$1: an x86_64 slice that could not be run was not reported."
+    # A slice this Mac cannot run. Local mode says so rather than passing
+    # silently.
+    grep -q "WARNING: this Mac cannot run the helper's $2 slice" <<<"$output" ||
+      fail "$1: a $2 slice that could not be run was not reported."
     return 0
   fi
-  grep -q "$3" <<<"$output" || fail "$1: refused, but not with the expected reason: $output"
+  grep -q "$5" <<<"$output" || fail "$1: refused, but not with the expected reason: $output"
 }
 
-expect_x86_64_refusal protocol "$(slice x86_64 31 "$app_version" "$app_commit")" \
-  'x86_64 slice.* protocol 31'
-expect_x86_64_refusal version "$(slice x86_64 "$app_protocol" 1.0.13 "$app_commit")" \
-  'x86_64 slice.* version 1.0.13'
-expect_x86_64_refusal commit "$(slice x86_64 "$app_protocol" "$app_version" "$other_commit")" \
-  "x86_64 slice.*$other_commit"
+expect_slice_refusal x86_64-protocol x86_64 "$good_arm64" "$(slice x86_64 31 "$app_version" "$app_commit")" \
+  'x86_64 slice speaks protocol 31'
+expect_slice_refusal x86_64-version x86_64 "$good_arm64" "$(slice x86_64 "$app_protocol" 1.0.13 "$app_commit")" \
+  'x86_64 slice reports version 1.0.13'
+expect_slice_refusal x86_64-commit x86_64 "$good_arm64" "$(slice x86_64 "$app_protocol" "$app_version" "$other_commit")" \
+  "x86_64 slice was built from $other_commit"
+expect_slice_refusal arm64-protocol arm64 "$(slice arm64 31 "$app_version" "$app_commit")" "$good_x86_64" \
+  'arm64 slice speaks protocol 31'
+expect_slice_refusal arm64-commit arm64 "$(slice arm64 "$app_protocol" "$app_version" "$other_commit")" "$good_x86_64" \
+  "arm64 slice was built from $other_commit"
 
-# --- Apple Silicon without Rosetta 2 ---------------------------------------------
-# An arch(1) that cannot run x86_64, as on a Mac where Rosetta was never
-# installed. A local build says what it could not check; a production build,
-# which goes to testers, refuses.
+# --- What is first on PATH does not decide which slice is checked ---------------
+# Needs a Mac that runs both slices: Apple Silicon with Rosetta 2.
 
-if [[ "$(uname -m)" == "arm64" ]]; then
-  shim_bin="$fixture_dir/no-rosetta-bin"
-  mkdir -p "$shim_bin"
-  cat >"$shim_bin/arch" <<'SHIM'
-#!/bin/sh
-if [ "$1" = "-x86_64" ]; then
-  echo "arch: posix_spawnp: $2: Bad CPU type in executable" >&2
-  exit 1
+if [[ "$runnable" == "arm64 x86_64" ]]; then
+  arm64_mismatch="$(make_app arm64-mismatch "$(slice arm64 31 "$app_version" "$app_commit")" "$good_x86_64")"
+
+  # An x86_64 perl first on PATH (an Intel Homebrew carried over to Apple
+  # Silicon). A helper exec'd from it ran its x86_64 slice, so the arm64 one
+  # went unchecked and this mismatch passed.
+  x86_64_perl_bin="$fixture_dir/x86_64-perl-bin"
+  mkdir -p "$x86_64_perl_bin"
+  printf '#!/bin/sh
+exec /usr/bin/arch -x86_64 /usr/bin/perl "$@"
+' >"$x86_64_perl_bin/perl"
+  chmod +x "$x86_64_perl_bin/perl"
+  if output="$(PATH="$x86_64_perl_bin:$PATH" run_verify "$arm64_mismatch")"; then
+    fail "with an x86_64 perl first on PATH, a helper whose arm64 slice does not match the app passed: $output"
+  fi
+  grep -q 'arm64 slice speaks protocol 31' <<<"$output" ||
+    fail "with an x86_64 perl first on PATH, the arm64 mismatch was refused for another reason: $output"
+
+  # The verifier itself running under Rosetta, as from a Rosetta terminal.
+  if output="$(VELVT_RELEASE_ARCHS="arm64 x86_64" /usr/bin/arch -x86_64 /bin/bash "$verify" --mode local --app "$arm64_mismatch" 2>&1)"; then
+    fail "run from an x86_64 shell, a helper whose arm64 slice does not match the app passed: $output"
+  fi
+  grep -q 'arm64 slice speaks protocol 31' <<<"$output" ||
+    fail "run from an x86_64 shell, the arm64 mismatch was refused for another reason: $output"
+
+  # A GNU arch (coreutils) first on PATH, which rejects -x86_64 and so made the
+  # x86_64 slice look unrunnable: a production build refused, blaming Rosetta.
+  gnu_arch_bin="$fixture_dir/gnu-arch-bin"
+  mkdir -p "$gnu_arch_bin"
+  printf '#!/bin/sh
+echo "arch: extra operand" >&2
+exit 1
+' >"$gnu_arch_bin/arch"
+  chmod +x "$gnu_arch_bin/arch"
+  output="$(PATH="$gnu_arch_bin:$PATH" run_verify "$app")" ||
+    fail "with a GNU arch first on PATH, a matching helper was refused: $output"
+  grep -q 'helper slices run: arm64 x86_64$' <<<"$output" ||
+    fail "with a GNU arch first on PATH, not every slice was run: $output"
 fi
-exec /usr/bin/arch "$@"
-SHIM
-  chmod +x "$shim_bin/arch"
+
+# --- A Mac that cannot run a slice ----------------------------------------------
+# A local build says what it could not check; a production build, which goes to
+# testers, refuses. The mismatched slice is the one this Mac cannot run, so
+# only skipping it lets the local verification pass.
+
+# Apple Silicon without Rosetta 2. Needs a Mac that runs arm64.
+if can_run arm64; then
   app="$(make_app no-rosetta "$good_arm64" "$(slice x86_64 31 "$app_version" "$app_commit")")"
-  output="$(PATH="$shim_bin:$PATH" run_verify "$app")" ||
+  output="$(run_verify_without x86_64 "$app")" ||
     fail "without Rosetta, a local verification failed instead of warning: $output"
   grep -q "WARNING: this Mac cannot run the helper's x86_64 slice" <<<"$output" ||
     fail "without Rosetta, a local verification did not say the x86_64 slice went unchecked: $output"
   grep -q 'helper slices run: arm64$' <<<"$output" ||
     fail "without Rosetta, the summary claims slices that were not run: $output"
-  if output="$(PATH="$shim_bin:$PATH" VELVT_RELEASE_ARCHS="arm64 x86_64" bash "$verify" --mode production --app "$app" 2>&1)"; then
+  if output="$(run_verify_without x86_64 "$app" production)"; then
     fail "without Rosetta, a production verification passed with the x86_64 slice unchecked."
   fi
   grep -q 'Rosetta 2 is not installed' <<<"$output" ||
     fail "without Rosetta, a production verification failed for another reason: $output"
 fi
 
-# --- The native arm64 check still holds (control) -------------------------------
-
-if [[ "$(uname -m)" == "arm64" ]]; then
-  app="$(make_app arm64-mismatch "$(slice arm64 31 "$app_version" "$app_commit")" "$good_x86_64")"
-  if output="$(run_verify "$app")"; then
-    fail "a helper whose arm64 slice does not match the app passed verification."
+# An Intel Mac, which cannot run the arm64 slice most testers use. Needs a Mac
+# that runs x86_64.
+if can_run x86_64; then
+  app="$(make_app intel "$(slice arm64 31 "$app_version" "$app_commit")" "$good_x86_64")"
+  output="$(run_verify_without arm64 "$app")" ||
+    fail "on Intel, a local verification failed instead of warning: $output"
+  grep -q "WARNING: this Mac cannot run the helper's arm64 slice" <<<"$output" ||
+    fail "on Intel, a local verification did not say the arm64 slice went unchecked: $output"
+  grep -q 'helper slices run: x86_64$' <<<"$output" ||
+    fail "on Intel, the summary claims slices that were not run: $output"
+  if output="$(run_verify_without arm64 "$app" production)"; then
+    fail "on Intel, a production verification passed with the arm64 slice unchecked."
   fi
-  grep -q 'does not match helper protocol 31' <<<"$output" ||
-    fail "the arm64 mismatch was refused for the wrong reason: $output"
+  grep -q "cannot run the helper's arm64 slice" <<<"$output" && grep -q 'Apple Silicon' <<<"$output" ||
+    fail "on Intel, a production verification failed for another reason: $output"
 fi
+
+# A Mac that can run no slice at all has checked nothing, even locally.
+app="$(make_app none-runnable "$good_arm64" "$good_x86_64")"
+if output="$(run_verify_without "arm64 x86_64" "$app")"; then
+  fail "a verification that could run no slice passed: $output"
+fi
+grep -q 'can run none of the helper' <<<"$output" ||
+  fail "a verification that could run no slice failed for another reason: $output"
 
 echo "verify_release slice tests passed"

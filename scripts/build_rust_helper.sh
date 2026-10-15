@@ -32,11 +32,17 @@ for artifact in abstraction-model.onnx tokenizer.json abstraction-prototypes.bin
 done
 cd "$rust_dir"
 
-# Where cargo writes. A relative CARGO_TARGET_DIR is relative to the directory
-# cargo runs in, which is this one. Copying from a fixed ./target instead
-# bundled whatever older helper ./target still held whenever the variable was
-# set, or failed when it held nothing.
-target_dir="${CARGO_TARGET_DIR:-target}"
+# Where cargo writes, asked of cargo itself: CARGO_TARGET_DIR,
+# CARGO_BUILD_TARGET_DIR and build.target-dir in any .cargo/config.toml all move
+# it. Copying from a fixed ./target bundled whatever older helper ./target still
+# held whenever one of them was set, or failed when it held nothing.
+# --no-deps resolves no dependencies, and --offline keeps it off the network.
+target_dir="$(cargo metadata --no-deps --format-version 1 --offline |
+  /usr/bin/python3 -I -c 'import json, sys; print(json.load(sys.stdin)["target_directory"])')"
+[[ "$target_dir" == /* ]] || {
+  echo "ERROR: cargo metadata did not name an absolute target directory (got '$target_dir')." >&2
+  exit 1
+}
 
 if [[ "$distributable" == "NO" ]]; then
   if [[ "$(uname -m)" == "arm64" ]]; then
@@ -69,8 +75,15 @@ remap_rustflags() {
   flags+=("--remap-path-prefix=$HOME=/build-home")
   flags+=("--remap-path-prefix=${CARGO_HOME:-$HOME/.cargo}=/cargo")
   flags+=("--remap-path-prefix=${RUSTUP_HOME:-$HOME/.rustup}=/rustup")
-  if [[ -n "${CARGO_TARGET_DIR:-}" ]]; then
-    flags+=("--remap-path-prefix=$(cd "$CARGO_TARGET_DIR" 2>/dev/null && pwd -P || echo "$CARGO_TARGET_DIR")=/velvt/target")
+  # Cargo reports the target directory as configured (/tmp, say, not
+  # /private/tmp). Both that and the resolved form are remapped, since either
+  # can reach rustc. A target directory inside the crate is remapped by the
+  # crate's own prefix, which comes later and so wins, as it did before.
+  flags+=("--remap-path-prefix=$target_dir=/velvt/target")
+  local physical_target_dir
+  if physical_target_dir="$(cd "$target_dir" 2>/dev/null && pwd -P)" &&
+    [[ "$physical_target_dir" != "$target_dir" ]]; then
+    flags+=("--remap-path-prefix=$physical_target_dir=/velvt/target")
   fi
   flags+=("--remap-path-prefix=$(pwd -P)=/velvt/rust-service")
   local IFS=$'\x1f'
@@ -78,12 +91,16 @@ remap_rustflags() {
 }
 export CARGO_ENCODED_RUSTFLAGS="$(remap_rustflags)"
 
+# Read once, not piped into `grep -q` per target: grep exits at the first
+# match, and under pipefail the SIGPIPE rustup then takes on its next line
+# failed the check for a target that is installed.
+installed_targets="$(rustup target list --installed)"
 for arch in arm64 x86_64; do
   case "$arch" in
     arm64) target="aarch64-apple-darwin" ;;
     x86_64) target="x86_64-apple-darwin" ;;
   esac
-  rustup target list --installed | grep -Fxq "$target" || {
+  grep -Fxq "$target" <<<"$installed_targets" || {
     echo "ERROR: missing Rust target '$target'; run: rustup target add $target" >&2
     exit 1
   }

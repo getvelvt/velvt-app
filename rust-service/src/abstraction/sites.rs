@@ -189,6 +189,9 @@ impl ClassificationPlugin for SiteSeedPlugin {
         }
         let site = site_identity(declared.site?)?;
         let seed = self.seeds.lookup(&site)?;
+        if seed.label == YOUTUBE_SEED_LABEL {
+            return youtube_by_title(window_title, declared.site, &self.taxonomy_version);
+        }
         let label = browser_context_verdict(app_name, window_title, &self.taxonomy_version)
             .filter(|refined| {
                 refined.status() == ClassificationStatus::Classified
@@ -206,6 +209,160 @@ impl ClassificationPlugin for SiteSeedPlugin {
             ClassificationTier::ExactMatch,
         ))
     }
+}
+
+/// The seed label whose category the video title decides (policy version 6).
+///
+/// YouTube is the one seeded site where the same host carries a lecture, a
+/// tutorial and a music video, and the blind hold-out written on 2026-10-07
+/// showed "always passive" was the largest single source of confidently wrong
+/// browser time. Every host the `youtube.com` and `youtu.be` seeds reach is
+/// decided by [`youtube_by_title`]; `music.youtube.com` has a seed of its own.
+const YOUTUBE_SEED_LABEL: &str = "video:youtube";
+
+/// Whole words in a YouTube video title that mark it as learning material.
+const YOUTUBE_LEARNING_WORDS: &[&str] = &[
+    "lecture",
+    "lectures",
+    "tutorial",
+    "tutorials",
+    "lesson",
+    "lessons",
+    "explained",
+    "webinar",
+    "workshop",
+    "seminar",
+    "walkthrough",
+    "leetcode",
+    "gcse",
+];
+
+/// Phrases (matched on word boundaries) that mark a title as learning material.
+const YOUTUBE_LEARNING_PHRASES: &[&str] = &[
+    "how to",
+    "crash course",
+    "for beginners",
+    "step by step",
+    "practice problems",
+    "intro to",
+    "introduction to",
+    "unit review",
+    "exam review",
+];
+
+/// Whole words that mark a title as entertainment.
+const YOUTUBE_ENTERTAINMENT_WORDS: &[&str] = &[
+    "highlights",
+    "episode",
+    "lofi",
+    "compilation",
+    "reacts",
+    "reaction",
+    "concert",
+    "ost",
+    "vlog",
+    "relaxing",
+    "playlist",
+    "shorts",
+];
+
+/// Phrases that mark a title as entertainment.
+const YOUTUBE_ENTERTAINMENT_PHRASES: &[&str] = &[
+    "music video",
+    "official video",
+    "tiny desk",
+    "lo fi",
+    "beats to relax",
+    "full special",
+    "weekend update",
+    "full game",
+    "day in my life",
+];
+
+/// A YouTube tab, decided by its video title rather than by the host.
+///
+/// - The home or subscriptions feed (a title that is only "YouTube", with or
+///   without a notification count) is the feed itself: PASSIVE_CONSUMPTION at
+///   the seed's confidence, as under version 5.
+/// - A title with a learning marker and no entertainment marker is REFERENCE
+///   at Medium confidence.
+/// - A title with an entertainment marker and no learning marker is
+///   PASSIVE_CONSUMPTION at Medium confidence.
+/// - Anything else -- no marker, or markers of both kinds -- is no answer, so
+///   the tab falls through to the explicitly ambiguous browser prior and the
+///   site to the "needs a category" list.
+///
+/// Title words never make a YouTube tab FOCUS_WORK. The title is read here and
+/// never stored or sent: only the category and label leave this function.
+fn youtube_by_title(
+    window_title: &str,
+    site: Option<&str>,
+    taxonomy_version: &str,
+) -> Option<ClassificationResult> {
+    let words = youtube_title_words(window_title, site);
+    if words.is_empty() || words == ["youtube"] {
+        return Some(ClassificationResult::new(
+            YOUTUBE_SEED_LABEL,
+            "PASSIVE_CONSUMPTION",
+            taxonomy_version,
+            ClassificationTier::ExactMatch,
+        ));
+    }
+    let learning = has_marker(&words, YOUTUBE_LEARNING_WORDS, YOUTUBE_LEARNING_PHRASES);
+    let entertainment = has_marker(
+        &words,
+        YOUTUBE_ENTERTAINMENT_WORDS,
+        YOUTUBE_ENTERTAINMENT_PHRASES,
+    );
+    let (label, category) = match (learning, entertainment) {
+        (true, false) => ("reference:youtube", "REFERENCE"),
+        (false, true) => (YOUTUBE_SEED_LABEL, "PASSIVE_CONSUMPTION"),
+        _ => return None,
+    };
+    Some(ClassificationResult::with_quality(
+        label,
+        category,
+        taxonomy_version,
+        ClassificationTier::LocalPurposeHeuristic,
+        ClassificationStatus::Classified,
+        ClassificationConfidence::Medium,
+        ClassificationSource::Heuristic,
+    ))
+}
+
+/// The lowercase alphanumeric words of a YouTube tab's title, without the
+/// site the engine puts in front of it, a leading notification count, or the
+/// trailing "YouTube" every video title ends with.
+fn youtube_title_words(window_title: &str, site: Option<&str>) -> Vec<String> {
+    let mut text = window_title.trim();
+    if let Some(site) = site {
+        text = text.strip_prefix(site).unwrap_or(text).trim_start();
+    }
+    let mut words: Vec<String> = text
+        .split(|character: char| !character.is_alphanumeric())
+        .filter(|word| !word.is_empty())
+        .map(str::to_lowercase)
+        .collect();
+    // "(3) Title - YouTube": a leading notification count.
+    if words.len() > 1 && words[0].bytes().all(|byte| byte.is_ascii_digit()) {
+        words.remove(0);
+    }
+    if words.len() > 1 && words.last().map(String::as_str) == Some("youtube") {
+        words.pop();
+    }
+    words
+}
+
+fn has_marker(words: &[String], marker_words: &[&str], phrases: &[&str]) -> bool {
+    words
+        .iter()
+        .any(|word| marker_words.contains(&word.as_str()))
+        || phrases.iter().any(|phrase| {
+            let phrase: Vec<&str> = phrase.split(' ').collect();
+            words
+                .windows(phrase.len())
+                .any(|window| window.iter().zip(&phrase).all(|(word, part)| word == part))
+        })
 }
 
 /// The only labels a browser-context verdict may put in place of a seed's
@@ -936,6 +1093,103 @@ mod tests {
                 ClassificationSource::Seed,
                 "{site} {title}"
             );
+        }
+    }
+
+    /// Policy version 6: a YouTube video's title decides its category. A
+    /// learning marker is REFERENCE and an entertainment marker
+    /// PASSIVE_CONSUMPTION, both at Medium confidence as a heuristic; the bare
+    /// feed stays PASSIVE_CONSUMPTION at the seed's confidence.
+    #[test]
+    fn a_youtube_video_is_decided_by_its_title() {
+        let plugin = SiteSeedPlugin::new("mvp-2".to_owned());
+        for site in ["www.youtube.com", "m.youtube.com", "youtu.be"] {
+            for title in [
+                "Lecture 14: Enhancers and Super-Enhancers - YouTube",
+                "How to Detail a Window Head in a Rainscreen Wall - YouTube",
+                "(3) React Tutorial for Beginners - YouTube",
+                "Organic Chemistry Crash Course - YouTube",
+                "Stoichiometry Practice Problems - YouTube",
+            ] {
+                let result = classify_tab(&plugin, "Google Chrome", site, title)
+                    .unwrap_or_else(|| panic!("{site} {title} is a lesson"));
+                assert_eq!(result.category(), "REFERENCE", "{site} {title}");
+                assert_eq!(result.label(), "reference:youtube", "{site} {title}");
+                assert_eq!(result.confidence(), ClassificationConfidence::Medium);
+                assert_eq!(result.source(), ClassificationSource::Heuristic);
+            }
+            for title in [
+                "Arsenal vs Chelsea | Extended Highlights - YouTube",
+                "Taylor Swift - The Fate of Ophelia (Official Music Video) - YouTube",
+                "lofi hip hop radio - beats to relax/study to - YouTube",
+                "girl dinner part 4 #shorts - YouTube",
+            ] {
+                let result = classify_tab(&plugin, "Safari", site, title)
+                    .unwrap_or_else(|| panic!("{site} {title} is entertainment"));
+                assert_eq!(result.category(), "PASSIVE_CONSUMPTION", "{site} {title}");
+                assert_eq!(result.label(), "video:youtube", "{site} {title}");
+                assert_eq!(result.confidence(), ClassificationConfidence::Medium);
+            }
+            for title in ["YouTube", "(4) YouTube", ""] {
+                let result = classify_tab(&plugin, "Arc", site, title)
+                    .unwrap_or_else(|| panic!("{site} '{title}' is the feed"));
+                assert_eq!(result.category(), "PASSIVE_CONSUMPTION", "{site} {title}");
+                assert_eq!(
+                    result.source(),
+                    ClassificationSource::Seed,
+                    "{site} {title}"
+                );
+            }
+        }
+    }
+
+    /// A title with no marker, or markers of both kinds, is no answer: the tab
+    /// falls to the ambiguous browser prior, and title words never make a
+    /// YouTube tab FOCUS_WORK.
+    #[test]
+    fn an_unclear_youtube_title_is_not_the_seed_tiers_to_answer() {
+        let plugin = SiteSeedPlugin::new("mvp-2".to_owned());
+        for (site, title) in [
+            (
+                "www.youtube.com",
+                "I Spent 10 Days Riding Japan's Slowest Trains - YouTube",
+            ),
+            (
+                "www.youtube.com",
+                "Ben Awad react tutorial reaction compilation - YouTube",
+            ),
+            ("www.youtube.com", "Of Course I Did - YouTube"),
+            ("www.youtube.com", "Q3 roadmap review - YouTube"),
+            ("studio.youtube.com", "Channel content - YouTube Studio"),
+        ] {
+            assert!(
+                classify_tab(&plugin, "Google Chrome", site, title).is_none(),
+                "{site} {title}"
+            );
+        }
+    }
+
+    /// YouTube Music is music whatever the title, and TikTok's web app is its
+    /// feed.
+    #[test]
+    fn youtube_music_and_tiktok_keep_one_category() {
+        let plugin = SiteSeedPlugin::new("mvp-2".to_owned());
+        let result = classify_tab(
+            &plugin,
+            "Safari",
+            "music.youtube.com",
+            "Lecture Hall (Live) - YouTube Music",
+        )
+        .expect("music.youtube.com is seeded");
+        assert_eq!(result.category(), "PASSIVE_CONSUMPTION");
+        assert_eq!(result.label(), "audio:music");
+
+        for site in ["www.tiktok.com", "tiktok.com"] {
+            let result = classify_tab(&plugin, "Google Chrome", site, "TikTok - Make Your Day")
+                .expect("tiktok.com is seeded");
+            assert_eq!(result.category(), "SOCIAL_FEED", "{site}");
+            assert_eq!(result.label(), "social:tiktok", "{site}");
+            assert_eq!(result.source(), ClassificationSource::Seed, "{site}");
         }
     }
 

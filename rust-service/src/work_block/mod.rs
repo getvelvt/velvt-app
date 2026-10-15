@@ -55,7 +55,7 @@ const INTENTION_RETENTION_HOURS: i64 = 24;
 /// which accepts none. `DRIFT_WINDOW_SECONDS` and `DRIFT_MIN_REMAINING_SECONDS`
 /// are unchanged — neither appears in the abstention record, and widening the
 /// window would change what "recently" means in copy that is frozen. These
-/// constants are policy version 2 and, unchanged, versions 3, 4 and 5
+/// constants are policy version 2 and, unchanged, versions 3, 4, 5 and 6
 /// (`DRIFT_POLICY_VERSION`); version 1 was 4 switches after a 5-minute
 /// warm-up.
 ///
@@ -120,7 +120,23 @@ const DRIFT_MIN_REMAINING_SECONDS: u32 = 2 * 60;
 /// ways, mostly from unclear to a category, so the anchor, the switch counts
 /// and the decision points differ from version 4 wherever a browser was open,
 /// and the two are never pooled.
-pub const DRIFT_POLICY_VERSION: u32 = 5;
+///
+/// Version 6 (2026-10-07, no protocol change) keeps every constant, branch
+/// and timing of version 5, and the gate's code with them. What changed is the
+/// evidence from two sites. A YouTube tab was PASSIVE_CONSUMPTION at high
+/// confidence whatever video it showed; under version 6 the video title
+/// decides it: a title with a learning marker (a lecture, a tutorial, "how
+/// to") is REFERENCE and one with an entertainment marker (highlights, a music
+/// video, an episode) is PASSIVE_CONSUMPTION, both at medium confidence; a
+/// title with neither, or both, is the ambiguous browser prior and never
+/// evidence; the bare feed stays PASSIVE_CONSUMPTION at high confidence.
+/// TikTok's web app was PASSIVE_CONSUMPTION and is SOCIAL_FEED. Both kinds of
+/// YouTube verdict still depart a FOCUS_WORK anchor, so most decisions are the
+/// same; but a YouTube tab with an unclear title is no longer a switch, a
+/// return or anchor time, and REFERENCE and PASSIVE_CONSUMPTION are different
+/// anchors, so the decision points can differ from version 5 wherever YouTube
+/// or TikTok was open, and the two are never pooled.
+pub const DRIFT_POLICY_VERSION: u32 = 6;
 /// The realized probability of the arm actually taken. Exactly 1.0 while the
 /// policy is deterministic — there is no randomization, and none is being
 /// introduced here. The value is recorded now because a propensity cannot be

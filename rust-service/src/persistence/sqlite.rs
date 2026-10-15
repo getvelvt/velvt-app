@@ -9346,7 +9346,7 @@ mod site_rule_tests {
         let untaught = engine
             .process(browser_tab(
                 "Safari",
-                "https://www.youtube.com/watch?v=private",
+                "https://www.netflix.com/watch/private",
             ))
             .unwrap();
         assert_eq!(untaught.category(), "PASSIVE_CONSUMPTION");

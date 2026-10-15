@@ -381,6 +381,9 @@ pub(crate) const SITE_SEEDS: &[SiteSeed] = &[
     SiteSeed { host: "x.com", scope: SiteScope::WithSubdomains, label: "social:x", category: "SOCIAL_FEED" },
     SiteSeed { host: "twitter.com", scope: SiteScope::WithSubdomains, label: "social:x", category: "SOCIAL_FEED" },
     SiteSeed { host: "instagram.com", scope: SiteScope::WithSubdomains, label: "social:instagram", category: "SOCIAL_FEED" },
+    // -- TikTok's web app is its For You feed (policy version 6; the native
+    //    app keeps the taxonomy's video:tiktok seed)
+    SiteSeed { host: "tiktok.com", scope: SiteScope::WithSubdomains, label: "social:tiktok", category: "SOCIAL_FEED" },
     // -- HostOnly: business.facebook.com and developers.facebook.com are not the feed
     SiteSeed { host: "facebook.com", scope: SiteScope::HostOnly, label: "social:facebook", category: "SOCIAL_FEED" },
     SiteSeed { host: "m.facebook.com", scope: SiteScope::HostOnly, label: "social:facebook", category: "SOCIAL_FEED" },
@@ -404,10 +407,12 @@ pub(crate) const SITE_SEEDS: &[SiteSeed] = &[
     SiteSeed { host: "infosec.exchange", scope: SiteScope::WithSubdomains, label: "social:feed", category: "SOCIAL_FEED" },
 
     // Passive consumption
+    // -- YouTube: the category below is the feed's. Every other YouTube tab is
+    //    decided by its video title (`youtube_by_title` in sites.rs, policy
+    //    version 6); YouTube Music is music whatever the title.
     SiteSeed { host: "youtube.com", scope: SiteScope::WithSubdomains, label: "video:youtube", category: "PASSIVE_CONSUMPTION" },
     SiteSeed { host: "youtu.be", scope: SiteScope::HostOnly, label: "video:youtube", category: "PASSIVE_CONSUMPTION" },
-    // -- TikTok follows the house app seed (video:tiktok, PASSIVE_CONSUMPTION)
-    SiteSeed { host: "tiktok.com", scope: SiteScope::WithSubdomains, label: "video:tiktok", category: "PASSIVE_CONSUMPTION" },
+    SiteSeed { host: "music.youtube.com", scope: SiteScope::HostOnly, label: "audio:music", category: "PASSIVE_CONSUMPTION" },
     SiteSeed { host: "netflix.com", scope: SiteScope::WithSubdomains, label: "video:netflix", category: "PASSIVE_CONSUMPTION" },
     SiteSeed { host: "twitch.tv", scope: SiteScope::WithSubdomains, label: "video:twitch", category: "PASSIVE_CONSUMPTION" },
     SiteSeed { host: "kick.com", scope: SiteScope::WithSubdomains, label: "video:streaming", category: "PASSIVE_CONSUMPTION" },

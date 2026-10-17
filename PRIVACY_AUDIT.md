@@ -537,6 +537,22 @@ availability is held in the service's memory only. No upload path reads either,
 and no request was added; the cohort export carries `focus_state` in its
 decisions file.
 
+*Changed after this audit, 2026-10-15 (protocol 37):* one request was added.
+Once a launch, after a restored session is confirmed, the service sends
+`PATCH /v1/devices/{device_id}` with `{"client_version": ...}`; a request that
+gets no answer (transport, 429, 5xx) is sent again at the next restored
+session, which can be the next IPC connection, until one is answered. The
+body is the app version that device registration, every batch body and the
+`User-Agent` already carry, so the server's device row names the running build
+(velvt-core #41, install-release-09). The device id is the server's own identifier for this
+device, already sent in the reissue body. The request is in `egress::ENDPOINTS`,
+in `PRIVACY.md`'s list, and in the ledger like every other. No install
+identifier and no UTC offset is sent; both wait on disclosure decisions
+(velvt-core `docs/device-install-id.md`, `docs/local-day-summaries.md`). The
+same version adds an `auth_failure` code, `rate_limited`, whose message says
+how long to wait, worked out from the cloud's `Retry-After`; it carries no
+credential.
+
 `PRIVACY.md`'s list of what leaves the device was wrong in both directions: it
 named `/v1/auth/account/delete`, which nothing sends, and omitted
 `DELETE /v1/account`, `GET /v1/auth/session`, `GET /v1/insights/poll`,

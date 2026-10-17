@@ -3230,6 +3230,9 @@ public enum AuthFailureCode: String, Codable, Equatable, Sendable {
     case invalidCredentials = "invalid_credentials"
     case networkError = "network_error"
     case serverError = "server_error"
+    /// The cloud refused the sign-up or login for too many attempts (protocol
+    /// 37). The message already says how long to wait.
+    case rateLimited = "rate_limited"
 }
 
 /// Reports a failed authentication attempt. The message field is safe for

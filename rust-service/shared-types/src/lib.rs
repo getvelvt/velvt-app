@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 /// Current breaking-change version of the local IPC contract.
-pub const PROTOCOL_VERSION: u32 = 36;
+pub const PROTOCOL_VERSION: u32 = 37;
 
 /// Client-to-server messages accepted by the Rust service.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -2391,6 +2391,10 @@ pub enum AuthFailureCode {
     InvalidCredentials,
     NetworkError,
     ServerError,
+    /// The cloud refused the sign-up or login for too many attempts (`429`,
+    /// protocol 37). `message` says how long to wait, worked out by Rust from
+    /// `Retry-After`; Swift shows it as it is.
+    RateLimited,
 }
 
 /// Signup or login failed. Direction: Rust to Swift.
@@ -2480,7 +2484,7 @@ mod v28_demotion_receipts_probe_contract {
 
     #[test]
     fn protocol_version_is_current() {
-        assert_eq!(PROTOCOL_VERSION, 36);
+        assert_eq!(PROTOCOL_VERSION, 37);
     }
 
     #[test]
@@ -3102,7 +3106,7 @@ mod v30_classification_contract {
 
     #[test]
     fn protocol_version_is_current() {
-        assert_eq!(PROTOCOL_VERSION, 36);
+        assert_eq!(PROTOCOL_VERSION, 37);
     }
 
     /// A v29 raw event — no declared metadata at all — must decode, and must
@@ -3425,7 +3429,7 @@ mod v32_in_progress_contract {
 
     #[test]
     fn protocol_version_is_current() {
-        assert_eq!(PROTOCOL_VERSION, 36);
+        assert_eq!(PROTOCOL_VERSION, 37);
     }
 
     /// A closed dwell is the only thing a pre-32 client ever sent, and it has
@@ -3471,7 +3475,7 @@ mod v33_needs_a_category_contract {
 
     #[test]
     fn protocol_version_is_current() {
-        assert_eq!(PROTOCOL_VERSION, 36);
+        assert_eq!(PROTOCOL_VERSION, 37);
     }
 
     /// Both kinds on one list, in the exact wire shape: `kind` and
@@ -3686,7 +3690,7 @@ mod v35_intervention_delivery_contract {
 
     #[test]
     fn protocol_version_is_current() {
-        assert_eq!(PROTOCOL_VERSION, 36);
+        assert_eq!(PROTOCOL_VERSION, 37);
     }
 
     /// The exact frame Swift sends, for every channel, both ways.
@@ -3775,7 +3779,7 @@ mod v36_focus_status_availability_contract {
 
     #[test]
     fn protocol_version_is_current() {
-        assert_eq!(PROTOCOL_VERSION, 36);
+        assert_eq!(PROTOCOL_VERSION, 37);
     }
 
     /// The exact frame Swift sends, for every value, both ways.
@@ -3820,5 +3824,34 @@ mod v36_focus_status_availability_contract {
                 "{payload} decoded"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod v37_rate_limited_sign_in_contract {
+    use super::*;
+
+    #[test]
+    fn protocol_version_is_current() {
+        assert_eq!(PROTOCOL_VERSION, 37);
+    }
+
+    /// The exact frame Rust sends when the cloud refuses a sign-in for too
+    /// many attempts, both ways.
+    #[test]
+    fn a_rate_limited_sign_in_round_trips_in_the_wire_shape() {
+        let message = ServerMessage::AuthFailure(AuthFailure {
+            code: AuthFailureCode::RateLimited,
+            message: "Too many attempts. Try again in 15 minutes.".into(),
+        });
+        let encoded = serde_json::to_string(&message).unwrap();
+        assert_eq!(
+            encoded,
+            r#"{"type":"auth_failure","payload":{"code":"rate_limited","message":"Too many attempts. Try again in 15 minutes."}}"#
+        );
+        assert_eq!(
+            serde_json::from_str::<ServerMessage>(&encoded).unwrap(),
+            message
+        );
     }
 }

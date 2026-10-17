@@ -145,15 +145,17 @@ impl<'a> SiteMatcher<'a> {
 /// -- `github.com` with a title that mentions YouTube resolves to UNLOGGED --
 /// and a host the rules have no keyword for is left to the tiers below. Here the host alone decides the
 /// category, with a seed's confidence: a curated statement about one site, as
-/// a name seed is about one application.
+/// a name seed is about one application. YouTube is the exception (policy
+/// version 6): a host the `youtube.com` or `youtu.be` seed reaches is decided
+/// by its video title in [`youtube_by_title`], which may give no answer.
 ///
 /// The browser-context rules may refine the label in one listed case,
 /// [`SEED_LABEL_REFINEMENTS`]. Google serves Docs, Sheets and Slides from
 /// `docs.google.com`, so only the title names the product, and a rule verdict
 /// of `document:sheets` or `document:slides` replaces the seed's
-/// `document:docs`. Every other verdict is ignored: title words never move a
-/// seeded site's category, and never swap its label for another product's --
-/// a Wikipedia article about GitHub is still Wikipedia.
+/// `document:docs`. Every other verdict is ignored: outside YouTube, title
+/// words never move a seeded site's category, and never swap its label for
+/// another product's -- a Wikipedia article about GitHub is still Wikipedia.
 pub(crate) struct SiteSeedPlugin {
     seeds: SiteMatcher<'static>,
     taxonomy_version: String,

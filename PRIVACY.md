@@ -54,6 +54,64 @@ only, the hostname is written to the database as text, in one table,
 check both: the host in that one column and nowhere else, and no part of the
 address in what would be sent.
 
+### Where a title decides the category: YouTube
+
+The window title is read on the Mac to classify the window. For a browser tab
+on a site in Velvt's built-in table, the site decides the category and title
+words cannot move it; the one refinement is telling a Google Sheets or Slides
+tab on `docs.google.com` from a Docs one. Since drift policy version 6
+(`DRIFT_POLICY_VERSION = 6`) there is one site whose category the title
+decides: YouTube (`youtube.com` and its subdomains other than
+`music.youtube.com`, and `youtu.be`), where the same site shows lectures and
+music videos. `youtube_by_title` (`rust-service/src/abstraction/sites.rs`)
+reads the video's title in the Rust service and decides:
+
+- a title with a lesson word or phrase (lecture, tutorial, lesson, explained,
+  webinar, how to, crash course, practice problems, and a few more) and no
+  entertainment word is REFERENCE;
+- a title with an entertainment word or phrase (highlights, episode,
+  compilation, vlog, lofi, shorts, music video, official video, and a few
+  more) and no lesson word is PASSIVE_CONSUMPTION;
+- a title that is only "YouTube", the home or subscriptions feed, is
+  PASSIVE_CONSUMPTION, as every YouTube tab was under version 5;
+- any other title, with neither kind of word or with both, gets no category
+  from this rule. The tab falls through to the tiers below it, Tier 2 and
+  then the explicitly ambiguous browser prior, and is most often left needing
+  a category. The rule never makes a YouTube tab FOCUS_WORK.
+
+The full word lists sit beside `youtube_by_title`. `music.youtube.com` is
+PASSIVE_CONSUMPTION whatever the title. Your own corrections still come first:
+where one applies, the title rule does not run, though the title still goes
+into the sketch described below. Velvt 1.0.13 and earlier do not have this
+rule.
+
+The rule keeps its answer and nothing else of the title: the category, and a
+local label that records which way the title went (`reference:youtube` or
+`video:youtube`, in the label columns described below). The title itself is
+stored nowhere and sent nowhere. A YouTube event is uploaded like any other:
+an event ID, a timestamp, a duration, its category, the category-scoped type
+for that category (`reference:inferred` or `video:inferred` for a video the
+title decided, the same types every REFERENCE or PASSIVE_CONSUMPTION event
+carries), and a classification tier. Nothing in it says the time was YouTube
+or names the video. When the title decides nothing, the site's name
+(`youtube.com`, for `www.youtube.com`) is kept in `local_site_name` so the
+needs-a-category list can ask you about it, on the same terms as any other
+site; a video the title did decide keeps no hostname. `published_claims`
+drives a decided and an undecided YouTube tab with a sentinel title through
+the service and checks this by value.
+
+The rule does not change the embedding sketch. As for every window, a YouTube
+tab's title goes into the Tier 2 sketch described below, with the browser's
+name and the hostname in front of it, and that sketch is kept on the Mac in
+`semantic_embedding_cache`, one per browser and site. It is never uploaded,
+and individual words are partially recoverable from it by someone holding the
+whole file.
+
+TikTok's web app, `tiktok.com`, is placed by its site alone, like every site
+in the table except YouTube. Since version 6 it is SOCIAL_FEED, a feed;
+version 5 had it as PASSIVE_CONSUMPTION. Its titles decide nothing. The native
+TikTok app is unchanged, PASSIVE_CONSUMPTION.
+
 ## What stays local
 
 Raw application names, bundle identifiers, window titles, URLs, file paths,
@@ -155,8 +213,10 @@ are disclosed here rather than hidden behind the table's name:
 
 - **`label`** — the on-device classification label, `<type>:<behavior>`, such
   as `document:code`, `communication:slack`, or `video:youtube`. For a service
-  the taxonomy knows by name, the label names it. It is never sent: the upload
-  serializer replaces it with a category-scoped type such as
+  the taxonomy knows by name, the label names it. For a YouTube tab whose title
+  decided its category, the label also records which way the title went:
+  `reference:youtube` or `video:youtube`, as described above. It is never
+  sent: the upload serializer replaces it with a category-scoped type such as
   `communication:inferred`. The same label is kept in `abstraction_map` and in
   `batch_event`.
 - **`local_display_label`** — a friendly display string for the local UI, such
@@ -693,7 +753,10 @@ category-scoped abstraction type; unapproved values are replaced with
 appeared in one. Of a browser tab's address, nothing but the hostname: no path,
 query, fragment, port, or credentials. The hostname is kept as text only in
 `local_site_name`, only for a site Velvt could not categorize, and not past 14
-days from the last visit to it that Velvt could not categorize.
+days from the last visit to it that Velvt could not categorize. The YouTube
+rule of drift policy version 6 keeps nothing of a video's title but the
+category it decided and the label that records it; the sketch below is kept
+for a YouTube tab as for any window.
 
 **Corrected 2026-09-24.** This section previously said the stable ID "is a
 one-way hash into a local-only mapping table". That was wrong about the

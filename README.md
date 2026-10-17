@@ -348,7 +348,13 @@ is now an ordered ladder, most specific evidence first:
       derives from the tab URL; the URL itself is discarded) against a
       compiled-in table of sites. The host decides the category and the
       label; title words can only tell a Google Sheets or Slides tab on
-      `docs.google.com` from a Docs one.
+      `docs.google.com` from a Docs one. YouTube is the exception since
+      drift policy v6: on `youtube.com` and its subdomains other than
+      `music.youtube.com` (which stays `PASSIVE_CONSUMPTION` whatever the
+      title), and on `youtu.be`, the video title decides `REFERENCE` or
+      `PASSIVE_CONSUMPTION`, the bare feed stays `PASSIVE_CONSUMPTION`, and
+      any other title falls through to the tiers below. The rule keeps
+      nothing of the title but its answer.
    2. `BrowserContextPlugin` — for a browser window whose site cannot be
       read (no URL, `localhost`, an address), the title against curated
       keyword rules. A tab whose site can be read is the site tiers' to

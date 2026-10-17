@@ -281,6 +281,29 @@ Cross-workspace changes (anything touching `proto/`) require updating both works
 
 ***
 
+# Product Guardrails
+
+Velvt exists to protect attention, so it must not reproduce the habits that make
+productivity software eat attention. Check every feature, setting, surface and
+line of copy against these five before building it (founder, 2026-10-17):
+
+1. **No organizing as avoidance.** Velvt is not a place to arrange things. No
+   tags, custom fields, configurable dashboards or setup that can stand in for
+   doing the work. Prefer a fixed, sensible default to an option.
+2. **No new app to toggle.** Velvt lives in the menu bar and works without being
+   opened. Each new surface, card or notification needs a reason; one surface per
+   offer and at most one bounded action per block stay the rule.
+3. **No feature bloat.** A change that adds something to learn or configure must
+   say what it removes or why a default cannot do. Smaller beats more complete.
+4. **No lock-in.** A person can see, export (open formats such as CSV or JSON) and
+   delete what Velvt keeps about them, and leave without losing it. New stores join
+   the export and the delete paths in the same change.
+5. **No cure claims.** Velvt shows patterns and offers a nudge; it does not fix
+   motivation, burnout or ADHD, and copy never implies it does (see the banned
+   claims checked by `scripts/check_banned_copy.py`).
+
+***
+
 # Primary Workflow
 
 1. **Identify workspace scope** — `swift-client/`, `rust-service/`, `proto/`, or cross-workspace.

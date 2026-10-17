@@ -1,0 +1,32 @@
+{
+  "family": "MNAR",
+  "held_out": false,
+  "author": "the analysis author (velvt-app PR-7)",
+  "description": "The PLANTED process, but people skip their worst blocks: the chance of answering is 0.15, 0.30, 0.50, 0.70 and 0.75 for little, less than half, about half, most and all. The rows answered understate rho against every block that would have reached the primary (the generator knows those answers); the check records by how much, and requires that the readout's answer-rate table shows answered blocks with a higher median anchor share than unanswered ones.",
+  "seed": 3101,
+  "replicates": 10,
+  "people": 15,
+  "blocks_per_person": {"median": 60, "log_sd": 0.4, "min": 10, "max": 150},
+  "latent": {"mean_logit": 0.9, "person_sd": 0.6, "block_sd": 1.1},
+  "rating": {
+    "mode": "planted",
+    "thresholds": [-2.6, -1.5, -0.6, 0.9],
+    "person_offset_sd": 0.7,
+    "slopes": {
+      "work_anchor_share": 0.8,
+      "switch_aways_per_covered_hour": -0.3,
+      "log_longest_run_share": 0.3,
+      "offer_delivered": -0.2
+    }
+  },
+  "answering": {
+    "mode": "by_level",
+    "by_level": {"little": 0.15, "less_than_half": 0.30, "half": 0.50, "most": 0.70, "all": 0.75},
+    "late_probability": 0.04
+  },
+  "check": {"bootstrap_replicates": 499},
+  "expect": {
+    "rho_answered_minus_all_at_most": 0.0,
+    "answered_minus_unanswered_median_anchor_share_at_least": 0.01
+  }
+}

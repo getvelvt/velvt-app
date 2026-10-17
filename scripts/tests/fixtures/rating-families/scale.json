@@ -1,0 +1,34 @@
+{
+  "family": "SCALE",
+  "held_out": false,
+  "author": "the analysis author (velvt-app PR-7)",
+  "description": "The PLANTED slopes with a large person offset (SD 1.5): people use the scale very differently. The person intercept must absorb it: the all-rows fit recovers the planted slopes and the offset SD, and the same fit with the intercept removed gives a visibly smaller work_anchor_share slope, so the intercept is shown to be doing the work.",
+  "seed": 4101,
+  "replicates": 1,
+  "people": 20,
+  "blocks_per_person": {"median": 110, "log_sd": 0.3, "min": 40, "max": 200},
+  "latent": {"mean_logit": 0.9, "person_sd": 0.6, "block_sd": 1.1},
+  "rating": {
+    "mode": "planted",
+    "thresholds": [-2.6, -1.5, -0.6, 0.9],
+    "person_offset_sd": 1.5,
+    "slopes": {
+      "work_anchor_share": 0.8,
+      "switch_aways_per_covered_hour": -0.3,
+      "log_longest_run_share": 0.3,
+      "offer_delivered": -0.2
+    }
+  },
+  "answering": {"mode": "random", "answer_probability": 0.6, "late_probability": 0.04},
+  "check": {"bootstrap_replicates": 499},
+  "expect": {
+    "slopes_within": {
+      "work_anchor_share": [0.55, 1.05],
+      "switch_aways_per_covered_hour": [-0.55, -0.05],
+      "log_longest_run_share": [0.05, 0.55],
+      "offer_delivered": [-0.45, 0.05]
+    },
+    "tau_between": [1.0, 2.0],
+    "slope_smaller_without_person_intercept": "work_anchor_share"
+  }
+}

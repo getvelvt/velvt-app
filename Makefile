@@ -353,7 +353,8 @@ test-dmg-release:
 	./scripts/tests/dmg_release_policy_test.sh
 
 # The measurement instrument: the cohort export, the analysis harness, the
-# boundary proof, and the synthetic trace generator. These guard the numbers the
+# self-rating analysis and its synthetic families, the boundary proof, and the
+# synthetic trace generator. These guard the numbers the
 # pre-registration will be reported from, so they run with the rest of the suite
 # rather than only when a human remembers.
 test-measurement:

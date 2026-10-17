@@ -266,12 +266,11 @@ def _would_be_primary(block: dict, config: dict) -> bool:
 
 
 def _feature_vector(block: dict, config: dict) -> list:
-    floor = config["h2"]["longest_run_floor_seconds"]
-    elapsed = block["elapsed_seconds"]
+    floor = config["h2"]["longest_run_share_floor"]
     return [
         block["work_anchor_share"],
         block["switch_aways_per_covered_hour"],
-        math.log(max(block["longest_run_share"] * elapsed, floor) / elapsed),
+        math.log(max(block["longest_run_share"], floor)),
         float(block["offer_delivered"]),
     ]
 
@@ -367,6 +366,13 @@ def generate(spec: dict, replicate: int, config: dict) -> tuple[dict, dict]:
                    if key not in ("block_id", "block_feature_version", "policy_version")},
             })
             declared.append({"block_id": block_id, "started_at": str(eligible_at - block["elapsed_seconds"])})
+        # The Mac's first block starts its v6 primary period (it never ran an
+        # older build, so there is no upgrade cut); more blocks follow before
+        # the question is turned on.
+        declared.append({
+            "block_id": f"{SYNTHETIC_TAG}-{family}-r{replicate:03d}-{person['name'][-3:]}-first",
+            "started_at": str(person["v6_start"]),
+        })
         for k in range(_poisson(rng, 6.0)):
             declared.append({
                 "block_id": f"{SYNTHETIC_TAG}-{family}-r{replicate:03d}-{person['name'][-3:]}-pre{k:02d}",
@@ -386,6 +392,7 @@ def generate(spec: dict, replicate: int, config: dict) -> tuple[dict, dict]:
         }
         exports[person["name"]] = ar.Export(
             name=person["name"], meta=meta, ratings=ratings, features=features, blocks=declared,
+            decisions=[],
         )
     truth = {"slopes": slopes, "tau": rating["person_offset_sd"], "blocks": blocks}
     return exports, truth
@@ -403,7 +410,8 @@ def write_exports(exports: dict, folder: Path) -> None:
         target.mkdir(parents=True, exist_ok=True)
         _write_csv(target / f"{name}-ratings.csv", ar.RATINGS_COLUMNS, export.ratings)
         _write_csv(target / f"{name}-blockfeatures.csv", ar.BLOCK_FEATURE_COLUMNS, export.features)
-        _write_csv(target / f"{name}-blocks.csv", ("block_id", "started_at"), export.blocks or [])
+        _write_csv(target / f"{name}-blocks.csv", ar.BLOCK_COLUMNS, export.blocks or [])
+        _write_csv(target / f"{name}-decisions.csv", ar.DECISION_COLUMNS, export.decisions or [])
         _write_csv(target / f"{name}-meta.csv", ("key", "value"),
                    [{"key": k, "value": v} for k, v in export.meta.items()])
 
@@ -431,7 +439,7 @@ def in_sample_auroc_with_own_intercepts(rows: list, config: dict) -> float | Non
     if fit is None:
         return None
     spec = config["h2"]
-    raw = ar._design(rows, spec["features"], spec["longest_run_floor_seconds"])
+    raw = ar._design(rows, spec["features"], spec["longest_run_share_floor"])
     scale = ar.standardizer(raw)
     groups = ar._group_indices([r.person for r in rows])
     scores = [

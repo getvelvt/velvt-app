@@ -39,79 +39,111 @@ One folder per participant, or the files themselves, sharing a name stem:
                             weekend
   <stem>-meta.csv           key,value: export_format (7 or later),
                             exported_at, rating_prompt_version,
-                            rating_prompt_enabled_at, v6_period_start,
+                            rating_prompt_enabled_at (the first time the
+                            question was ever turned on), v6_period_start,
                             block_feature_version
-  <stem>-blocks.csv         as export_cohort_evidence.sh writes it today:
-                            block_id and started_at for every declared block.
-                            Each rated block's start is read from it, and
-                            the reactivity proxy counts its rows.
-  <stem>-decisions.csv,     optional, as export_cohort_evidence.sh writes
-  <stem>-outcomes.csv       them today. The decision log gives the v6 period
-                            start; both give the sustained-anchor
-                            comparison. A missing file is "not available",
-                            never zero.
+  <stem>-blocks.csv         as export_cohort_evidence.sh writes it today: at
+                            least block_id and started_at for every declared
+                            block. The v6 period start and each rated block's
+                            start are read from it, and the reactivity proxy
+                            counts its rows.
+  <stem>-decisions.csv      as export_cohort_evidence.sh writes it today (the
+                            columns in DECISION_COLUMNS). It gives the upgrade
+                            cut, the anchor check and the eligible decision
+                            points of readout item 4.
+  <stem>-outcomes.csv       optional, as export_cohort_evidence.sh writes it
+                            today. It gives the sustained-anchor labels of
+                            readout item 4. A missing file is "not
+                            available", never zero.
 
 Populations
 -----------
-An export is dropped whole if it is the founder's (named `founder`,
-`founder-*` or `founder_*`, or `--founder-device`), a declared reinstall
-(`--reinstalled`), older than format 7, or missing its ratings, block-feature,
-blocks or meta file. A founder export is still parsed and counted, as a
-pipeline check labelled "n = 1, founder", and no statistic is computed from
-it.
+An export is dropped whole, in this order, if it:
+
+  - is missing its ratings, block-feature, meta, blocks or decisions file, or
+    one of them lacks a column this script reads;
+  - is the founder's (named `founder`, `founder-*` or `founder_*`, or
+    `--founder-device`). It is still parsed and counted, as a pipeline check
+    labelled "n = 1, founder", and no statistic is computed from it;
+  - is a declared reinstall (`--reinstalled`);
+  - is older than format 7, or its meta lacks a key above;
+  - holds a policy_version 6 decision row whose anchor is not a work category
+    (item 5 of the 2026-10-17 v6 amendment: a v6 build from before the anchor
+    rule);
+  - states a v6_period_start earlier than the computed one (below): its
+    history was cleared, and it falls under the reinstall exclusion.
 
 The unit is the person, not the Mac. Each export is one person unless
 `--same-person A,B` names exports that are one tester's Macs; every bootstrap,
-every leave-one-out fold and every count of testers uses the person.
+every leave-one-out fold and every count of testers uses the person. A name
+that matches no export, a name in two groups and a group of one are refused.
 
-Each Mac's v6 primary period starts at the start of its first block holding a
-policy_version 6 decision row and lasts 14 days. The start is taken from the
-decision log when the export carries one (the earliest block_started_at among
-its policy_version 6 rows), and a disagreement with the meta's
-v6_period_start is a PROTOCOL DEVIATION, counted per export. Without a
-decision log the meta's value is used.
+The v6 primary period (item 1 of the v6 primary-period amendment). It starts
+at the started_at of the Mac's first block after the upgrade cut: its first
+block that started after its last decision row with a policy_version below 6
+(by that row's occurred_at), or its first block if it has no such row. It does
+not wait for a decision row. It lasts 14 days. An export that states a later
+v6_period_start than the computed one is reported as malformed with that
+reason, and the computed start is used. A stated start is never used in the
+computed one's place.
 
 Each rating row is then placed by the first rule that applies:
 
-  1. malformed (a CHECK the table enforces does not hold, or a value outside
-     its closed set), or its block has no block-feature row: excluded and
-     listed;
+  1. malformed (a CHECK the table enforces does not hold, a value outside its
+     closed set, or an answer after Not now with card_seen_before_answer 0),
+     or its block has no block-feature row: excluded and listed;
   2. rating prompt version other than 1, or block feature version other than
      1: excluded;
   3. policy_version other than 6: excluded, never pooled;
-  4. no v6 period start, or no start for the block in the blocks file:
-     excluded (the period cannot be checked);
-  5. the block started inside its Mac's v6 primary period, or ran under 5
-     minutes: a PROTOCOL DEVIATION (the service forbids both), excluded and
-     counted;
-  6. otherwise the row is ELIGIBLE. Every eligible row counts in the answer
+  4. no v6 period start (the export holds no block after the upgrade cut), or
+     no start for the block in the blocks file: excluded (the period cannot
+     be checked);
+  5. the block started before the period's start (before the upgrade cut):
+     excluded;
+  6. the block started inside its Mac's v6 primary period, ran under 5
+     minutes, or became eligible before the question was first turned on (or
+     the export states no rating_prompt_enabled_at): a PROTOCOL DEVIATION (the
+     service forbids each), excluded and counted;
+  7. otherwise the row is ELIGIBLE. Every eligible row counts in the answer
      rate, answered or not.
 
 Eligible rows that were not answered are missing. Not now, closing and silence
 are never counted as an answer, and nothing is imputed. Answered rows:
 
-  7. answered after the card was seen (card_seen_before_answer = 1): the late
+  8. answered after the card was seen (card_seen_before_answer = 1): the late
      stratum, outside the primary, reported on its own;
-  8. purpose healthy_tech_use or work_life_boundary: reported descriptively;
-  9. coverage class insufficient: excluded from the primary;
- 10. unlogged or needs-a-category share above 0.30: excluded from the primary;
- 11. otherwise PRIMARY.
+  9. purpose healthy_tech_use or work_life_boundary: reported descriptively;
+ 10. coverage class insufficient: excluded from the primary;
+ 11. unlogged or needs-a-category share above 0.30: excluded from the primary;
+ 12. otherwise PRIMARY.
 
-The card table counts rows that reach rule 9, so its "low coverage" row is not
+The card table counts rows that reach rule 10, so its "low coverage" row is not
 empty by construction.
 
 What it reports, and when
 -------------------------
-Default, below 100 primary ratings: PROGRESS only. Exports, exclusions and
-deviations by count, eligible rows by status, primary ratings and testers, and
-the stop rule. No answer and no feature value is read for it, beyond whether a
-row is primary.
+Every report places rows "as of" a moment when it has one: a row counts only
+if it was eligible by then, and it is answered, Not now, shown or expired only
+if that happened by then. Every timestamp is in the export, so the same rows
+give the same report whatever later exports add.
 
-Default, from 100 primary ratings: the DESCRIPTIVE READOUT, which is the only
-reading of answers before the look:
+Default: PROGRESS only, at any count. Exports, exclusions and deviations by
+count, eligible rows by status, primary ratings and testers, and the stop
+rule. It uses each row's status, card_seen_before_answer, purpose, policy
+version, period, coverage class and unlogged share, and whose Mac it came
+from. It reads the answer and the block features only to check that they are
+well-formed and to apply the 300-second floor; no answer value, H1 or H2
+feature or summary of either is computed or printed.
+
+`--readout`: the DESCRIPTIVE READOUT, taken once. Refused below 100 primary
+ratings, and refused when the stop rule was met first (the readout is then
+reported at the one look). It is computed as of the answered_at of the 100th
+primary rating (in answered_at order, ties by person, Mac and block), so
+running it again reproduces the same numbers. It is the only reading of
+answers before the look:
 
   1. the result card's branch against the person's tier, in counts, over
-     rows that reach rule 9; a linearly weighted kappa of the three ordered
+     rows that reach rule 10; a linearly weighted kappa of the three ordered
      branches against the tiers on primary ratings, with a person-bootstrap
      95% interval;
   2. tau, the between-person SD of the rating on the logit scale, and the
@@ -121,39 +153,46 @@ reading of answers before the look:
      feature in answered against unanswered eligible blocks;
   4. in primary blocks with a delivered offer, the tier by the offer's reply
      (was_focused, any other reply, no reply); in primary blocks with at least
-     one labelled policy_version 6 decision point, the tier by the block's
-     share of points with sustained_anchor_900s = 1;
-  5. the reactivity proxy, per Mac;
+     one measured eligible decision point, the tier by the block's share of
+     those points with sustained_anchor_900s = 1. An eligible decision point
+     is one analyze_cohort.py counts: policy_version 6, gate_verdict offered,
+     and a block elapsed time of at least the 180-second warm-up. Measured
+     means its outcome row has censor_reason none;
+  5. the reactivity proxy, per person: blocks declared in the 14 days before
+     and after rating_prompt_enabled_at, summed over the person's Macs;
   6. the late answers and the two excluded purposes, described apart.
 
 Anything else it prints is labelled exploratory. No model of features is
 fitted here.
 
 `--final-look` (the one look). Refused until the stop rule is met: 220 primary
-ratings from at least 12 testers, or 16 weeks after the first graduate enabled
-the question, whichever comes first. Then:
+ratings from at least 12 testers, or 16 weeks after the earliest
+rating_prompt_enabled_at, measured to the latest exported_at, whichever comes
+first. The look is computed as of the moment the rule was first met: the
+answered_at of the rating that first brought the primary to 220 ratings from
+at least 12 testers, or the earliest enablement plus 16 weeks, whichever is
+earlier. It prints that cutoff, so a later look is the same look, and it
+reports the descriptives (items 1 to 6) at the cutoff, then:
 
   H1 (primary). Spearman rho between work_anchor_share and the rating coded
      0-4 (little .. all), one-sided, with a person-clustered bootstrap that
      resamples people. Passes if the 5th percentile of the bootstrap is above
      0. Reported beside it: the AUROC of work_anchor_share for "mostly on"
      (all or most) against the rest, and the within-person rho. Reported only
-     at 100 or more primary ratings.
+     at 100 or more primary ratings at the cutoff.
   H2 (secondary). A proportional-odds ordinal logistic model on four features
-     (work_anchor_share, switch-aways per covered hour, log of longest run over
-     elapsed, offer delivered), standardized slopes under a ridge of lambda = 1
-     (penalty lambda/2 times the sum of squared slopes), and a person random
-     intercept, set to 0 for the held-out person. Scored by leave-one-person-
-     out log loss against the same procedure on work_anchor_share alone.
-     Passes if the 95% person-bootstrap interval on the mean improvement lies
-     above 0 AND the calibration slope lies in [0.8, 1.2]. A reliability table
-     with at most 5 bins is reported. Reported only at 200 or more primary
-     ratings.
+     (work_anchor_share, switch-aways per covered hour, log of the longest
+     run's share of elapsed time, offer delivered), standardized slopes under
+     a ridge of lambda = 1 (penalty lambda/2 times the sum of squared slopes),
+     and a person random intercept, set to 0 for the held-out person. Scored
+     by leave-one-person-out log loss against the same procedure on
+     work_anchor_share alone. Passes if the 95% person-bootstrap interval on
+     the mean improvement lies above 0 AND the calibration slope lies in
+     [0.8, 1.2]. A reliability table with at most 5 bins is reported.
+     Reported only at 200 or more primary ratings at the cutoff.
 
-Below 100 primary ratings at the look: descriptives only, no claim about any
-feature. Run `--final-look` once. Running it again on the same exports gives
-the same numbers; running it on later exports is a second look, and the report
-cannot know that, so the pre-registration says it.
+Below 100 primary ratings at the cutoff: descriptives only, no claim about any
+feature.
 
 Choices the plan left open, fixed here
 --------------------------------------
@@ -171,11 +210,13 @@ Choices the plan left open, fixed here
   ICC = tau^2 / (tau^2 + pi^2 / 3).
 - Every fit adds, at each of the five levels, one pseudo-row of weight 0.5 with
   every standardized feature at 0 and no person. It keeps the thresholds
-  finite and ordered when a training fold has no rating at some level.
+  finite and ordered when a training fold, or the held-out ratings of the
+  calibration fit, have no rating at some level. The calibration fit is a fit
+  too, and carries them.
 - Standardization uses the training rows of each fold (mean, sample SD). A
   feature with no spread in a fold is set to 0 for that fold.
-- The longest run is floored at 1 second before the log: log(max(longest run
-  share x elapsed, 1) / elapsed).
+- The longest run's share of elapsed time is floored at 0.01 before the log:
+  log(max(longest_run_share, 0.01)).
 - The tau and ICC intervals refit the no-feature model on each bootstrap
   draw, with a person drawn twice counted as two people.
 - The H2 interval resamples people over the held-out losses. The models are
@@ -189,33 +230,35 @@ Choices the plan left open, fixed here
   level, and pooled probabilities then rank people below chance: on the NULL
   family, with people who differ in how they use the scale, the probability
   ranking gave 0.40 where nothing is there. The linear term carries no
-  fold threshold: the NULL then gives 0.466 (SE 0.011, 16 replicates; a
-  leave-one-out estimate still runs slightly low when people differ), and a
-  leaked intercept or leaked rows raise it (0.76 on the same rows).
+  fold threshold: the NULL then gives about 0.49 (a leave-one-out estimate
+  runs slightly low when people differ; the NULL spec records the measured
+  value), and a leaked intercept or leaked rows raise it well above 0.5.
 - Reliability bins split the held-out probability of "mostly on" into equal
   counts: 5 bins, fewer if a bin would hold under 10 rows.
-- The stop rule's clock runs from the earliest rating_prompt_enabled_at to the
-  latest exported_at among the analysed exports.
+- The stop rule's clock runs from the earliest rating_prompt_enabled_at among
+  the analysed exports to the latest exported_at among them.
 
 Wording
 -------
 Results describe "agreement between Velvt's block summaries and people's own
-ratings of their blocks". The report refuses to print words that describe
-anything else (an attention model, accuracy, prediction, learning); see
-BANNED_REPORT_PATTERNS.
+ratings of their blocks". The report, text or JSON, refuses to print words
+that describe anything else (an attention model, accuracy, prediction,
+learning); see BANNED_REPORT_PATTERNS.
 
 Synthetic data
 --------------
 `--synthetic` is for the contract tests in
 `scripts/generate_rating_families.py`. Every input must carry `synthetic,1` in
 its meta, every line of the report says SYNTHETIC, and only then may the stop
-rule be bypassed or the bootstrap shortened. Real and synthetic exports never
-mix, in either direction. A synthetic result is a test of this code, not
-evidence about anyone.
+rule be bypassed (the look is then taken on every row, with no cutoff) or the
+bootstrap shortened. Real and synthetic exports never mix, in either
+direction. A synthetic result is a test of this code, not evidence about
+anyone.
 
 Usage:
     python3 scripts/analyze_ratings.py ~/ratings/*/
     python3 scripts/analyze_ratings.py --json ~/ratings/*/
+    python3 scripts/analyze_ratings.py --readout ~/ratings/*/
     python3 scripts/analyze_ratings.py --final-look ~/ratings/*/
     python3 scripts/analyze_ratings.py --founder-device my-mac ~/ratings/*/
     python3 scripts/analyze_ratings.py --same-person p04-laptop,p04-desktop ~/ratings/*/
@@ -228,6 +271,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import datetime
 import hashlib
 import json
 import math
@@ -237,7 +281,7 @@ import subprocess
 import sys
 import textwrap
 from collections import Counter
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 SCRIPT_PATH = Path(__file__).resolve()
@@ -303,7 +347,30 @@ COMPANION_SUFFIXES = {
     "decisions": "-decisions.csv",
     "outcomes": "-outcomes.csv",
 }
-REQUIRED_FILES = ("ratings", "blockfeatures", "meta", "blocks")
+REQUIRED_FILES = ("ratings", "blockfeatures", "meta", "blocks", "decisions")
+# The columns of the companion files that this script reads. The exporter
+# writes more; these must be present.
+BLOCK_COLUMNS = ("block_id", "started_at")
+DECISION_COLUMNS = (
+    "decision_id",
+    "occurred_at",
+    "block_id",
+    "policy_version",
+    "anchor_category",
+    "gate_verdict",
+    "block_started_at",
+    "block_ended_at",
+    "block_total_paused_seconds",
+)
+OUTCOME_COLUMNS = ("decision_id", "censor_reason", "sustained_anchor_900s")
+
+# Item 5 of the 2026-10-17 v6 amendment: under policy_version 6 every anchor
+# is a work category or empty. The same set as analyze_cohort.py.
+WORK_ANCHOR_CATEGORIES = ("FOCUS_WORK", "REFERENCE", "TASK_MANAGEMENT", "COMMUNICATION")
+# An eligible decision point, as analyze_cohort.py counts it: gate_verdict
+# offered, in a block whose elapsed time is at least the warm-up.
+ELIGIBLE_VERDICT = "offered"
+WARMUP_EXCLUSION_SECONDS = 180
 
 # An offer's stored outcome, grouped by whether the person replied. The five
 # replies are `outcome_for` in rust-service/src/work_block/mod.rs; returned and
@@ -401,7 +468,7 @@ CONFIG_SHAPE = {
     "h2": {
         "features": _LIST,
         "baseline_features": _LIST,
-        "longest_run_floor_seconds": _NUMBER,
+        "longest_run_share_floor": _NUMBER,
         "ridge_lambda": _NUMBER,
         "person_intercept_sd_grid": _LIST,
         "pseudo_weight_per_level": _NUMBER,
@@ -466,6 +533,8 @@ def load_config(path: Path) -> dict:
     grid = config["h2"]["person_intercept_sd_grid"]
     if not grid or any(not isinstance(t, (int, float)) or t < 0 for t in grid):
         raise ConfigError("h2.person_intercept_sd_grid must be non-negative numbers")
+    if not 0.0 < config["h2"]["longest_run_share_floor"] < 1.0:
+        raise ConfigError("h2.longest_run_share_floor must lie strictly between 0 and 1")
     return config
 
 
@@ -619,6 +688,28 @@ class Rating:
             return "expired_never_shown" if self.expired_at is not None else "open_never_shown"
         return "expired_after_shown" if self.expired_at is not None else "open_shown"
 
+    def as_of(self, cutoff: int) -> "Rating | None":
+        """This row as it stood at `cutoff`, or None if it was not yet eligible.
+        Every timestamp is in the export, so this is the same on any later
+        export of the same Mac."""
+        if self.eligible_at > cutoff:
+            return None
+
+        def by(at: int | None) -> int | None:
+            return at if at is not None and at <= cutoff else None
+
+        answered = by(self.answered_at) is not None
+        return replace(
+            self,
+            shown_at=by(self.shown_at),
+            answered_at=by(self.answered_at),
+            not_now_at=by(self.not_now_at),
+            expired_at=by(self.expired_at),
+            answer=self.answer if answered else "",
+            code=self.code if answered else None,
+            card_seen_before_answer=self.card_seen_before_answer if answered else 0,
+        )
+
 
 STATES = (
     "answered",
@@ -648,6 +739,10 @@ class Cohort:
     card_population: list = field(default_factory=list)
     primary_exclusions: Counter = field(default_factory=Counter)
     primary: list = field(default_factory=list)
+    period_starts: dict = field(default_factory=dict)
+    export_problems: Counter = field(default_factory=Counter)
+    declared: dict = field(default_factory=dict)
+    cutoff: int | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -719,6 +814,12 @@ def read_files(export: Export) -> None:
                 return
             export.features = rows
         else:
+            columns = {"blocks": BLOCK_COLUMNS, "decisions": DECISION_COLUMNS,
+                       "outcomes": OUTCOME_COLUMNS}[kind]
+            absent = [c for c in columns if c not in header]
+            if absent:
+                export.unusable = f"{COMPANION_SUFFIXES[kind]} file lacks columns {absent}"
+                return
             setattr(export, kind, rows)
 
 
@@ -744,6 +845,9 @@ def _parse_rating(name: str, person: str, row: dict, levels: list) -> tuple[Rati
         return None, "answered but never shown"
     if card == 1 and not answer:
         return None, "card_seen_before_answer is 1 on an unanswered row"
+    # After Not now the card appears, so a later answer is a late one.
+    if answer and card == 0 and _int(row, "not_now_at") is not None:
+        return None, "answered after Not now with card_seen_before_answer 0"
     return (
         Rating(
             participant=name,
@@ -825,27 +929,111 @@ def _parse_features(row: dict) -> tuple[BlockFeatures | None, str | None]:
 def _people(names: list, same_person: tuple) -> dict:
     """Export name -> person. `same_person` holds comma-separated groups of
     exports that are one tester's Macs; the person is the group's first name in
-    sorted order, so the mapping does not depend on argument order."""
+    sorted order, so the mapping does not depend on argument order.
+
+    A name that matches no export, a name in two groups and a group of one are
+    refused. A typo would otherwise leave one tester's Macs counted as two
+    people in every bootstrap, fold and count of testers."""
+    known = set(names)
     people = {name: name for name in names}
+    grouped: dict = {}
     for group in same_person:
         members = sorted({n.strip() for n in group.split(",") if n.strip()})
+        if len(members) < 2:
+            raise ConfigError(f"--same-person {group!r} names fewer than two exports")
+        unknown = [m for m in members if m not in known]
+        if unknown:
+            raise ConfigError(f"--same-person {group!r}: no export is named {', '.join(unknown)}")
         for member in members:
+            if member in grouped:
+                raise ConfigError(
+                    f"--same-person: {member} is in two groups ({grouped[member]!r} and {group!r})"
+                )
+            grouped[member] = group
             people[member] = members[0]
     return people
 
 
-def v6_period_start(export: Export) -> tuple[int | None, str]:
-    """The Mac's v6 period start, and where it came from."""
-    declared = _int(export.meta, "v6_period_start")
-    if export.decisions:
-        starts = [
-            _int(row, "block_started_at") for row in export.decisions
-            if _int(row, "policy_version") == 6 and _int(row, "block_started_at") is not None
-        ]
-        if starts:
-            computed = min(starts)
-            return computed, ("decision log" if declared == computed else "decision log, disagrees with meta")
-    return declared, "meta"
+def v6_period_start(export: Export, policy_version: int) -> dict:
+    """Item 1 of the v6 primary-period amendment: the started_at of the Mac's
+    first block after the upgrade cut, from the blocks and decisions files.
+
+    The cut is the occurred_at of the Mac's last decision row with a
+    policy_version below `policy_version`; a Mac with none has no cut, and its
+    period starts at its first block. The start never waits for a decision row,
+    and the meta's stated start is returned beside it, never in its place."""
+    older = [
+        occurred for occurred, version in (
+            (_int(row, "occurred_at"), _int(row, "policy_version")) for row in export.decisions or []
+        )
+        if occurred is not None and version is not None and version < policy_version
+    ]
+    cut = max(older) if older else None
+    starts = [
+        start for start in (_int(row, "started_at") for row in export.blocks or [])
+        if start is not None and (cut is None or start > cut)
+    ]
+    return {
+        "computed": min(starts) if starts else None,
+        "upgrade_cut": cut,
+        "stated": _int(export.meta, "v6_period_start"),
+    }
+
+
+def _non_work_anchors(export: Export, policy_version: int) -> list:
+    """Item 5 of the v6 amendment: decision rows of this policy whose anchor is
+    not a work category. An offer copies its decision's anchor, so the decision
+    rows are enough here."""
+    found = []
+    for row in export.decisions or []:
+        if _int(row, "policy_version") != policy_version:
+            continue
+        anchor = _text(row, "anchor_category")
+        if anchor and anchor.upper() not in WORK_ANCHOR_CATEGORIES:
+            found.append(f"decision {_text(row, 'decision_id') or '?'} {anchor!r}")
+    return found
+
+
+def _partition(cohort: Cohort, eligible: list, config: dict) -> None:
+    """Rules 8 to 12 of the module docstring, over eligible rows."""
+    excluded_coverage = set(config["population"]["excluded_coverage_classes"])
+    unlogged_limit = config["population"]["maximum_unlogged_share"]
+    descriptive_purposes = set(config["population"]["descriptive_only_purposes"])
+    cohort.eligible = list(eligible)
+    cohort.late = []
+    cohort.descriptive_purpose = []
+    cohort.card_population = []
+    cohort.primary_exclusions = Counter()
+    cohort.primary = []
+    for rating in cohort.eligible:
+        feature = rating.features
+        if rating.state != "answered":
+            continue
+        if rating.card_seen_before_answer == 1:
+            cohort.late.append(rating)
+            continue
+        if feature.purpose in descriptive_purposes:
+            cohort.descriptive_purpose.append(rating)
+            continue
+        cohort.card_population.append(rating)
+        if feature.coverage_class in excluded_coverage:
+            cohort.primary_exclusions[f"coverage class {feature.coverage_class}"] += 1
+            continue
+        if feature.unlogged_share > unlogged_limit:
+            cohort.primary_exclusions[
+                f"unlogged or needs-a-category share above {unlogged_limit:.2f}"
+            ] += 1
+            continue
+        cohort.primary.append(rating)
+
+
+def restrict(cohort: Cohort, cutoff: int, config: dict) -> Cohort:
+    """The cohort as it stood at `cutoff`: each eligible row as of then (see
+    Rating.as_of), placed again by rules 8 to 12. The original is unchanged."""
+    view = replace(cohort, cutoff=cutoff)
+    rows = [r.as_of(cutoff) for r in cohort.eligible]
+    _partition(view, [r for r in rows if r is not None], config)
+    return view
 
 
 def build_cohort(
@@ -862,12 +1050,19 @@ def build_cohort(
     declared_founder = {n.strip() for n in founder_devices if n.strip()}
     declared_reinstalled = {n.strip() for n in reinstalled if n.strip()}
     people = _people(sorted(exports), same_person)
+    cohort.declared = {
+        "same_person": sorted(
+            sorted({n.strip() for n in g.split(",") if n.strip()}) for g in same_person
+        ),
+        "reinstalled": sorted(declared_reinstalled),
+        "founder_device": sorted(declared_founder),
+        "not_among_the_exports": sorted((declared_founder | declared_reinstalled) - set(exports)),
+    }
     levels = config["answer_levels"]
+    policy_version = config["analysed_policy_version"]
     period = config["eligibility"]["v6_primary_period_seconds"]
     minimum_elapsed = config["eligibility"]["minimum_elapsed_seconds"]
-    excluded_coverage = set(config["population"]["excluded_coverage_classes"])
-    unlogged_limit = config["population"]["maximum_unlogged_share"]
-    descriptive_purposes = set(config["population"]["descriptive_only_purposes"])
+    eligible: list = []
 
     for name in sorted(exports):
         export = exports[name]
@@ -904,10 +1099,40 @@ def build_cohort(
         if absent:
             cohort.excluded_whole[name] = f"meta lacks {absent}"
             continue
+        non_work = _non_work_anchors(export, policy_version)
+        if non_work:
+            shown = ", ".join(non_work[:3]) + (", ..." if len(non_work) > 3 else "")
+            cohort.malformed.append(
+                f"{name}: {len(non_work)} policy_version {policy_version} decision row(s) with an "
+                f"anchor that is not a work category: {shown}"
+            )
+            cohort.excluded_whole[name] = (
+                f"policy_version {policy_version} decision rows with a non-work anchor: a v6 build "
+                "from before the 2026-10-15 anchor rule (item 5 of the v6 amendment)"
+            )
+            continue
+        start = v6_period_start(export, policy_version)
+        computed, stated = start["computed"], start["stated"]
+        if computed is not None and stated is not None and stated < computed:
+            cohort.excluded_whole[name] = (
+                f"history cleared: the export states a v6 period start ({stated}) earlier than its "
+                f"blocks give ({computed}); the reinstall exclusion applies"
+            )
+            continue
+        if computed is not None and stated is not None and stated > computed:
+            cohort.malformed.append(
+                f"{name}: the meta's v6_period_start {stated} is later than the start its blocks "
+                f"give ({computed}); the computed start is used"
+            )
+            cohort.export_problems[
+                "v6_period_start in the meta later than the computed start (malformed; the "
+                "computed start is used)"
+            ] += 1
 
         cohort.analysed.append(name)
         cohort.exports[name] = export
         cohort.people[name] = people[name]
+        cohort.period_starts[name] = start
         features: dict = {}
         for row in export.features:
             parsed, error = _parse_features(row)
@@ -919,9 +1144,8 @@ def build_cohort(
                 features[block_id] = "two block-feature rows"
                 continue
             features[block_id] = parsed
-        period_start, source = v6_period_start(export)
-        if source == "decision log, disagrees with meta":
-            cohort.deviations["v6_period_start in the meta disagrees with the decision log (exports)"] += 1
+        period_start = computed
+        enabled_at = _int(export.meta, "rating_prompt_enabled_at")
         block_starts = {_text(row, "block_id"): _int(row, "started_at") for row in export.blocks or []}
         seen: set = set()
         for row in export.ratings:
@@ -951,17 +1175,22 @@ def build_cohort(
                 cohort.excluded_rows["block feature version is not "
                                      f"{config['block_feature_version']}"] += 1
                 continue
-            if feature.policy_version != config["analysed_policy_version"]:
-                cohort.excluded_rows[
-                    f"policy_version is not {config['analysed_policy_version']} (never pooled)"
-                ] += 1
+            if feature.policy_version != policy_version:
+                cohort.excluded_rows[f"policy_version is not {policy_version} (never pooled)"] += 1
                 continue
             if period_start is None:
-                cohort.excluded_rows["no v6 period start in the export"] += 1
+                cohort.excluded_rows[
+                    "no v6 period start (the export holds no block after the upgrade cut)"
+                ] += 1
                 continue
             started_at = block_starts.get(rating.block_id)
             if started_at is None:
                 cohort.excluded_rows["no start for the block in the blocks file"] += 1
+                continue
+            if started_at < period_start:
+                cohort.excluded_rows[
+                    "block started before the v6 period start (before the upgrade cut)"
+                ] += 1
                 continue
             if started_at < period_start + period:
                 cohort.deviations["rated block started inside the v6 primary period (before day 14)"] += 1
@@ -969,25 +1198,16 @@ def build_cohort(
             if feature.elapsed_seconds < minimum_elapsed:
                 cohort.deviations[f"block shorter than {minimum_elapsed} s"] += 1
                 continue
-            cohort.eligible.append(rating)
-            if rating.state != "answered":
+            if enabled_at is None:
+                cohort.deviations["rating row, but the export states no rating_prompt_enabled_at"] += 1
                 continue
-            if rating.card_seen_before_answer == 1:
-                cohort.late.append(rating)
-                continue
-            if feature.purpose in descriptive_purposes:
-                cohort.descriptive_purpose.append(rating)
-                continue
-            cohort.card_population.append(rating)
-            if feature.coverage_class in excluded_coverage:
-                cohort.primary_exclusions[f"coverage class {feature.coverage_class}"] += 1
-                continue
-            if feature.unlogged_share > unlogged_limit:
-                cohort.primary_exclusions[
-                    f"unlogged or needs-a-category share above {unlogged_limit:.2f}"
+            if rating.eligible_at < enabled_at:
+                cohort.deviations[
+                    "rating row for a block that ended before the question was first turned on"
                 ] += 1
                 continue
-            cohort.primary.append(rating)
+            eligible.append(rating)
+    _partition(cohort, eligible, config)
     return cohort
 
 
@@ -1452,14 +1672,13 @@ def _group_indices(names: list) -> list:
     return [index.setdefault(name, len(index)) for name in names]
 
 
-def _model_value(features: BlockFeatures, name: str, floor_seconds: float) -> float:
+def _model_value(features: BlockFeatures, name: str, share_floor: float) -> float:
     if name == "work_anchor_share":
         return features.work_anchor_share
     if name == "switch_aways_per_covered_hour":
         return features.switch_aways_per_covered_hour
     if name == "log_longest_run_share":
-        elapsed = features.elapsed_seconds
-        return math.log(max(features.longest_run_share * elapsed, floor_seconds) / elapsed)
+        return math.log(max(features.longest_run_share, share_floor))
     if name == "offer_delivered":
         return float(features.offer_delivered)
     raise KeyError(name)
@@ -1708,9 +1927,25 @@ def offer_replies(rows: list, config: dict) -> dict:
     return {"offered_blocks": len(offered), "by_reply": table}
 
 
+def _block_elapsed(row: dict) -> int | None:
+    """The gate's elapsed-time arithmetic on a decision row's block, as
+    analyze_cohort.py computes it. None while the block is open."""
+    started = _int(row, "block_started_at")
+    ended = _int(row, "block_ended_at")
+    if started is None or ended is None:
+        return None
+    return ended - started - (_int(row, "block_total_paused_seconds") or 0)
+
+
 def sustained_anchor(cohort: Cohort, rows: list, config: dict) -> dict:
-    """Readout item 4: the tier by the block's share of labelled points with
-    sustained_anchor_900s = 1 (export format 4 labels, censor_reason none)."""
+    """Readout item 4: the tier by the block's share of measured eligible
+    decision points with sustained_anchor_900s = 1.
+
+    Eligible as analyze_cohort.py counts it: policy_version 6, gate_verdict
+    offered, block elapsed time at least the 180-second warm-up. Measured: the
+    outcome row's censor_reason is none. Abstentions, held and withheld
+    decisions have outcome rows too (the export writes one per anchored
+    decision), and they are not eligible points."""
     available = [
         name for name, export in cohort.exports.items()
         if export.decisions is not None and export.outcomes is not None
@@ -1724,6 +1959,11 @@ def sustained_anchor(cohort: Cohort, rows: list, config: dict) -> dict:
                 labels[_text(row, "decision_id")] = int(_text(row, "sustained_anchor_900s"))
         for row in export.decisions:
             if _int(row, "policy_version") != config["analysed_policy_version"]:
+                continue
+            if _text(row, "gate_verdict") != ELIGIBLE_VERDICT:
+                continue
+            elapsed = _block_elapsed(row)
+            if elapsed is not None and elapsed < WARMUP_EXCLUSION_SECONDS:
                 continue
             label = labels.get(_text(row, "decision_id"))
             if label is not None:
@@ -1740,35 +1980,62 @@ def sustained_anchor(cohort: Cohort, rows: list, config: dict) -> dict:
     return {
         "exports_with_labels": len(available),
         "exports_without_labels": sorted(set(cohort.exports) - set(available)),
-        "blocks_with_a_labelled_point": len(matched),
+        "blocks_with_a_measured_eligible_point": len(matched),
         "by_tier": by_tier,
     }
 
 
 def reactivity(cohort: Cohort, config: dict) -> dict:
-    """Readout item 5: blocks declared in the window before and after enabling, per Mac."""
+    """Readout item 5, per person: blocks declared in the window before and
+    after each Mac's rating_prompt_enabled_at, summed over the person's Macs.
+
+    A Mac counts only when its window after has closed by the export and by the
+    cutoff; a person is measured only when every Mac of theirs on which the
+    question was turned on counts."""
     window = config["reactivity"]["window_days"] * DAY_SECONDS
     macs = []
     for name in sorted(cohort.exports):
         export = cohort.exports[name]
         enabled = _int(export.meta, "rating_prompt_enabled_at")
         exported = _int(export.meta, "exported_at")
+        entry = {"mac": name, "person": cohort.people[name]}
         if enabled is None:
-            macs.append({"mac": name, "status": "question never enabled"})
+            macs.append(dict(entry, status="question never enabled"))
             continue
         if exported is None or exported < enabled + window:
-            macs.append({"mac": name, "status": "export ends inside the window after"})
+            macs.append(dict(entry, status="export ends inside the window after"))
+            continue
+        if cohort.cutoff is not None and cohort.cutoff < enabled + window:
+            macs.append(dict(entry, status="the window after ends after the cutoff"))
             continue
         starts = [_int(row, "started_at") for row in export.blocks or []]
         before = sum(1 for s in starts if s is not None and enabled - window <= s < enabled)
         after = sum(1 for s in starts if s is not None and enabled <= s < enabled + window)
-        macs.append({"mac": name, "status": "measured", "before": before, "after": after})
-    measured = [m for m in macs if m["status"] == "measured"]
+        macs.append(dict(entry, status="measured", before=before, after=after))
+    people = []
+    for person in sorted({m["person"] for m in macs}):
+        mine = [m for m in macs if m["person"] == person and m["status"] != "question never enabled"]
+        if not mine:
+            continue
+        open_macs = [m["mac"] for m in mine if m["status"] != "measured"]
+        if open_macs:
+            people.append({"person": person, "status": "not measured: " + ", ".join(
+                f"{m['mac']} ({m['status']})" for m in mine if m["status"] != "measured")})
+            continue
+        people.append({
+            "person": person,
+            "status": "measured",
+            "macs": [m["mac"] for m in mine],
+            "before": sum(m["before"] for m in mine),
+            "after": sum(m["after"] for m in mine),
+        })
+    measured = [p for p in people if p["status"] == "measured"]
     return {
         "window_days": config["reactivity"]["window_days"],
+        "people": people,
         "macs": macs,
-        "median_change": _median([m["after"] - m["before"] for m in measured]),
-        "note": "Descriptive. Confounded with time since install, and labelled so.",
+        "median_change": _median([p["after"] - p["before"] for p in measured]),
+        "note": "Descriptive, per person. Confounded with time since install, and labelled so.",
     }
 
 
@@ -1788,7 +2055,27 @@ def _by_person(rows: list) -> list:
 # ---------------------------------------------------------------------------
 
 
+def primary_in_order(rows: list) -> list:
+    """Primary ratings in the order they were answered; ties by person, Mac and
+    block, so the order never depends on the order of the files."""
+    return sorted(rows, key=lambda r: (r.answered_at, r.person, r.participant, r.block_id))
+
+
+def first_reached(rows: list, count: int, testers: int = 0) -> int | None:
+    """The answered_at at which the primary ratings first numbered `count`
+    from at least `testers` people, or None if they never did."""
+    seen: set = set()
+    for index, r in enumerate(primary_in_order(rows), 1):
+        seen.add(r.person)
+        if index >= count and len(seen) >= testers:
+            return r.answered_at
+    return None
+
+
 def stop_rule(cohort: Cohort, config: dict) -> dict:
+    """Where the cohort stands against the stop rule, and the two moments the
+    report is computed at: the readout's (the 100th primary rating) and the
+    look's (the first moment the stop rule held)."""
     rule = config["stop_rule"]
     enabled = [
         _int(e.meta, "rating_prompt_enabled_at") for e in cohort.exports.values()
@@ -1803,9 +2090,23 @@ def stop_rule(cohort: Cohort, config: dict) -> dict:
     weeks = (as_of - first) / WEEK_SECONDS if first is not None and as_of is not None else None
     n = len(cohort.primary)
     testers = len({r.person for r in cohort.primary})
-    by_count = n >= rule["primary_ratings"] and testers >= rule["testers"]
-    by_time = weeks is not None and weeks >= rule["weeks_after_first_enablement"]
-    met = by_count or by_time
+    count_point = first_reached(cohort.primary, rule["primary_ratings"], rule["testers"])
+    time_point = first + rule["weeks_after_first_enablement"] * WEEK_SECONDS if first is not None else None
+    by_count = count_point is not None
+    by_time = time_point is not None and as_of is not None and as_of >= time_point
+    points = ([count_point] if by_count else []) + ([time_point] if by_time else [])
+    look_cutoff = min(points) if points else None
+    met_by = None
+    if look_cutoff is not None:
+        met_by = " and ".join(
+            label for label, point in (("count", count_point if by_count else None),
+                                       ("time", time_point if by_time else None))
+            if point == look_cutoff
+        )
+    readout_cutoff = first_reached(cohort.primary, rule["descriptive_minimum_ratings"])
+    readout_at_the_look = look_cutoff is not None and (
+        readout_cutoff is None or look_cutoff <= readout_cutoff
+    )
     return {
         "primary_ratings": n,
         "testers": testers,
@@ -1814,17 +2115,32 @@ def stop_rule(cohort: Cohort, config: dict) -> dict:
         "weeks_since_first_enabled": weeks,
         "met_by_count": by_count,
         "met_by_time": by_time,
-        "met": met,
+        "met": look_cutoff is not None,
+        "met_by": met_by,
+        "count_met_at": count_point,
+        "time_point": time_point,
+        "look_cutoff": look_cutoff,
         "rule": (
             f"one look, at {rule['primary_ratings']} primary ratings from at least "
             f"{rule['testers']} testers, or {rule['weeks_after_first_enablement']} weeks after "
-            f"the first graduate enabled the question, whichever comes first"
+            f"the first graduate enabled the question, whichever comes first, computed as of "
+            f"the moment it was first met"
         ),
         "descriptive_minimum_ratings": rule["descriptive_minimum_ratings"],
-        "h1_reportable": met and n >= rule["descriptive_minimum_ratings"],
-        "h2_reportable": met and n >= rule["h2_minimum_ratings"],
-        "readout_due": n >= rule["descriptive_minimum_ratings"],
+        "h2_minimum_ratings": rule["h2_minimum_ratings"],
+        "readout_cutoff": readout_cutoff,
+        "readout_due": readout_cutoff is not None and not readout_at_the_look,
+        "readout_at_the_look": readout_at_the_look,
     }
+
+
+def exports_before(cohort: Cohort, cutoff: int) -> list:
+    """Exports taken before `cutoff`. Rows of theirs between their exported_at
+    and the cutoff are not in them, so a later export could add some."""
+    return sorted(
+        name for name, export in cohort.exports.items()
+        if (_int(export.meta, "exported_at") or 0) < cutoff
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1896,7 +2212,7 @@ def h2(rows: list, config: dict, replicates: int) -> dict:
     spec = config["h2"]
     levels = len(config["answer_levels"])
     mostly_on_codes = {config["answer_levels"].index(a) for a in config["mostly_on"]}
-    floor = spec["longest_run_floor_seconds"]
+    floor = spec["longest_run_share_floor"]
     fit_args = {
         "ridge": spec["ridge_lambda"],
         "grid": spec["person_intercept_sd_grid"],
@@ -2007,7 +2323,7 @@ def all_rows_fit(rows: list, config: dict, *, grid: list | None = None) -> Ordin
     the fit does without the person intercept.
     """
     spec = config["h2"]
-    raw = _design(rows, spec["features"], spec["longest_run_floor_seconds"])
+    raw = _design(rows, spec["features"], spec["longest_run_share_floor"])
     scale = standardizer(raw)
     fit, _ = fit_ordinal_tau(
         [standardize(row, scale) for row in raw], [r.code for r in rows],
@@ -2047,8 +2363,13 @@ def _reliability(probabilities: list, labels: list, bins_max: int, minimum: int)
 
 
 def readout(cohort: Cohort, config: dict, replicates: int) -> dict:
-    """The descriptive readout, items 1 to 6 of the module docstring."""
+    """The descriptive readout, items 1 to 6 of the module docstring, on the
+    cohort as given (restricted to a cutoff by the caller)."""
     result = {
+        "cutoff": cohort.cutoff,
+        "exports_taken_before_the_cutoff": (
+            exports_before(cohort, cohort.cutoff) if cohort.cutoff is not None else []
+        ),
         "distribution": {
             "primary": rating_distribution(cohort.primary, config),
             "late": rating_distribution(cohort.late, config),
@@ -2068,12 +2389,15 @@ def analyse(
     cohort: Cohort,
     config: dict,
     *,
+    take_readout: bool = False,
     final_look: bool = False,
     ignore_stop_rule: bool = False,
     bootstrap_replicates: int | None = None,
     skip_h2: bool = False,
     provenance_record: dict | None = None,
 ) -> dict:
+    if take_readout and final_look:
+        raise ConfigError("--readout and --final-look are separate runs")
     if (ignore_stop_rule or bootstrap_replicates is not None or skip_h2) and not cohort.synthetic:
         raise ConfigError("the stop rule, the bootstrap and H2 are fixed for real exports")
     replicates = bootstrap_replicates or config["bootstrap"]["replicates"]
@@ -2082,13 +2406,16 @@ def analyse(
         "synthetic": cohort.synthetic,
         "provenance": provenance_record or {},
         "statement": AGREEMENT_STATEMENT,
-        "mode": "final_look" if final_look else ("readout" if rule["readout_due"] else "progress"),
+        "mode": "final_look" if final_look else ("readout" if take_readout else "progress"),
         "exports": {
             "received": cohort.exports_received,
             "analysed": cohort.analysed,
             "people": dict(sorted(cohort.people.items())),
+            "declared": cohort.declared,
             "excluded_whole": cohort.excluded_whole,
+            "problems": dict(sorted(cohort.export_problems.items())),
             "founder_pipeline_check": cohort.founder_checks,
+            "v6_period_starts": dict(sorted(cohort.period_starts.items())),
         },
         "rows": {
             "excluded": dict(sorted(cohort.excluded_rows.items())),
@@ -2098,8 +2425,20 @@ def analyse(
         "progress": accounting(cohort),
         "stop_rule": rule,
     }
-    if rule["readout_due"] or final_look:
-        result["readout"] = readout(cohort, config, replicates)
+    minimum = config["stop_rule"]["descriptive_minimum_ratings"]
+    if take_readout:
+        if rule["readout_at_the_look"]:
+            result["readout_refused"] = (
+                "the stop rule was met before primary ratings reached "
+                f"{minimum}; the descriptives are reported at the one look (--final-look)"
+            )
+        elif rule["readout_cutoff"] is None:
+            result["readout_refused"] = (
+                f"{len(cohort.primary)} primary ratings; the readout is taken once there are {minimum}"
+            )
+        else:
+            result["readout"] = readout(restrict(cohort, rule["readout_cutoff"], config), config, replicates)
+        return result
     if not final_look:
         return result
     met = rule["met"] or ignore_stop_rule
@@ -2108,22 +2447,28 @@ def analyse(
         "stop_rule_bypassed_for_synthetic_test": ignore_stop_rule and not rule["met"],
     }
     if not met:
-        result.pop("readout", None)
         result["final_look"]["refused"] = "the stop rule is not met; the one look has not been taken"
         return result
-    n = len(cohort.primary)
-    descriptive_minimum = config["stop_rule"]["descriptive_minimum_ratings"]
-    h2_minimum = config["stop_rule"]["h2_minimum_ratings"]
-    if n < descriptive_minimum and not ignore_stop_rule:
-        result["final_look"]["h1"] = f"not reported: {n} primary ratings, below {descriptive_minimum}"
+    if rule["met"] and not ignore_stop_rule:
+        look = restrict(cohort, rule["look_cutoff"], config)
     else:
-        result["final_look"]["h1"] = h1(cohort.primary, config, replicates)
+        look = cohort
+    result["final_look"]["cutoff"] = look.cutoff
+    result["final_look"]["primary_ratings_at_the_cutoff"] = len(look.primary)
+    result["final_look"]["testers_at_the_cutoff"] = len({r.person for r in look.primary})
+    result["readout"] = readout(look, config, replicates)
+    n = len(look.primary)
+    h2_minimum = config["stop_rule"]["h2_minimum_ratings"]
+    if n < minimum and not ignore_stop_rule:
+        result["final_look"]["h1"] = f"not reported: {n} primary ratings, below {minimum}"
+    else:
+        result["final_look"]["h1"] = h1(look.primary, config, replicates)
     if skip_h2:
         result["final_look"]["h2"] = "skipped (synthetic run)"
     elif n < h2_minimum and not ignore_stop_rule:
         result["final_look"]["h2"] = f"not reported: {n} primary ratings, below {h2_minimum}"
     else:
-        result["final_look"]["h2"] = h2(cohort.primary, config, replicates)
+        result["final_look"]["h2"] = h2(look.primary, config, replicates)
     return result
 
 
@@ -2140,6 +2485,14 @@ def _number(value, digits: int = 3) -> str:
     if isinstance(value, int):
         return str(value)
     return f"{value:.{digits}f}"
+
+
+def _when(timestamp) -> str:
+    """A Unix time as the export stores it, with its UTC date for the reader."""
+    if timestamp is None:
+        return "undefined"
+    moment = datetime.datetime.fromtimestamp(timestamp, tz=datetime.timezone.utc)
+    return f"{timestamp} ({moment:%Y-%m-%d %H:%M} UTC)"
 
 
 def _pair(interval) -> str:
@@ -2190,6 +2543,16 @@ def render(result: dict) -> str:
     for name, counts in sorted(exports["founder_pipeline_check"].items()):
         add(f"  founder pipeline check (n = 1, founder; not a result): {name}: "
             + ", ".join(f"{k} {v}" for k, v in counts.items()))
+    for problem, count in exports["problems"].items():
+        add(f"  {problem}: {count} export(s)")
+    declared = exports["declared"]
+    add("  declared on the command line (from the tester registry, fixed before the look):")
+    add("    one person, several Macs: " + ("; ".join(", ".join(g) for g in declared["same_person"])
+                                            or "none"))
+    add("    reinstalled: " + (", ".join(declared["reinstalled"]) or "none"))
+    add("    founder devices: " + (", ".join(declared["founder_device"]) or "none"))
+    if declared["not_among_the_exports"]:
+        add("    declared but not among the exports: " + ", ".join(declared["not_among_the_exports"]))
 
     rows = result["rows"]
     heading("ROWS")
@@ -2225,14 +2588,36 @@ def render(result: dict) -> str:
         f"the first enablement {_number(rule['weeks_since_first_enabled'], 1)}")
     add(f"  met: {_number(rule['met'])} (by count {_number(rule['met_by_count'])}, "
         f"by time {_number(rule['met_by_time'])})")
+    if rule["met"]:
+        add(f"  first met by {rule['met_by']} at {_when(rule['look_cutoff'])}: the look is "
+            "computed as of then")
 
     data = result.get("readout")
-    if data is None:
-        if "final_look" not in result:
-            heading("DESCRIPTIVE READOUT")
-            para(f"Not yet: it is read once there are {rule['descriptive_minimum_ratings']} primary "
-                 "ratings. Until then no answer and no feature value is read.")
-    else:
+    if data is None and "final_look" not in result:
+        heading("DESCRIPTIVE READOUT")
+        minimum = rule["descriptive_minimum_ratings"]
+        if "readout_refused" in result:
+            add(f"  REFUSED: {result['readout_refused']}")
+        elif rule["readout_at_the_look"]:
+            para(f"The stop rule was met before primary ratings reached {minimum}, so the "
+                 "descriptives are reported at the one look.")
+        elif rule["readout_due"]:
+            para(f"Due: primary ratings reached {minimum} at {_when(rule['readout_cutoff'])}. Take it "
+                 "once with --readout. It is computed as of that moment, so running it again "
+                 "gives the same numbers. This run read no answer.")
+        else:
+            para(f"Not yet: it is taken once, with --readout, when there are {minimum} primary "
+                 "ratings. This run read no answer.")
+    if data is not None:
+        heading("DESCRIPTIVE READOUT" if result["mode"] == "readout" else "DESCRIPTIVES AT THE LOOK")
+        if data["cutoff"] is not None:
+            add(f"  as of {_when(data['cutoff'])}: rows eligible, shown, answered, Not now or "
+                "expired by then")
+        else:
+            add("  every row received (no cutoff: synthetic run with the stop rule bypassed)")
+        if data["exports_taken_before_the_cutoff"]:
+            add("  exports taken before the cutoff (rows after their export are missing): "
+                + ", ".join(data["exports_taken_before_the_cutoff"]))
         heading("1. DOES THE BLOCK SUMMARY MATCH WHAT PEOPLE SAID? (card branch against tier)")
         card = data["card"]
         add(f"  rows: {card['population']}")
@@ -2295,20 +2680,21 @@ def render(result: dict) -> str:
         add(f"  exports with outcome labels: {sustained['exports_with_labels']}; without "
             f"(not available, never zero): {len(sustained['exports_without_labels'])}")
         if sustained["exports_with_labels"]:
-            add(f"  primary blocks with a labelled decision point: "
-                f"{sustained['blocks_with_a_labelled_point']}")
+            add(f"  primary blocks with a measured eligible decision point (offered, block at "
+                f"least {WARMUP_EXCLUSION_SECONDS} s): {sustained['blocks_with_a_measured_eligible_point']}")
             for tier, cell in sustained["by_tier"].items():
                 add(f"    {tier:<6} blocks {cell['blocks']}, share sustained: mean "
                     f"{_number(cell['mean_share'])}, median {_number(cell['median_share'])}")
 
         react = data["reactivity"]
         heading(f"5. REACTIVITY PROXY (blocks declared {react['window_days']} days before and "
-                "after enabling, per Mac)")
-        for mac in react["macs"]:
-            if mac["status"] == "measured":
-                add(f"  {mac['mac']}: before {mac['before']}, after {mac['after']}")
+                "after enabling, per person)")
+        for person in react["people"]:
+            if person["status"] == "measured":
+                add(f"  {person['person']}: before {person['before']}, after {person['after']}"
+                    + (f" (Macs {', '.join(person['macs'])})" if len(person["macs"]) > 1 else ""))
             else:
-                add(f"  {mac['mac']}: {mac['status']}")
+                add(f"  {person['person']}: {person['status']}")
         add(f"  median change: {_number(react['median_change'], 1)}")
         para(react["note"])
 
@@ -2329,6 +2715,9 @@ def render(result: dict) -> str:
         if "refused" in look:
             add(f"  REFUSED: {look['refused']}")
         else:
+            if look["cutoff"] is not None:
+                add(f"  as of {_when(look['cutoff'])}: {look['primary_ratings_at_the_cutoff']} primary "
+                    f"ratings from {look['testers_at_the_cutoff']} tester(s)")
             first = look["h1"]
             if isinstance(first, str):
                 add(f"  H1: {first}")
@@ -2372,8 +2761,26 @@ def render(result: dict) -> str:
     text = "\n".join(out) + "\n"
     if result["synthetic"]:
         text = "\n".join(f"[{SYNTHETIC_STAMP}] {line}" for line in text.splitlines()) + "\n"
-    check_wording(text, tuple(exports["received"]) + tuple(exports["people"].values())
-                  + (provenance_record.get("config_path", ""),))
+    check_wording(text, _reader_names(result))
+    return text
+
+
+def _reader_names(result: dict) -> tuple:
+    """Names the reader chose (folders, files, the config path), which the
+    wording guard masks: they are not the report's own words."""
+    exports = result["exports"]
+    declared = exports.get("declared", {})
+    return (
+        tuple(exports["received"]) + tuple(exports["people"].values())
+        + tuple(declared.get("not_among_the_exports", ()))
+        + (result["provenance"].get("config_path", ""),)
+    )
+
+
+def render_json(result: dict) -> str:
+    """The result as JSON, under the same wording guard as the text report."""
+    text = json.dumps(result, indent=2)
+    check_wording(text, _reader_names(result))
     return text
 
 
@@ -2384,8 +2791,12 @@ def main() -> int:
     parser.add_argument("exports", nargs="*", type=Path,
                         help="one folder per participant, or the exported CSV files themselves")
     parser.add_argument("--json", action="store_true", help="emit JSON instead of a report")
-    parser.add_argument("--final-look", action="store_true",
-                        help="take the one pre-registered look (refused until the stop rule is met)")
+    modes = parser.add_mutually_exclusive_group()
+    modes.add_argument("--readout", action="store_true",
+                       help="take the descriptive readout, once, as of the 100th primary rating "
+                            "(refused below 100)")
+    modes.add_argument("--final-look", action="store_true",
+                       help="take the one pre-registered look (refused until the stop rule is met)")
     parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG_PATH,
                         help="the frozen config (default: the one beside this script)")
     parser.add_argument("--founder-device", action="append", default=[], metavar="NAME",
@@ -2429,15 +2840,18 @@ def main() -> int:
                       reinstalled=tuple(args.reinstalled), same_person=tuple(args.same_person),
                       synthetic=args.synthetic)
         result = analyse(
-            cohort, config, final_look=args.final_look, ignore_stop_rule=args.ignore_stop_rule,
+            cohort, config, take_readout=args.readout, final_look=args.final_look,
+            ignore_stop_rule=args.ignore_stop_rule,
             bootstrap_replicates=args.bootstrap_replicates, provenance_record=record,
         )
-        text = json.dumps(result, indent=2) if args.json else render(result)
+        text = render_json(result) if args.json else render(result)
     except (ConfigError, WordingError) as error:
         print(f"ERROR: {error}", file=sys.stderr)
         return 2
     print(text, end="" if text.endswith("\n") else "\n")
     if args.final_look and "refused" in result.get("final_look", {}):
+        return 3
+    if args.readout and "readout_refused" in result:
         return 3
     return 0
 

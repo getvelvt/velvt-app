@@ -51,7 +51,7 @@
       "offer_delivered"
     ],
     "baseline_features": ["work_anchor_share"],
-    "longest_run_floor_seconds": 1,
+    "longest_run_share_floor": 0.01,
     "ridge_lambda": 1.0,
     "person_intercept_sd_grid": [0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 1.0, 1.2, 1.5, 2.0, 2.5, 3.0],
     "pseudo_weight_per_level": 0.5,

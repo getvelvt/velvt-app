@@ -20,10 +20,15 @@ public enum QuestionAfterABlock: Equatable {
     case invitation(RatingOptIn)
 }
 
-/// An answer's acknowledgement, kept for the block it was given about.
+/// An answer's acknowledgement, kept for the block it was given about, with
+/// the deadline of the question it answered. The service refuses an answer
+/// that reaches it at or after that deadline, and its reply then omits the
+/// question just as it does after a recorded answer; only a reply that
+/// arrives before the deadline tells the two apart.
 struct RatingAcknowledgement: Equatable {
     let blockID: UUID
     let text: String
+    let expiresAt: Date
 }
 
 extension WorkBlockPhase {
@@ -42,16 +47,18 @@ extension WorkBlockPhase {
 ///
 /// Two surfaces show a block's result, so two call sites draw this view: the
 /// result view in the focus-session popover (`WorkBlockView`), and the Now
-/// tab of the panel, whose fragmentation card summarises the same block.
-/// Each draws the parts that ask, and the acknowledgement, directly above the
-/// result, and the link directly under it. Only one of the two is on screen
-/// with the question at a time: the panel leaves it to the popover while the
-/// popover is open.
+/// tab of the panel, whose fragmentation card summarises the same block. The
+/// popover draws the parts that ask, and the acknowledgement, directly above
+/// the result; the Now tab draws them first on the tab, above Today so far
+/// and the insight. Both draw the link directly under the result. Only one of
+/// the two is on screen with the question at a time: the panel leaves it to
+/// the popover while the popover is open.
 ///
 /// It is never a notification, and nothing here is drawn during a block. The
-/// sighting it reports is a fact, sent only while the surface drawing the
+/// sighting it reports is a fact, sent only while the window drawing the
 /// question is on screen, for the reason the drift card's is
-/// (`WorkBlockProactiveCards`): the panel's view tree outlives the panel.
+/// (`WorkBlockProactiveCards`): the panel's view tree outlives the panel, and
+/// an open popover can sit behind a locked screen.
 public struct QuestionAfterABlockView: View {
     /// The parts of the question a call site draws in one place.
     public enum Part: Hashable {

@@ -83,8 +83,10 @@ block, and Clear Local Work Blocks.
 The question's toggle (protocol 38) is a Rust-owned setting, like initiation
 invitations. `RatingPromptSettingsToggle` (`UI/QuestionAfterABlockView.swift`)
 renders `rating_prompt_settings` verbatim, title and subtitle included, and is
-drawn only while that message says `available`: once the Mac's first 14 days of
-blocks are over, or while the question is on. Off is the default, and Swift
+drawn only while that message says `available`: once the Mac's v6 primary
+period is over (14 days from its first block under drift policy 6, counted
+again from the first block after Clear Local Work Blocks), or while the
+question is on. Off is the default, and Swift
 assumes nothing before the service reports. The submenu asks again each time it
 opens, with `request_rating_prompt_settings`, because the switch becomes
 available on day 14 without a reconnect. A change sends

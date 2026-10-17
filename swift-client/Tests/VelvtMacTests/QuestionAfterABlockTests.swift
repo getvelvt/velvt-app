@@ -90,6 +90,58 @@ final class QuestionAfterABlockTests: XCTestCase {
         try await waitUntil { client.sentMessages.contains(shown) }
     }
 
+    /// The focus-session popover passes its window's on-screen state to the
+    /// question. Drawn in a window that is not on screen (an open popover
+    /// behind a locked screen or a sleeping display), it reports nothing;
+    /// drawn on screen, it reports the sighting.
+    func testThePopoverReportsASightingOnlyWhileItsWindowIsOnScreen() async throws {
+        let (coordinator, client, messages) = started()
+        messages.send(.workBlockState(ended(prompt: prompt(.question))))
+        try await waitUntil { coordinator.snapshot != nil }
+        let shown = ClientMessage.workBlockRatingShown(.init(blockID: blockID))
+
+        let hidden = hosted(WorkBlockView(coordinator: coordinator, surfaceIsOnScreen: false))
+        try await Task.sleep(for: .milliseconds(150))
+        XCTAssertFalse(client.sentMessages.contains(shown), "a window nobody can see reports nothing")
+
+        let visible = hosted(WorkBlockView(coordinator: coordinator, surfaceIsOnScreen: true))
+        try await waitUntil { client.sentMessages.contains(shown) }
+        withExtendedLifetime((hidden, visible)) {}
+    }
+
+    /// The popover's sighting rests on `MenuBarWindowOnScreenReader` reading
+    /// the popover's own window, an `_NSPopoverWindow`, rather than the
+    /// panel's. Shown from a window on screen, the reader reports it on
+    /// screen whenever the window server does. Synchronous, so the run loop
+    /// can deliver the reader's deferred report.
+    func testTheOnScreenReaderFollowsAPopoversOwnWindow() throws {
+        let host = NSWindow(
+            contentRect: NSRect(x: 200, y: 200, width: 300, height: 200),
+            styleMask: [.titled], backing: .buffered, defer: false)
+        host.isReleasedWhenClosed = false
+        let anchor = NSView(frame: NSRect(x: 0, y: 0, width: 300, height: 200))
+        host.contentView = anchor
+        host.orderFrontRegardless()
+        defer { host.close() }
+
+        let probe = OnScreenProbe()
+        let popover = NSPopover()
+        popover.contentViewController = NSHostingController(rootView: OnScreenProbeView(probe: probe))
+        popover.show(relativeTo: anchor.bounds, of: anchor, preferredEdge: .minY)
+        defer { popover.close() }
+
+        let deadline = Date().addingTimeInterval(2)
+        while probe.isOnScreen != true, Date() < deadline {
+            RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        }
+        guard let window = popover.contentViewController?.view.window,
+            window.occlusionState.contains(.visible)
+        else {
+            throw XCTSkip("The window server does not report the popover as visible here")
+        }
+        XCTAssertEqual(probe.isOnScreen, true)
+    }
+
     /// One tap is one answer. "Noted." appears only once the service's reply
     /// no longer carries the question, and the result comes back with it.
     func testAnAnswerIsSentOnceAndAcknowledgedFromTheReply() async throws {
@@ -150,6 +202,58 @@ final class QuestionAfterABlockTests: XCTestCase {
             client.sentMessages.contains(
                 .rateWorkBlock(.init(blockID: self.blockID, answer: .half, viaLink: false)))
         }
+    }
+
+    /// The service refuses an answer that reaches it at or after the
+    /// question's deadline, and its reply then omits the question exactly as
+    /// it does after a recorded answer. A reply that arrives at or after the
+    /// deadline therefore acknowledges nothing: the result shows without
+    /// "Noted.".
+    func testAReplyAtOrAfterTheDeadlineAcknowledgesNothing() async throws {
+        let clock = MovableClock(endedAt.addingTimeInterval(7_199))
+        let (coordinator, client, messages) = started(clock: clock)
+        messages.send(.workBlockState(ended(prompt: prompt(.question))))
+        try await waitUntil { coordinator.snapshot != nil }
+
+        coordinator.answerRating(.most)
+        try await waitUntil { client.sentMessages.contains(where: \.isRatingAnswer) }
+        clock.now = deadline
+        messages.send(.workBlockState(ended(prompt: nil)))
+        try await waitUntil { !coordinator.isSendingRatingAnswer }
+
+        XCTAssertNil(coordinator.questionAfterABlock)
+        XCTAssertFalse(coordinator.withholdsBlockSummary, "the result shows")
+
+        // The same reply a second earlier is an answer taken.
+        let early = MovableClock(endedAt.addingTimeInterval(7_199))
+        let (onTime, _, onTimeMessages) = started(clock: early)
+        onTimeMessages.send(.workBlockState(ended(prompt: prompt(.question))))
+        try await waitUntil { onTime.snapshot != nil }
+        onTime.answerRating(.most)
+        onTimeMessages.send(.workBlockState(ended(prompt: nil)))
+        try await waitUntil { onTime.questionAfterABlock == .acknowledged("Noted.") }
+    }
+
+    /// An answer the service could not answer with a snapshot is answered
+    /// with a work-block error. That settles it too: nothing is
+    /// acknowledged, and the answers are offered again at once rather than
+    /// staying disabled until the next snapshot.
+    func testAnErrorReplyToAnAnswerOffersTheAnswersAgain() async throws {
+        let (coordinator, client, messages) = started()
+        messages.send(.workBlockState(ended(prompt: prompt(.question))))
+        try await waitUntil { coordinator.snapshot != nil }
+
+        coordinator.answerRating(.most)
+        try await waitUntil { client.sentMessages.contains(where: \.isRatingAnswer) }
+        XCTAssertTrue(coordinator.isSendingRatingAnswer)
+        messages.send(
+            .errorResponse(
+                ErrorResponse(
+                    code: "work_block_persistence_failed", message: "safe", relatedEventID: nil)))
+        try await waitUntil { !coordinator.isSendingRatingAnswer }
+
+        XCTAssertEqual(coordinator.commandError, "safe")
+        XCTAssertEqual(coordinator.questionAfterABlock, .question(prompt(.question), viaLink: false))
     }
 
     /// Not now is reported once. The service's reply shows the result with
@@ -346,10 +450,34 @@ final class QuestionAfterABlockTests: XCTestCase {
         let panel = try flattened(source("UI/VelvtPopoverContentView.swift"))
         let menuBar = try flattened(source("UI/MenuBarPopoverView.swift"))
 
-        XCTAssertTrue(workBlock.contains("parts: [.ask, .acknowledgement], surfaceIsOnScreen: true"))
+        // The popover: the question above the result, reporting a sighting
+        // only while the popover's own window is on screen.
+        XCTAssertTrue(
+            workBlock.contains(
+                "parts: [.ask, .acknowledgement], surfaceIsOnScreen: surfaceIsOnScreen)"))
+        XCTAssertFalse(workBlock.contains("surfaceIsOnScreen: true"))
         XCTAssertTrue(workBlock.contains("if !coordinator.withholdsBlockSummary { resultSummary(result)"))
+        XCTAssertTrue(menuBar.contains("FocusSessionPopoverContent(coordinator: workBlockCoordinator)"))
+        XCTAssertTrue(
+            menuBar.contains("WorkBlockView(coordinator: coordinator, surfaceIsOnScreen: isOnScreen)"))
+        XCTAssertTrue(menuBar.contains(".background(MenuBarWindowOnScreenReader(isOnScreen: $isOnScreen))"))
+
+        // The Now tab: the question first, and only while the popover is
+        // closed, so two sets of answers are never on screen together.
+        let ask =
+            "if !focusSessionIsOpen { QuestionAfterABlockView( coordinator: workBlockCoordinator, "
+            + "parts: [.ask, .acknowledgement], surfaceIsOnScreen: surfaceIsOnScreen )"
+        XCTAssertTrue(panel.contains(ask))
+        let askAt = try XCTUnwrap(panel.range(of: ask)).lowerBound
+        for later in ["CompactWorkBlockControl(", "TodaySoFarView(", "if showsLatestInsight {"] {
+            let laterAt = try XCTUnwrap(panel.range(of: later), later).lowerBound
+            XCTAssertLessThan(askAt, laterAt, "the question comes before \(later)")
+        }
+        XCTAssertTrue(
+            panel.contains(
+                "if !focusSessionIsOpen { QuestionAfterABlockView( coordinator: workBlockCoordinator, "
+                    + "parts: [.link]"))
         XCTAssertTrue(panel.contains("if !workBlockCoordinator.withholdsBlockSummary { FocusFragmentationView("))
-        XCTAssertTrue(panel.contains("parts: [.ask, .acknowledgement], surfaceIsOnScreen: surfaceIsOnScreen"))
         XCTAssertTrue(panel.contains("if showsLatestInsight { latestInsight"))
         XCTAssertTrue(
             panel.contains(
@@ -430,13 +558,13 @@ final class QuestionAfterABlockTests: XCTestCase {
     // MARK: Fixtures
 
     private func started(
-        now: Date? = nil
+        now: Date? = nil, clock: MovableClock? = nil
     ) -> (WorkBlockCoordinator, FakeIPCClient, PassthroughSubject<ServerMessage, Never>) {
         let client = FakeIPCClient()
         let messages = PassthroughSubject<ServerMessage, Never>()
-        let fixedNow = now ?? endedAt.addingTimeInterval(60)
+        let clock = clock ?? MovableClock(now ?? endedAt.addingTimeInterval(60))
         let coordinator = WorkBlockCoordinator(
-            ipcClient: client, now: { fixedNow }, sleep: { _ in try await Task.sleep(for: .seconds(3_600)) })
+            ipcClient: client, now: { clock.now }, sleep: { _ in try await Task.sleep(for: .seconds(3_600)) })
         coordinator.start(messages: messages, connectionStatus: Empty<ConnectionStatus, Never>())
         return (coordinator, client, messages)
     }
@@ -511,6 +639,21 @@ final class QuestionAfterABlockTests: XCTestCase {
             ratingPrompt: prompt,
             ratingOptIn: optIn
         )
+    }
+
+    /// The view in a borderless window that is never ordered in, laid out so
+    /// SwiftUI builds it and runs its appearance handlers. Whether it counts
+    /// as on screen is the view's own argument, as in the app.
+    private func hosted<V: View>(_ view: V) -> NSWindow {
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 400, height: 560),
+            styleMask: [.borderless], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        let hostingView = NSHostingView(rootView: view)
+        hostingView.frame = NSRect(x: 0, y: 0, width: 400, height: 560)
+        window.contentView = hostingView
+        hostingView.layoutSubtreeIfNeeded()
+        return window
     }
 
     /// The source with every run of whitespace made one space, so these
@@ -615,5 +758,31 @@ private actor Gate {
             waiter.resume()
         }
         waiters.removeAll()
+    }
+}
+
+/// A clock a test can move. The coordinator reads it on the main actor only.
+private final class MovableClock {
+    var now: Date
+
+    init(_ now: Date) {
+        self.now = now
+    }
+}
+
+/// What `MenuBarWindowOnScreenReader` last reported, for the popover test.
+private final class OnScreenProbe {
+    var isOnScreen: Bool?
+}
+
+private struct OnScreenProbeView: View {
+    let probe: OnScreenProbe
+    @State private var isOnScreen = false
+
+    var body: some View {
+        Color.clear
+            .frame(width: 200, height: 100)
+            .background(MenuBarWindowOnScreenReader(isOnScreen: $isOnScreen))
+            .onChange(of: isOnScreen) { probe.isOnScreen = $0 }
     }
 }

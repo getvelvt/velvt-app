@@ -1872,6 +1872,28 @@ struct MenuBarWindowOnScreenReader: NSViewRepresentable {
     }
 }
 
+/// The focus-session popover behind the panel's primary button.
+///
+/// The popover is a window of its own, and being open does not make it
+/// visible: left open while the screen is locked or the display is asleep, it
+/// is open and nobody can see it. So it reads its own window's on-screen
+/// state, as the panel does, and the question after a block it draws reports
+/// a sighting only while that window is on screen.
+struct FocusSessionPopoverContent: View {
+    @ObservedObject var coordinator: WorkBlockCoordinator
+    @State private var isOnScreen = false
+
+    var body: some View {
+        ScrollView {
+            WorkBlockView(coordinator: coordinator, surfaceIsOnScreen: isOnScreen)
+        }
+        .frame(width: 400, height: 390, alignment: .top)
+        .background(VelvtSurface.ground)
+        .background(MenuBarWindowOnScreenReader(isOnScreen: $isOnScreen))
+        .preferredColorScheme(.dark)
+    }
+}
+
 public struct MenuBarPopoverView: View {
     @ObservedObject private var presentation: PermissionPresentationModel
     private let permissionManager: (any PermissionManagerProtocol)?
@@ -2403,12 +2425,7 @@ public struct MenuBarPopoverView: View {
             .layoutPriority(1)
             .tourHighlight(guidedTour.isPresented && guidedTour.step == .today)
             .popover(isPresented: $showsFocusSession, arrowEdge: .bottom) {
-                ScrollView {
-                    WorkBlockView(coordinator: workBlockCoordinator)
-                }
-                .frame(width: 400, height: 390, alignment: .top)
-                .background(VelvtSurface.ground)
-                .preferredColorScheme(.dark)
+                FocusSessionPopoverContent(coordinator: workBlockCoordinator)
             }
         }
         .padding(.horizontal, 16)

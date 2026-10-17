@@ -145,6 +145,12 @@ public final class WorkBlockCoordinator: ObservableObject, InterventionDeliveryR
                 where error.code.hasPrefix("work_block_")
                     || error.code.hasPrefix("invalid_work_block_"):
                     self?.commandError = error.message
+                    // An answer to the question after a block is answered with
+                    // a snapshot or, when the service cannot build one, with
+                    // this error. Either settles it, so the five answers are
+                    // offered again instead of staying disabled until the
+                    // next snapshot. Nothing is acknowledged.
+                    self?.ratingAnswerInFlight = nil
                 default:
                     break
                 }
@@ -440,7 +446,7 @@ public final class WorkBlockCoordinator: ObservableObject, InterventionDeliveryR
             case .question(let prompt, let viaLink) = questionAfterABlock
         else { return }
         ratingAnswerInFlight = RatingAcknowledgement(
-            blockID: prompt.blockID, text: prompt.acknowledgement)
+            blockID: prompt.blockID, text: prompt.acknowledgement, expiresAt: prompt.expiresAt)
         send(
             .rateWorkBlock(.init(blockID: prompt.blockID, answer: answer, viaLink: viaLink)),
             onFailure: { [weak self] in self?.ratingAnswerInFlight = nil })
@@ -498,13 +504,19 @@ public final class WorkBlockCoordinator: ObservableObject, InterventionDeliveryR
     /// the one refresh at the question's deadline.
     ///
     /// The first snapshot after an answer settles it either way. If it is
-    /// for the answered block and no longer carries the question, the answer
-    /// was taken and its acknowledgement shows. If it still carries the
-    /// question, the answer was not recorded, and the answers are offered
-    /// again rather than left disabled. State about another block is dropped.
+    /// for the answered block, no longer carries the question, and arrived
+    /// before the question's deadline, the answer was taken and its
+    /// acknowledgement shows. A reply at or after the deadline acknowledges
+    /// nothing: the service may have refused the answer as late, and that
+    /// reply omits the question too, so the result shows without "Noted.".
+    /// If the reply still carries the question, the answer was not recorded,
+    /// and the answers are offered again rather than left disabled. State
+    /// about another block is dropped.
     private func reconcileQuestionAfterABlock(with snapshot: WorkBlockSnapshot) {
         if let inFlight = ratingAnswerInFlight {
-            if snapshot.blockID == inFlight.blockID, snapshot.ratingPrompt == nil {
+            if snapshot.blockID == inFlight.blockID, snapshot.ratingPrompt == nil,
+                now() < inFlight.expiresAt
+            {
                 ratingAcknowledgement = inFlight
             }
             ratingAnswerInFlight = nil

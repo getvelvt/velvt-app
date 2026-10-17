@@ -82,9 +82,16 @@ migration 0048 (#95).
   and without the question and requires every other table byte-identical.
 - Rust's `ClientMessage` denies unknown variants, so a 37 helper would answer
   the new messages `malformed_message`, and Swift decodes `rating_prompt_settings`
-  only from 38: hence the version. Swift decodes the new fields and messages in
-  this change; drawing the question, the invitation and the Settings toggle is
-  the next change (attention plan PR-4).
+  only from 38: hence the version. Swift decodes the new fields and messages,
+  and (attention plan PR-4, #97) draws them. The question and the invitation
+  sit directly above the result in the focus-session popover, and first on the
+  panel's Now tab, whose fragmentation card summarises the same block; the
+  panel leaves them to the popover while it is open. While the question is up
+  for the first time, both surfaces hold back the block's end-of-block result,
+  and the Now tab also holds back its last-hour early signal. Swift reports
+  `work_block_rating_shown` only while the window drawing the question is on
+  screen. The Settings toggle is in Collection Settings and is drawn only
+  while `rating_prompt_settings.available` is true.
 
 ## Version 37 - 2026-10-15
 

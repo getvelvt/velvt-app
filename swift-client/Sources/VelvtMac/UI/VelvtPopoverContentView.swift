@@ -635,6 +635,21 @@ public struct MinimalDashboardWorkspaceView: View {
 
     public var body: some View {
         VStack(alignment: .leading, spacing: 12) {
+            // The question after a block comes first on this tab, above Today
+            // so far and the insight. Its sighting is reported whenever the
+            // panel is on screen on this tab, so the question has to be where
+            // the tab starts, not below cards that can fill the panel's first
+            // screenful. "Noted." replaces it in the same place. It is drawn
+            // only after a block has ended, and the live block's control below
+            // only during one, so the two never share the tab.
+            if !focusSessionIsOpen {
+                QuestionAfterABlockView(
+                    coordinator: workBlockCoordinator,
+                    parts: [.ask, .acknowledgement],
+                    surfaceIsOnScreen: surfaceIsOnScreen
+                )
+            }
+
             if let snapshot = workBlockCoordinator.snapshot,
                 snapshot.phase == .active || snapshot.phase == .paused
             {
@@ -646,14 +661,6 @@ public struct MinimalDashboardWorkspaceView: View {
             if showsLatestInsight {
                 latestInsight
                     .tourHighlight(highlightsInsight)
-            }
-
-            if !focusSessionIsOpen {
-                QuestionAfterABlockView(
-                    coordinator: workBlockCoordinator,
-                    parts: [.ask, .acknowledgement],
-                    surfaceIsOnScreen: surfaceIsOnScreen
-                )
             }
 
             if !workBlockCoordinator.withholdsBlockSummary {

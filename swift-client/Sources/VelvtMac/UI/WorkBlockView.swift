@@ -35,9 +35,16 @@ public struct WorkBlockView: View {
     @State private var purpose: WorkBlockPurpose?
     @State private var intensity: WorkBlockIntensity = .medium
     @State private var plansAnotherSession = false
+    private let surfaceIsOnScreen: Bool
 
-    public init(coordinator: WorkBlockCoordinator) {
+    /// - Parameter surfaceIsOnScreen: whether the window drawing this view is
+    ///   on screen, from the window server. The question after a block reports
+    ///   a sighting only while it is. An open popover is not necessarily a
+    ///   visible one: left open while the screen is locked or the display is
+    ///   asleep, it would otherwise report a question nobody could see.
+    public init(coordinator: WorkBlockCoordinator, surfaceIsOnScreen: Bool = false) {
         self.coordinator = coordinator
+        self.surfaceIsOnScreen = surfaceIsOnScreen
     }
 
     /// Snapshot-render seam. The duration controls are `@State`, so the
@@ -50,6 +57,7 @@ public struct WorkBlockView: View {
         customMinutes: Int
     ) {
         self.coordinator = coordinator
+        self.surfaceIsOnScreen = false
         _durationChoice = State(initialValue: durationChoice)
         _customMinutes = State(initialValue: customMinutes)
     }
@@ -390,11 +398,11 @@ public struct WorkBlockView: View {
             Text(snapshot.statusLine)
                 .velvtBody(12)
 
-            // The question after a block, above the result it asks about. This
-            // view exists only while the popover is open, so whatever it draws
-            // is on screen.
+            // The question after a block, above the result it asks about. It
+            // reports a sighting only while the popover's window is on screen.
             QuestionAfterABlockView(
-                coordinator: coordinator, parts: [.ask, .acknowledgement], surfaceIsOnScreen: true)
+                coordinator: coordinator, parts: [.ask, .acknowledgement],
+                surfaceIsOnScreen: surfaceIsOnScreen)
 
             if let result = snapshot.result {
                 // Held back while the question is up for the first time: an answer
@@ -403,7 +411,7 @@ public struct WorkBlockView: View {
                 if !coordinator.withholdsBlockSummary {
                     resultSummary(result)
                     QuestionAfterABlockView(
-                        coordinator: coordinator, parts: [.link], surfaceIsOnScreen: true)
+                        coordinator: coordinator, parts: [.link], surfaceIsOnScreen: surfaceIsOnScreen)
                 }
 
                 // The gentle re-entry action, offered by Rust only on an invited
@@ -427,7 +435,7 @@ public struct WorkBlockView: View {
                 // `if let result`, so this state rendered a title, a status line, and
                 // no way out of itself at all.
                 QuestionAfterABlockView(
-                    coordinator: coordinator, parts: [.link], surfaceIsOnScreen: true)
+                    coordinator: coordinator, parts: [.link], surfaceIsOnScreen: surfaceIsOnScreen)
                 planAnotherButton(prominent: true)
             }
 

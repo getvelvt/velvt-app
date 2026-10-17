@@ -76,7 +76,14 @@ if [[ -d "$sparkle_framework" ]]; then
   sign_sparkle_component "$sparkle_framework"
 fi
 
-codesign --force --sign "$identity" --options runtime "${timestamp_args[@]}" "$helper"
+# The app and the helper each check the other's signature on the socket
+# (docs/architecture/personal-vault-and-devices.md §9.3): the app requires the
+# identifier `com.velvt.service` of the helper, and the helper `com.velvt.mac`
+# (the bundle identifier, which codesign uses unprompted) of the app. Left to
+# itself codesign names a bare executable after its file, so the helper's is
+# given. verify_release.sh checks both.
+codesign --force --sign "$identity" --options runtime "${timestamp_args[@]}" \
+  --identifier com.velvt.service "$helper"
 codesign --force --sign "$identity" --options runtime "${timestamp_args[@]}" \
   --entitlements "$entitlements" "$app_path"
 codesign --verify --deep --strict --verbose=2 "$app_path"

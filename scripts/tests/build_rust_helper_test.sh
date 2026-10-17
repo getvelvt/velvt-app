@@ -31,7 +31,8 @@ fail() {
 # in), else into ./target, and reports that directory from `cargo metadata`. It
 # "builds" by copying $FIXTURE_FRESH_<triple> (or $FIXTURE_FRESH for the host
 # build), records the rustflags of a cross build in $FIXTURE_RUSTFLAGS_LOG, and
-# fails a build when FIXTURE_CARGO_FAILS=1.
+# fails a build when FIXTURE_CARGO_FAILS=1. Each build appends the
+# VELVT_PEER_SIGNATURE_CHECK it was given to $FIXTURE_PEER_CHECK_LOG.
 shim_bin="$fixture_dir/bin"
 mkdir -p "$shim_bin"
 cat >"$shim_bin/cargo" <<'SHIM'
@@ -45,6 +46,7 @@ if [[ "${1:-}" == "metadata" ]]; then
   exit 0
 fi
 [[ "${FIXTURE_CARGO_FAILS:-0}" != "1" ]] || { echo "error: could not compile velvt-service" >&2; exit 101; }
+printf '%s\n' "${VELVT_PEER_SIGNATURE_CHECK-unset}" >>"${FIXTURE_PEER_CHECK_LOG:-/dev/null}"
 triple=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -134,6 +136,20 @@ out="$fixture_dir/default-target-out/velvt-service"
   fail "NO mode failed without CARGO_TARGET_DIR."
 [[ "$("$out")" == "FRESH" ]] || fail "NO mode did not bundle ./target/release/velvt-service."
 
+# --- A Debug app's helper skips the socket peer check -------------------------
+# docs/architecture/personal-vault-and-devices.md §9.3. Off is passed
+# explicitly, so an `enforce` left in the caller's shell cannot turn it on, and
+# the reverse case is below with the universal build.
+
+rust_dir="$(new_rust_dir peer-check-debug)"
+export FIXTURE_PEER_CHECK_LOG="$fixture_dir/peer-check-debug.log"
+: >"$FIXTURE_PEER_CHECK_LOG"
+VELVT_PEER_SIGNATURE_CHECK=enforce run_script "$rust_dir" "$fixture_dir/peer-check-debug-out/velvt-service" NO >/dev/null ||
+  fail "NO mode failed."
+[[ "$(cat "$FIXTURE_PEER_CHECK_LOG")" == "off" ]] ||
+  fail "NO mode built the helper with VELVT_PEER_SIGNATURE_CHECK=$(cat "$FIXTURE_PEER_CHECK_LOG"), not off."
+unset FIXTURE_PEER_CHECK_LOG
+
 # --- A failed build leaves nothing behind for Xcode to bundle ------------------
 
 rust_dir="$(new_rust_dir failed-build)"
@@ -211,5 +227,16 @@ if ! grep -q FRESH-ARM64-SLICE "$out" || ! grep -q FRESH-X86-SLICE "$out" || gre
 fi
 [[ "$(grep -c -F -- "--remap-path-prefix=$fixture_dir/configured universal target=/velvt/target" "$FIXTURE_RUSTFLAGS_LOG")" == 2 ]] ||
   fail "YES mode did not remap the target directory cargo reported: $(tr '\037' ' ' <"$FIXTURE_RUSTFLAGS_LOG")"
+
+# A Release app's helper checks the code signature of the app on its socket,
+# whatever the caller's shell says: both slices are built with it on.
+rust_dir="$(new_rust_dir universal-peer-check)"
+export FIXTURE_PEER_CHECK_LOG="$fixture_dir/peer-check-release.log"
+: >"$FIXTURE_PEER_CHECK_LOG"
+VELVT_PEER_SIGNATURE_CHECK=off run_script "$rust_dir" "$fixture_dir/universal-peer-check-out/velvt-service" YES "arm64 x86_64" >/dev/null ||
+  fail "YES mode failed."
+[[ "$(cat "$FIXTURE_PEER_CHECK_LOG")" == $'enforce\nenforce' ]] ||
+  fail "YES mode built the slices with VELVT_PEER_SIGNATURE_CHECK=$(tr '\n' ' ' <"$FIXTURE_PEER_CHECK_LOG"), not enforce for both."
+unset FIXTURE_PEER_CHECK_LOG
 
 echo "build_rust_helper tests passed"

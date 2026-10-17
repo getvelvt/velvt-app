@@ -123,6 +123,7 @@ helper_slices="$(lipo -archs "$helper" 2>/dev/null)" && [[ -n "$helper_slices" ]
   exit 1
 }
 slices_run=""
+peer_requirement=""
 for slice in $(tr ' ' '\n' <<<"$helper_slices" | sort); do
   if ! "$arch_bin" "-$slice" /usr/bin/true >/dev/null 2>&1; then
     if [[ "$mode" == "production" ]]; then
@@ -152,6 +153,19 @@ for slice in $(tr ' ' '\n' <<<"$helper_slices" | sort); do
     echo "ERROR: the helper's $slice slice was built from $slice_commit, but the app records $source_commit." >&2
     exit 1
   }
+  # What the helper requires of the process that connects to its socket
+  # (docs/architecture/personal-vault-and-devices.md §9.3). `none` is a helper
+  # built for a Debug app, which serves any process running as the person.
+  slice_peer_requirement="$(helper_flag --peer-requirement "$slice")"
+  [[ "$slice_peer_requirement" != "none" ]] || {
+    echo "ERROR: the helper's $slice slice does not check the app's code signature on the socket; it was built for a Debug app." >&2
+    exit 1
+  }
+  [[ -z "$peer_requirement" || "$slice_peer_requirement" == "$peer_requirement" ]] || {
+    echo "ERROR: the helper's slices hold the app to different requirements." >&2
+    exit 1
+  }
+  peer_requirement="$slice_peer_requirement"
   slices_run+="${slices_run:+ }$slice"
 done
 [[ -n "$slices_run" ]] || {
@@ -196,6 +210,48 @@ if ! grep -q 'flags=.*runtime' <<<"$signature_details"; then
   echo "ERROR: app signature does not enable hardened runtime." >&2
   exit 1
 fi
+
+# The socket peer check, both directions (docs/architecture/
+# personal-vault-and-devices.md §9.3). Each side builds its requirement from its
+# own signature: its team when it has one (every Developer ID build), otherwise
+# the identifier alone (an ad-hoc build, which never leaves this Mac). The
+# helper states its half (--peer-requirement, above); the app's half is the
+# same rule, mirrored here. Checking both against the signed artifact means a
+# build whose two halves would refuse each other cannot pass.
+helper_signature="$(codesign -dvvv "$helper" 2>&1)"
+app_identifier="$(sed -n 's/^Identifier=//p' <<<"$signature_details")"
+helper_identifier="$(sed -n 's/^Identifier=//p' <<<"$helper_signature")"
+[[ "$app_identifier" == "com.velvt.mac" ]] || {
+  echo "ERROR: the app is signed as '$app_identifier'; its helper serves only com.velvt.mac." >&2
+  exit 1
+}
+[[ "$helper_identifier" == "com.velvt.service" ]] || {
+  echo "ERROR: the helper is signed as '$helper_identifier'; the app talks only to com.velvt.service (scripts/sign_release.sh)." >&2
+  exit 1
+}
+peer_requirement_for() { # <identifier the peer must have> <signature details of the side checking>
+  local team
+  team="$(sed -n 's/^TeamIdentifier=//p' <<<"$2")"
+  if [[ -z "$team" || "$team" == "not set" ]]; then
+    printf 'identifier "%s"' "$1"
+  else
+    printf 'anchor apple generic and certificate leaf[subject.OU] = "%s" and identifier "%s"' "$team" "$1"
+  fi
+}
+expected_app_requirement="$(peer_requirement_for com.velvt.mac "$helper_signature")"
+[[ "$peer_requirement" == "$expected_app_requirement" ]] || {
+  echo "ERROR: the helper holds the app to '$peer_requirement'; its signature calls for '$expected_app_requirement'." >&2
+  exit 1
+}
+codesign --verify --strict --test-requirement="=$peer_requirement" "$app_path" >/dev/null 2>&1 || {
+  echo "ERROR: the app does not satisfy what its helper requires on the socket: $peer_requirement" >&2
+  exit 1
+}
+helper_requirement="$(peer_requirement_for com.velvt.service "$signature_details")"
+codesign --verify --strict --test-requirement="=$helper_requirement" "$helper" >/dev/null 2>&1 || {
+  echo "ERROR: the helper does not satisfy what the app requires on the socket: $helper_requirement" >&2
+  exit 1
+}
 
 if codesign -d --entitlements :- "$app_path" 2>/dev/null | grep -q 'com.apple.security.get-task-allow'; then
   echo "ERROR: Release artifact contains the debug get-task-allow entitlement." >&2
@@ -391,6 +447,12 @@ echo "  helper slices run: $slices_run"
 echo "  preview/debug dylibs: absent"
 echo "  codesign: valid"
 echo "  hardened runtime: enabled"
+echo "  socket peer check: the helper requires $peer_requirement"
+echo "  socket peer check: the app requires $helper_requirement"
+if [[ "$peer_requirement" != anchor* ]]; then
+  # --mode production never gets here: it refuses a build without a team.
+  echo "WARNING: this build has no team, so each side's socket peer requirement is an identifier, which any ad-hoc signature can claim. Only the helper's pin to its parent and the app's to its child protect the socket. Keep this build on this Mac." >&2
+fi
 echo "  required architectures: $required_archs"
 echo "  verification mode: $mode"
 if [[ -n "$dmg_path" ]]; then

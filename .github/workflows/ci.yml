@@ -23,9 +23,13 @@ concurrency:
 jobs:
   rust:
     name: Rust lint and test
-    # rust-service carries no `target_os = "macos"` cfg and no Apple-only
-    # crates, so its tests are portable. The Apple targets are only needed to
-    # link the universal binary, which happens in `package` below.
+    # rust-service carries no Apple-only crates, and all of it but one module
+    # is portable. The exception is the socket peer check (`ipc::peer`): its
+    # Security.framework FFI and the tests that exercise it are
+    # `cfg(target_os = "macos")`, so this job never compiles or runs them, and
+    # the `swift` job below lints and tests them on macOS. The Apple targets
+    # are only needed to link the universal binary, which happens in `package`
+    # below.
     runs-on: ubuntu-latest
     timeout-minutes: 20
 
@@ -97,7 +101,9 @@ jobs:
   swift:
     name: Swift lint, test, and release policy
     runs-on: macos-15
-    timeout-minutes: 30
+    # 45, not 30: this job also compiles rust-service twice (clippy and test)
+    # for the macOS-only peer check, which takes several minutes uncached.
+    timeout-minutes: 45
 
     steps:
       - name: Check out source
@@ -137,6 +143,27 @@ jobs:
 
       - name: Test Swift
         run: make test-swift
+
+      # The socket peer check (rust-service/src/ipc/peer.rs) is macOS-only, so
+      # the Linux `rust` job neither lints its FFI nor runs the tests that
+      # refuse a peer that is not the app, including one that execs a signed
+      # binary after connecting. Here they compile under clippy -D warnings
+      # and run against the real Security.framework.
+      - name: Install pinned Rust toolchain
+        working-directory: rust-service
+        run: rustup show active-toolchain
+
+      - name: Cache cargo registry and target directory
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          workspaces: rust-service
+
+      - name: Lint and test the Rust socket peer check on macOS
+        working-directory: rust-service
+        run: |
+          cargo clippy -p velvt-service --all-targets -- -D warnings
+          cargo test -p velvt-service --lib ipc::peer
+          cargo test -p velvt-service --test unix_socket_smoke --test build_info
 
       # Cheap (~7s) and guards the signing and update policy that gates
       # distribution, so it belongs on the pull-request path.

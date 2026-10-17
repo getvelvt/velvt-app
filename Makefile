@@ -370,6 +370,7 @@ test-update-release:
 	./scripts/tests/check_release_host_test.sh
 	./scripts/tests/build_rust_helper_test.sh
 	./scripts/tests/verify_release_slices_test.sh
+	./scripts/tests/socket_peer_release_test.sh
 	./scripts/tests/verify_update_readiness_test.sh
 	./scripts/tests/update_release_scripts_test.sh
 	./scripts/tests/update_local_adversarial_harness_test.sh

@@ -31,6 +31,24 @@ async fn main() {
                 println!("{}", velvt_service::build_info::SOURCE_COMMIT);
                 return;
             }
+            // `none`, or the code-signing requirement this helper holds the
+            // app to. scripts/verify_release.sh refuses a Release app whose
+            // helper says `none`, and checks the app against the rest.
+            #[cfg(unix)]
+            "--peer-requirement" => {
+                match velvt_service::ipc::peer::PeerPolicy::for_this_build().describe() {
+                    Ok(requirement) => println!("{requirement}"),
+                    Err(error) => {
+                        eprintln!(
+                            "velvt-service: error_code={} status={}",
+                            error.code(),
+                            error.status()
+                        );
+                        std::process::exit(STARTUP_FAILED);
+                    }
+                }
+                return;
+            }
             "--dry-run-egress" => {
                 let vault = std::env::args().nth(2).as_deref() == Some("--vault");
                 std::process::exit(dry_run_egress(vault).await)

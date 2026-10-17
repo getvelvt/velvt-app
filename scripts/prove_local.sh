@@ -141,6 +141,8 @@ annotation_for() {
       echo "a name YOU typed when you corrected a classification — or, for an app taught from the needs-a-category list, the APP'S OWN LOCAL NAME, which the list sends back as the rule's name; kept until you remove the rule or use Reset Corrections" ;;
     work_block.intention)
       echo "the sentence you typed when you started a block — expires after 24h" ;;
+    work_block_self_rating.answer)
+      echo "your answer to the optional question after a block: one of five fixed values (all, most, half, less_than_half, little), never text you typed — removed with its block" ;;
     schema_migration.checksum)
       echo "SHA-256 of the migration file's SQL, from the public source (migration 0039) — nothing from this Mac" ;;
     history_cache.payload|insight_cache.payload|weekly_digest.payload|work_block_result.payload)

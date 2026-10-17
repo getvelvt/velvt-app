@@ -130,19 +130,12 @@ public struct TodayWorkspaceView: View {
         .accessibilityHint("Built only from days with real privacy-safe summaries")
     }
 
+    /// Today's numbers come from this Mac's local window. A synced row is a
+    /// UTC calendar day, not the local one (cross-device-10), so none is
+    /// shown here as today's.
     @ViewBuilder
     private var dailyMetrics: some View {
-        if let day = coordinator.historyViewModel.todayReadyDay {
-            ViewThatFits(in: .horizontal) {
-                HStack(spacing: 8) {
-                    metricViews(for: day)
-                }
-                VStack(spacing: 8) {
-                    metricViews(for: day)
-                }
-            }
-            .padding(.horizontal, VelvtMetrics.cardPadding)
-        } else if let signal = readyLocalSignal {
+        if let signal = readyLocalSignal {
             ViewThatFits(in: .horizontal) {
                 HStack(spacing: 8) { localMetricViews(for: signal) }
                 VStack(spacing: 8) { localMetricViews(for: signal) }
@@ -176,25 +169,6 @@ public struct TodayWorkspaceView: View {
             title: "Longest stretch",
             value: DaySummaryViewModel.formatActiveTime(signal.longestUninterruptedSeconds),
             explanation: "The longest observed privacy-safe category stretch in this local window."
-        )
-    }
-
-    @ViewBuilder
-    private func metricViews(for day: DaySummaryViewModel) -> some View {
-        todayMetric(
-            title: "Focused time",
-            value: day.focusedTime,
-            explanation: "Time in broad focus-oriented work categories."
-        )
-        todayMetric(
-            title: "Meaningful switches",
-            value: "\(day.meaningfulSwitchCount)",
-            explanation: "Changes between broad work categories; brief system activity is excluded."
-        )
-        todayMetric(
-            title: "Longest block",
-            value: day.longestUninterrupted,
-            explanation: "Your longest recorded work block without a broad-category switch."
         )
     }
 

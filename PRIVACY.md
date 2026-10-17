@@ -173,7 +173,9 @@ described. Migration 0040 starts later, with the first build after 1.0.13:
 all described below. Migration 0041 starts with the same build:
 `category_prompt_entry`, `category_prompt_card_entry` and
 `category_prompt_notification`, the record behind the needs-a-category card and
-reminder, also described below.
+reminder, also described below. Migration 0048 creates `work_block_self_rating`
+and `rating_prompt_settings`, for an optional question after a block. No build
+asks it yet, so nothing writes either table; both are described below.
 
 | Table | Contents | Default retention |
 |---|---|---|
@@ -192,17 +194,19 @@ reminder, also described below.
 | `work_block` | local state and optional free-form intention | intention: 24 hours; the safe state until Clear Local Work Blocks |
 | `work_block_observation` | safe category/status/confidence spans only | removed with its block, and by Clear Local Work Blocks |
 | `work_block_result` | safe local duration, transition, recovery, coverage, evidence, observation, and one next action | removed with its block, and by Clear Local Work Blocks |
+| `work_block_self_rating` | your answer to an optional question after a block ends, "How much of this block was on what you meant to do?" (migration 0048): the block it is about, the version of the question's wording, when the block became eligible for the question, when the question was first on screen (or, if no sighting was reported first, when you answered or tapped Not now), the answer — one of five fixed values, `all`, `most`, `half`, `less_than_half` or `little` — and when you gave it, when you tapped Not now, when the question expired unanswered, and whether the block's result card had been on screen before you answered. Not now, closing and silence are never stored as an answer. No text you typed, no app or site name, no window title, no URL, no intention text, and no category: every column refuses free text (`docs/field-inventory.md`). **Nothing writes it today** — see the note below the table | removed with its block, and by Clear Local Work Blocks |
 | `intervention_decision_log` | every moment the drift policy was evaluated and what it decided, including the times it decided to stay silent: policy version, broad anchor category, switch count, elapsed and remaining seconds, the verdict, the propensity (always 1.0: the policy is deterministic), whether Velvt knew a Focus mode was on at that moment (`focus_state`, migration 0044: on, off, or unknown when this copy of Velvt cannot read Focus status), and, once its horizon passes, whether the anchor category was seen again within 600 seconds. No label, no app identity, no window title, no URL, no intention text, no Focus mode name | removed with the block it belongs to, and by Clear Local Work Blocks, which also deletes any row logged without a block |
 | `out_of_block_run` | activity outside a declared work block, as broad category plus coarse time: start floored to a five-minute bucket, duration, local hour, and local date. Structurally cannot hold an application name, a label, a stable ID, a window title, or a URL — it is deliberately less informative than the 14-day `raw_event_buffer` it would be derived from. **Nothing writes it today** — see the note below the table | 90 days once written |
 | `block_antecedent` | the bounded window of activity immediately before a block started, recorded once and never updated: the *set* of broad categories present (not their order), a switch count, a dominant category and its dwell, weekday/weekend, and hour bucket. The window is capped at 30 minutes by the database schema, so it cannot be widened by a setting. **Nothing writes it today** — see the note below the table | removed with its block, and by Clear Local Work Blocks |
 | `antecedent_finding` | a discovered pattern about what precedes a block: a key from a closed compile-time registry (a time bin, a day type, a broad category, a coarse elapsed bucket), an effect size, and a q-value. The registry has no constructor that could mint an application name, a label, a window title, or a URL. **Nothing writes it today** — see the note below the table | no sweep, no cascade, and no in-app action removes a row — deleting `~/.velvt/` is the only removal. Empty today |
 
-Three of those tables are empty on every install, and their rows above say so
+Four of those tables are empty on every install, and their rows above say so
 rather than describing a store that exists only in the schema. `out_of_block_run`,
 `block_antecedent`, and `antecedent_finding` were created by migrations 0027,
 0028, and 0029; the retention sweep for `out_of_block_run` is registered and
-runs. No shipped code path constructs a row for any of the three. The only
-callers of their write methods are tests. They are listed here because the
+runs. `work_block_self_rating` is created by migration 0048, for a question no
+build asks yet. No shipped code path constructs a row for any of the four. The
+only callers of their write methods are tests. They are listed here because the
 tables exist on your disk and you will see them if you open the file, and
 because the retention figures above are what will apply if a writer lands —
 not a description of data being collected today.
@@ -404,15 +408,16 @@ generates the salt and re-keys every digest already on disk under it.
 
 The first table above is every store that holds something drawn from your Mac. It is
 not every table in the file. A database with every migration in this source
-tree applied holds 42 tables, plus SQLite's own `sqlite_sequence`. A Velvt
+tree applied holds 44 tables, plus SQLite's own `sqlite_sequence`. A Velvt
 1.0.11 database (migrations 0001–0036) holds 34: it has no `stable_key_salt`,
 `egress_ledger`, `egress_ledger_checkpoint`, `personal_site_override`,
-`local_site_name`, `category_prompt_entry`, `category_prompt_card_entry`, or
-`category_prompt_notification`, which migrations 0037, 0038, 0040 and 0041
-add. Of the 42,
-the 21 that are not in that table hold counters, settings, keys, feature state,
+`local_site_name`, `category_prompt_entry`, `category_prompt_card_entry`,
+`category_prompt_notification`, `work_block_self_rating`, or
+`rating_prompt_settings`, which migrations 0037, 0038, 0040, 0041 and 0048
+add. Of the 44,
+the 22 that are not in that table hold counters, settings, keys, feature state,
 and the record of what was sent. They are listed here for the same reason the
-three empty ones are — you will see them if you open the file.
+four empty ones are — you will see them if you open the file.
 
 | Table | What it holds | Retention |
 |---|---|---|
@@ -433,10 +438,11 @@ three empty ones are — you will see them if you open the file.
 | `initiation_invitation` | one row per soft-start invitation: when it was offered, its local date, the fixed action id, and its outcome. No app identity, title, or intention text | no sweep; removed by Clear Local Work Blocks |
 | `category_prompt_notification` | one row per local day on which Velvt handed the app a needs-a-category reminder to post (migration 0041): the local date (`local_date`, the primary key, which is what makes one reminder a day a property of the table), when (`posted_at`), how many entries it counted (`entry_count`), the policy version it was decided under, and when you next opened the list from the card or a reminder (`opened_at`), which is what the reminder's backoff reads. No key, name, hostname, or notification text | 30 days after `posted_at`; it survives Clear Local Work Blocks |
 | `initiation_settings` | the single invitations on/off switch | singleton; no sweep, and it survives Clear Local Work Blocks for the same reason |
+| `rating_prompt_settings` | the single on/off switch for the optional question after a block (migration 0048), when it was first turned on, and when it was last turned on and last turned off. Turning it off and on again never changes the first time. No row means off, and off is the default. **Nothing writes it today**, because no build asks the question yet | singleton; no sweep. It survives Clear Local Work Blocks for the same reason as `initiation_settings`, and it stays on this Mac through Log Out and Delete Account |
 | `weekly_digest` | one row per completed local week: bounded counts — blocks declared and completed, recoveries, wrong interventions, invitations accepted, withheld — and when the digest was shown and closed. No categories, copy, or per-day breakdown is representable | 12 completed weeks, pruned when the next digest is generated; removed by Clear Local Work Blocks |
 | `explain_probe_week` | one tap counter per local week, for the explain-tap metric. Which nudge was explained is not representable | pruned on the same 12-week rule; removed by Clear Local Work Blocks |
 | `schema_migration` | one row per applied migration: its version, its file name, a checksum of the migration's SQL (since migration 0039, the first build after 1.0.11; computed from the public source file, so nothing in it comes from your Mac), and when it ran. Created by the migration runner rather than by a migration file | no sweep; one row is added per migration and none is removed |
-| `persistence_migration_probe` | nothing. Migration 0002 created it to prove that a new migration file is embedded and applied, and no code path, shipped or test, inserts a row | empty on every install; no sweep |
+| `persistence_migration_probe` | nothing. Migration 0002 created it to prove that a new migration file is embedded and applied, and no shipped code path inserts a row. `rust-service/tests/field_inventory.rs` writes one into a scratch database, only to show that no destructive action reaches it | empty on every install; no sweep |
 
 ### What the app's destructive actions actually remove
 
@@ -458,26 +464,48 @@ this is the whole of what it reaches:
 - **Clear Local Work Blocks** deletes `work_block` and everything that cascades
   from it — `work_block_observation`, `work_block_result`,
   `work_block_intervention`, `work_block_category_correction`,
-  `block_antecedent`, and that block's `intervention_decision_log` rows — plus
-  `intervention_demotion_state`, `focus_state_evidence`, `focus_observer_state`,
-  `quiet_hours_offer_state`, `initiation_invitation`, `weekly_digest`, and
-  `explain_probe_week`. It does not reach the classification and correction
-  tables, the needs-a-category prompt's three tables, `out_of_block_run`, or
-  `antecedent_finding`.
-- **Delete Account** is a request to the cloud. The Rust service marks an open
-  invitation expired, relays the deletion to the account-deletion endpoint, and
-  on acceptance clears the session it holds in memory, destroys the upload
-  batches still waiting to be sent, and makes every event not yet in a batch
-  local-only, so none of it is sent under the next account to sign in. It
-  deletes nothing else from this database (`ClientMessage::DeleteAccount`,
-  `rust-service/src/ipc/router.rs`). An account deleted from another Mac is
-  treated the same way here once the server answers this Mac that the account
-  was deleted.
-- **Signing out** keeps what is waiting to upload, under the account it was
-  recorded for. It is sent if that account signs in again on this Mac, and
-  discarded, never sent, once a different account signs in: activity recorded
-  under one account is never uploaded into another
-  (`SessionOwnership`, `rust-service/src/upload/coordinator.rs`).
+  `work_block_self_rating`, and `block_antecedent` — and every
+  `intervention_decision_log` row (a block's rows by cascade, and any logged
+  without a block), plus `intervention_demotion_state`, `focus_state_evidence`,
+  `focus_observer_state`, `quiet_hours_offer_state`, `initiation_invitation`,
+  `weekly_digest`, and `explain_probe_week`. It does not reach the
+  classification and correction tables, the needs-a-category prompt's three
+  tables, `out_of_block_run`, `antecedent_finding`, or the question's on/off
+  switch, `rating_prompt_settings`.
+- **Delete Account** is a request to the cloud. The Rust service first marks
+  an open invitation expired (`initiation_invitation`), then relays the
+  deletion to the account-deletion endpoint (`ClientMessage::DeleteAccount`,
+  `rust-service/src/ipc/router.rs`). Once the cloud accepts the deletion, the
+  service does three things, and deletes nothing else from this database:
+  - It clears the session it holds in memory.
+  - It deletes the upload batches still waiting to be sent: the pending and
+    failed `upload_batch` rows, and their `batch_event` rows. Batches already
+    sent, rejected or abandoned stay until their retention ends.
+  - It makes every event that was waiting to be sent local-only, whether it
+    was in one of those batches or not yet in a batch. It sets
+    `raw_event_buffer.upload_eligible` to 0 and clears
+    `upload_owner_user_id`, so none of it is sent under the next account to
+    sign in.
+
+  An account deleted from another Mac gets the same three steps here, once the
+  server tells this Mac that the account was deleted
+  (`end_deleted_account_session`). No invitation is marked expired then. An
+  open one is marked expired at the next Sign In on this Mac, if it has not
+  lapsed first.
+- **Signing out** deletes nothing from this database. It marks an open
+  invitation expired (`initiation_invitation`), as Delete Account does.
+  - **What is waiting to upload stays, under the account it was recorded
+    for.** That includes the activity held in memory for the next batch,
+    which is written to the queue at sign-out.
+  - **It is sent only under that account.** It is sent if that account signs in
+    again on this Mac. Once a different account signs in, it is discarded and
+    never sent. Activity recorded under one account is never uploaded into
+    another (`SessionOwnership`, `rust-service/src/upload/coordinator.rs`).
+
+`rust-service/tests/field_inventory.rs` checks this list against the service.
+It runs each of these four actions against a database holding a row in every
+table. It fails if an action changes a table its entry here does not name, or
+changes any table other than as that test's `REACH` table records.
 
 A deleted row is also gone from the file itself. The service opens the database
 with SQLite's `secure_delete` on, so SQLite overwrites a deleted row's bytes with
@@ -582,6 +610,7 @@ fails until this list is updated in the same commit.
 | `personal_semantic_prototype` | `key_hash`, `category`, `embedding`, `dimensions`, `correction_count`, `updated_at` |
 | `personal_site_override` | `site_key_hash`, `category`, `activity_name`, `correction_count`, `created_at`, `updated_at` |
 | `quiet_hours_offer_state` | `id`, `rule_version`, `triggered_at`, `offered_at`, `response`, `responded_at` |
+| `rating_prompt_settings` | `id`, `enabled`, `first_opted_in_at`, `opted_in_at`, `opted_out_at` |
 | `raw_event_buffer` | `id`, `event_id`, `stable_id`, `label`, `category`, `taxonomy_version`, `occurred_at`, `created_at`, `duration_seconds`, `local_display_label`, `classification_tier`, `classification_status`, `classification_confidence`, `classification_source`, `local_name_suggestion`, `upload_eligible`, `app_stable_id`, `app_scope_eligible`, `app_bundle_stable_id`, `declared_app_category`, `document_type_ids`, `site_stable_id`, `upload_owner_user_id` |
 | `schema_migration` | `id`, `version`, `name`, `created_at`, `checksum` |
 | `semantic_embedding_cache` | `key_hash`, `embedding`, `dimensions`, `updated_at` |
@@ -595,6 +624,7 @@ fails until this list is updated in the same commit.
 | `work_block_intervention` | `block_id`, `offered_at`, `action_id`, `anchor_category`, `switch_count`, `window_seconds`, `outcome`, `outcome_at`, `salience`, `card_seen_at`, `delivery_channel`, `delivery_reported_at` |
 | `work_block_observation` | `id`, `block_id`, `occurred_at`, `ended_at`, `category`, `classification_status`, `classification_confidence` |
 | `work_block_result` | `block_id`, `payload`, `created_at` |
+| `work_block_self_rating` | `block_id`, `prompt_version`, `eligible_at`, `shown_at`, `answer`, `answered_at`, `not_now_at`, `expired_at`, `card_seen_before_answer` |
 
 ### Corrections to earlier versions of this section
 
@@ -655,6 +685,21 @@ requests only the Accessibility and Notifications permissions, leaving out the
 optional Focus status permission and the application metadata the client
 reads. Corrected here on 2026-09-25.
 
+A previous version of the list of what the app's destructive actions remove
+said that list was the whole of what each action reaches, and it was not:
+
+- It did not say that signing out marks an open invitation expired.
+- It named no table for Delete Account.
+- It said Delete Account makes only the events not yet in a batch local-only.
+  The events in the batches it deletes become local-only too.
+- It said Clear Local Work Blocks removes a block's `intervention_decision_log`
+  rows. It removes every row, including any logged without a block.
+- It said an account deleted from another Mac is treated the same way as
+  Delete Account. That path does not mark an open invitation expired.
+
+Each entry now names every table its action changes, and a build test holds
+the list to the service. Corrected here on 2026-10-17.
+
 ## What is transmitted to the cloud, and in what form
 
 Only the following ever leave the device. The Rust service sends every one of
@@ -679,6 +724,14 @@ compares with this list.
   account or sign in: your email address and password.
 - **`POST /v1/devices`** — when you sign in on a Mac with no registered
   device: the app version.
+- **`PATCH /v1/devices/{device_id}`** — once each time the app starts with a
+  saved session, after the server confirms it; if that request gets no answer
+  (no connection, or the server is busy or down), again each time the app
+  restores the saved session, until one is answered: the app
+  version, as `{"client_version": ...}`, so the server's record of this Mac
+  names the version it runs rather than the one it first signed in with. It
+  is the same version device registration and every batch already send;
+  nothing new leaves the Mac.
 - **`POST /v1/auth/devices/reissue`** — when you sign in on a Mac that is
   already registered, or the server says this device's token was revoked: the
   device ID. After a reissue that gets no answer, or no verdict on the session,

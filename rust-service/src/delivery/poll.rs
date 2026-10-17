@@ -73,6 +73,14 @@ impl<H: HttpClient> PollClient<H> {
         let scheduler_guard_timeout = self.config.poll_timeout + Duration::from_secs(1);
         let response =
             match tokio::time::timeout(scheduler_guard_timeout, self.http.send(request)).await {
+                // `AuthManager` answers a 429 as an error, so the arm below
+                // that reads the status never saw one from the service's own
+                // transport, and the poll backed off without `Retry-After`.
+                Ok(Err(AuthError::RateLimited { retry_after })) => {
+                    return Err(PollError::RateLimited {
+                        retry_after: parse_retry_after(retry_after.as_deref()),
+                    })
+                }
                 Ok(result) => result?,
                 Err(_) => return Err(PollError::Timeout),
             };
@@ -615,6 +623,25 @@ mod tests {
 
         assert!(matches!(result, Err(PollError::RateLimited { retry_after })
             if retry_after == Some(Duration::from_secs(45))));
+    }
+
+    /// The service polls through `AuthManager`, which answers a 429 as
+    /// `AuthError::RateLimited`. velvt-core's poll 429 carries `Retry-After`
+    /// (#43); it used to reach the scheduler as a plain request failure.
+    #[tokio::test]
+    async fn a_429_the_auth_manager_reports_keeps_its_retry_after() {
+        let http = FakeHttpClient::new(vec![Err(AuthError::RateLimited {
+            retry_after: Some("45".into()),
+        })]);
+        let client = PollClient::new(Arc::new(http), config());
+
+        let result = client.poll_once().await;
+
+        assert!(
+            matches!(result, Err(PollError::RateLimited { retry_after })
+                if retry_after == Some(Duration::from_secs(45))),
+            "{result:?}"
+        );
     }
 
     #[test]

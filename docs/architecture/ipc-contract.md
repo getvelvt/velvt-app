@@ -1,9 +1,10 @@
 # Velvt IPC Contract
 
-> **Reconciled with `proto/` at protocol 36 on 2026-10-15** (protocol 33 on
+> **Reconciled with `proto/` at protocol 37 on 2026-10-15** (protocol 33 on
 > 2026-09-27; 34 adds `auth_session.user_id`, two `menu_status.upload_status`
 > values and the `account_deleted` reason; 35 adds `intervention_delivery`; 36
-> adds `focus_status_availability`).
+> adds `focus_status_availability`; 37 adds the `rate_limited` code to
+> `auth_failure`).
 > This page
 > summarizes the contract; `proto/schema/*.json` is authoritative for every
 > field, and `proto/CHANGELOG.md` records why each version exists. Before this
@@ -316,7 +317,23 @@ Each summary contains:
   aggregate Today-surface counts (protocol 18). The cloud API names the last one
   `focus_seconds`; Rust renames it when it parses the API response
 - `baseline_status`, `baseline_comparison`, `type_proportions` (per-category
-  seconds and proportion)
+  seconds and proportion). Since velvt-core merges two Macs' time (#42), each
+  category's `seconds` is its own merged time and `proportion` its share of
+  the categories' total, which can exceed `active_seconds` on a day two Macs
+  ran different categories at once. `HistoryListView` draws the bar from
+  `proportion` and says "N% of active time" from `seconds / active_seconds`
+  (protocol 37); the app does not mount that view (see below).
+
+How Swift reads the dates (protocol 37, cross-device-10): a `cloud` row is a UTC
+calendar day, and Swift never matches one against the local date. The one
+place the app shows this is the Patterns tab's coaching card: its "Today so
+far" tier describes only a `this_mac` history, so a synced history with one
+ready day reads "This week so far". The "UTC days" labels on the Daily Activity
+rows (`HistoryListView`) and the Today metrics that no longer read a synced row
+(`TodayWorkspaceView`) are in views the app does not mount; only `#if DEBUG`
+previews create them, through `VelvtPopoverContentView`. Local-day cloud
+summaries wait on a disclosure decision (velvt-core
+`docs/local-day-summaries.md`).
 
 ### `service_status`
 
@@ -464,6 +481,27 @@ password.", "Use at most 256 characters for your password."), not velvt-core's
 Only `loc` and `type` are read: a detail may also echo the submitted value in
 `input`. Swift checks the same rule before sending a sign-up (12 to 256
 characters) or a login (at most 256), counted in Unicode scalars.
+
+A sign-up or login the cloud refuses with `429` answers `auth_failure` with
+`rate_limited` (protocol 37) and Rust's words for the wait, from the
+response's `Retry-After` rounded up to the minute: "Too many attempts. Try
+again in 15 minutes.", or "Too many attempts. Try again later." when the server
+sent no usable `Retry-After` (the server deployed before velvt-core #41). A
+sign-in whose credentials were accepted but whose device registration
+(`POST /v1/devices`, limited to 10 an hour per user from #41) or reissue of
+the stored device was refused with `429` answers `rate_limited` too: "This
+Mac could not be registered yet. Too many attempts. Try again in 60 minutes.",
+or after a sign-up "Your account was created, but this Mac could not be
+registered yet. Too many attempts. Log in to try again in 60 minutes." Swift
+shows it as it is.
+
+Once per launch, after a restored session is validated, Rust sends
+`PATCH /v1/devices/{device_id}` with `{"client_version"}` from a task of its
+own, spawned by the validation's background task (velvt-core #41,
+install-release-09). Any answer ends it for the launch, including the 404 or
+405 of a server without the route; no answer (a transport failure, a 429, a
+5xx) leaves it for the next restored session. Nothing waits on it, the next
+session's validation included, and no message reports it.
 
 `auth_success` is sent only once a device exists to upload as: a sign-up or
 login whose device registration fails answers `auth_failure`, and Swift refuses

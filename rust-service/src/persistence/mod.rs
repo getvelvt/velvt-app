@@ -2,6 +2,7 @@
 
 mod egress_ledger;
 mod models;
+mod self_rating;
 mod sqlite;
 mod traits;
 
@@ -22,6 +23,7 @@ pub use models::{
     WrongInterventionCounts,
 };
 pub use models::{ReportedDwell, MAX_REPORTED_DWELL_SECONDS};
+pub use self_rating::{RatingPromptSettings, SelfRating, SelfRatingAnswer, SelfRatingRepo};
 pub use sqlite::{MigrationChecksumMismatch, MigrationReport, PersistenceError, SqlitePersistence};
 pub use traits::{
     AbstractionMapRepo, AntecedentFindingRepo, BehaviorRepo, CategoryPromptRepo, FocusRepo,

@@ -105,6 +105,20 @@ expires after 24 hours, and is absent from every upload/cache DTO. Result
 finalization is atomic and unique per block, making deadline and restart paths
 idempotent.
 
+Migration 0048 adds `work_block_self_rating` and `rating_prompt_settings`, the
+storage for an optional question after a block ends. `SelfRatingRepo`
+(`persistence/self_rating.rs`) is the only code that writes them, and it writes
+no other table (`tests/field_inventory.rs`). It records facts the caller
+reports and keeps the record's own rules: a block is eligible once, an answer
+is final and never follows expiry, Not now is never an answer, the first
+report of each event wins, an answer or a Not now counts as the sighting when
+none was reported before it, an answer after Not now was given with the card
+seen, and the first time the question was turned on is kept. The schema's
+CHECKs refuse every row the pre-registered analysis would discard as
+malformed. Each row cascades with its block, so Clear Local Work Blocks
+removes every answer and keeps the on/off setting. It has no caller
+in the shipped path yet. `docs/field-inventory.md` lists every column.
+
 ## Meaningful-Work Aggregation
 
 `WorkBlockManager` receives safe category/status/confidence evidence after the
@@ -125,7 +139,7 @@ The upload path has three layers:
 2. `UploadBatcher` groups events by count, age, and shutdown.
 3. `UploadCoordinator` sends batches through `HttpBatchUploader`, records status, and manages retry/backoff.
 
-Batch IDs are stable for idempotent retry. `raw_field_rejected` is terminal because retrying a privacy-invalid payload would be incorrect.
+Batch IDs are stable for idempotent retry. `raw_field_rejected` is terminal because retrying a privacy-invalid payload would be incorrect. A `429` puts the upload host off for its `Retry-After`, at most an hour (velvt-core's longest rate-limit window; a proxy's far larger value would otherwise park the queue, across restarts), or the coordinator's own backoff without one; `AuthManager` carries the header in `AuthError::RateLimited { retry_after }`, which `HttpBatchUploader` maps to `UploadOutcome::RateLimited` (protocol 37; before, it was mapped to a transport failure and the header was lost).
 
 ## Delivery Pipeline
 

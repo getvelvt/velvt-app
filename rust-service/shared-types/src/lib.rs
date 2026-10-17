@@ -130,10 +130,13 @@ pub enum ClientMessage {
     /// Not now, on the question after a block (protocol 38). Never an
     /// answer: the question stays open until it expires.
     WorkBlockRatingNotNow(WorkBlockRatingNotNow),
-    /// Turns the question after a block on or off (protocol 38). Off from
-    /// the one-time invitation records its Not now. Rust refuses on before
-    /// the Mac's first 14 days are over.
+    /// The Settings toggle for the question after a block (protocol 38).
+    /// Rust refuses on before the Mac's first 14 days are over. It never
+    /// answers the one-time invitation.
     SetRatingPromptEnabled(SetRatingPromptEnabled),
+    /// A tap on the one-time invitation to turn the question on (protocol
+    /// 38): which button, and nothing else. Rust decides what it records.
+    RespondRatingOptIn(RespondRatingOptIn),
     /// Reads the question's setting for the Settings pane (protocol 38).
     RequestRatingPromptSettings(RequestRatingPromptSettings),
     /// Test-only proof that adding a client DTO does not change existing handlers.
@@ -1985,8 +1988,8 @@ pub struct RatingPrompt {
 }
 
 /// The one-time invitation to turn the question after a block on (protocol
-/// 38). Turn on sends `set_rating_prompt_enabled` with true, and Not now
-/// sends it with false.
+/// 38). Either button sends `respond_rating_opt_in`: Turn on with `turn_on`
+/// true, Not now with false.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RatingOptIn {
@@ -2019,11 +2022,23 @@ pub struct WorkBlockRatingNotNow {
     pub block_id: Uuid,
 }
 
-/// Turns the question after a block on or off.
+/// The Settings toggle for the question after a block. Answered with
+/// `rating_prompt_settings`; the result view's snapshot is not resent, so
+/// Swift asks for `work_block_state` again if the result view is open.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SetRatingPromptEnabled {
     pub enabled: bool,
+}
+
+/// A tap on the one-time invitation: `turn_on` is true for Turn on and false
+/// for Not now. Swift reports the button; Rust records Not now only while the
+/// invitation is still owed, and holds Turn on to the same floor as the
+/// Settings toggle. Answered with `work_block_state`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RespondRatingOptIn {
+    pub turn_on: bool,
 }
 
 /// Reads the question after a block's setting.
@@ -4043,8 +4058,8 @@ mod v38_question_after_a_block_contract {
         Uuid::parse_str("7f3c2a10-5b6e-4c1d-9a8f-0e2d4c6b8a03").unwrap()
     }
 
-    /// The four facts Swift reports and the settings read, in the exact shape
-    /// Swift sends them, both ways.
+    /// The facts Swift reports, the toggle and the settings read, in the
+    /// exact shape Swift sends them, both ways.
     #[test]
     fn every_client_message_round_trips_in_the_wire_shape() {
         let cases = [
@@ -4071,6 +4086,14 @@ mod v38_question_after_a_block_contract {
             (
                 ClientMessage::RequestRatingPromptSettings(RequestRatingPromptSettings {}),
                 r#"{"type":"request_rating_prompt_settings","payload":{}}"#,
+            ),
+            (
+                ClientMessage::RespondRatingOptIn(RespondRatingOptIn { turn_on: false }),
+                r#"{"type":"respond_rating_opt_in","payload":{"turn_on":false}}"#,
+            ),
+            (
+                ClientMessage::RespondRatingOptIn(RespondRatingOptIn { turn_on: true }),
+                r#"{"type":"respond_rating_opt_in","payload":{"turn_on":true}}"#,
             ),
         ];
         for (message, wire) in cases {

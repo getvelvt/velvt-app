@@ -1170,14 +1170,13 @@ fn the_question_s_rules_write_only_its_own_two_tables() {
     let rated = Uuid::parse_str(RATED).unwrap();
 
     let before = snapshot(&connection);
-    let declined = rating.set_enabled(false, at(RATED_START - 3_000)).unwrap();
+    let declined = rating
+        .respond_to_invitation(false, at(RATED_START - 3_000))
+        .unwrap();
     let turned_on = rating.set_enabled(true, at(RATED_START - 2_000)).unwrap();
     let asked = rating.surfaces_for(&ended(RATED, RATED_START), at(RATED_START + 1_810));
     let writes = [
-        (
-            "the invitation's Not now",
-            !declined.enabled && declined.available,
-        ),
+        ("the invitation's Not now", declined),
         ("turning it on", turned_on.enabled),
         ("eligibility", asked.prompt.is_some()),
         (
@@ -1212,6 +1211,13 @@ fn the_question_s_rules_write_only_its_own_two_tables() {
             "turning it off",
             !rating
                 .set_enabled(false, at(LATE_START + 20_100))
+                .unwrap()
+                .enabled,
+        ),
+        (
+            "turning it on again",
+            rating
+                .set_enabled(true, at(LATE_START + 20_200))
                 .unwrap()
                 .enabled,
         ),

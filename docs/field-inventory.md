@@ -102,7 +102,7 @@ Blocks removes both.
 | `work_block_self_rating` | `answer` | TEXT | yes | choice | One of `all`, `most`, `half`, `less_than_half` or `little`, or NULL if there is no answer. Not now, closing and silence are never stored as an answer. |
 | `work_block_self_rating` | `answered_at` | INTEGER | yes | timestamp | When the answer was given. It is NULL exactly when `answer` is. |
 | `work_block_self_rating` | `not_now_at` | INTEGER | yes | timestamp | When Not now was tapped. |
-| `work_block_self_rating` | `expired_at` | INTEGER | yes | timestamp | When the question stopped being available: two hours after the block ended, or when the next block started, whichever came first. It is that instant, not when the service noticed. |
+| `work_block_self_rating` | `expired_at` | INTEGER | yes | timestamp | When the question stopped being available: two hours after the block ended, or when the next block started, whichever came first. It is that instant, not when the service noticed. The service writes it late, when it next builds an ended block's snapshot or takes a report, so a copy of the database taken before then can show a past-due question with no `expired_at`; once written it always holds the deadline. |
 | `work_block_self_rating` | `card_seen_before_answer` | INTEGER | no | flag | 1 if the answer was given after the block's result card had been on screen. The card appears after Not now, so it is 1 for every answer after a Not now. It is 0 while there is no answer. |
 | `rating_prompt_settings` | `id` | INTEGER | no | singleton | Always 1. |
 | `rating_prompt_settings` | `enabled` | INTEGER | no | flag | Whether the question is asked. It is 0 until the person turns it on. |

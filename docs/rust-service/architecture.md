@@ -125,20 +125,26 @@ and when the Mac's drift policy v6 primary period started.
 `self_rating::RatingPromptManager` (protocol 38, `RATING_PROMPT_VERSION` 1)
 is the store's only caller. It decides, by fixed rules over timestamps and
 the person's setting, whether an ended block is asked about: the block ran
-at least five minutes, started after the Mac's v6 primary period ended (14
-days from its first block after the upgrade cut, as `analyze_ratings.py`
-computes it), and ran wholly while the question was on. Its row is written
-then, with `eligible_at` the block's end. The question expires two hours
-after the block ended or when the next block starts, whichever is first, and
-`expired_at` is that instant. The question cannot be turned on before the
-period ends. `WorkBlockManager` reaches it through the `RatingPromptSource`
+at least five minutes, started at or after the end of the Mac's v6 primary
+period (1,209,600 seconds from the start of its first block after the
+upgrade cut, as `analyze_ratings.py` computes it), and ran wholly while the
+question was on. Its row is written then, with `eligible_at` the block's end.
+The question is shown, and reports about it are taken, only while the
+question has stayed on since before the block started, so turning it off and
+on again never brings back a question whose result card may have been seen.
+The question expires two hours after the block ended or when the next block
+starts, whichever is first, and `expired_at` is that instant, written when
+the service next builds an ended block's snapshot or takes a report. The
+question cannot be turned on before the period ends. `WorkBlockManager` reaches it through the `RatingPromptSource`
 trait from one function, `rating_surfaces`, while it builds the snapshot of
 an ended block, and passes the time the end was observed, so a Mac asleep
 through a deadline is not shown a question that already expired.
 `tests/rating_isolation.rs` replays a nineteen-day trace with and without
 the question and requires every other table byte-identical, checks the
 manager never consults it for a live block, and checks no other module names
-the question's record. The router handles its five messages.
+the question's record. The router handles its six messages; the
+invitation's reply reports which button was tapped, and Rust decides what it
+records.
 
 ## Meaningful-Work Aggregation
 

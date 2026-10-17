@@ -1360,6 +1360,14 @@ final class QuestionAfterABlockWireTests: XCTestCase {
                 #"{"type":"set_rating_prompt_enabled","payload":{"enabled":false}}"#
             ),
             (.requestRatingPromptSettings, #"{"type":"request_rating_prompt_settings","payload":{}}"#),
+            (
+                .respondRatingOptIn(RespondRatingOptIn(turnOn: true)),
+                #"{"type":"respond_rating_opt_in","payload":{"turn_on":true}}"#
+            ),
+            (
+                .respondRatingOptIn(RespondRatingOptIn(turnOn: false)),
+                #"{"type":"respond_rating_opt_in","payload":{"turn_on":false}}"#
+            ),
         ]
         for (message, wire) in cases {
             let encoded = try JSONSerialization.jsonObject(with: encoder.encode(message)) as? NSDictionary

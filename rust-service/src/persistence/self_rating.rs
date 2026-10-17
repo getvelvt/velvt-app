@@ -82,7 +82,9 @@ pub struct SelfRating {
     pub block_id: String,
     /// The version of the question's wording the block was offered under.
     pub prompt_version: u32,
-    /// When the block became eligible, which is when the row was written.
+    /// The block's end, when the question became available. The row may be
+    /// written later, when the service first sees the ended block (after
+    /// sleep or a restart), but this is always the end.
     pub eligible_at: DateTime<Utc>,
     /// When the question was first on screen. `None` if it never was. An
     /// answer or a Not now with no sighting before it sets it to its own time.
@@ -92,7 +94,9 @@ pub struct SelfRating {
     /// `Some` exactly when `answer` is (the schema's CHECK).
     pub answered_at: Option<DateTime<Utc>>,
     pub not_now_at: Option<DateTime<Utc>>,
-    /// When the question stopped being available without an answer.
+    /// When the question stopped being available without an answer: always
+    /// the deadline itself, though the row may be stamped later, when the
+    /// service next builds an ended block's snapshot or takes a report.
     pub expired_at: Option<DateTime<Utc>>,
     /// The answer was given after the block's result card had been on screen.
     /// Always true for an answer after a Not now, and false with no answer.
@@ -121,10 +125,11 @@ pub struct RatingPromptSettings {
     pub opted_out_at: Option<DateTime<Utc>>,
 }
 
-/// When a block ended and when the block after it started, read from
-/// `work_block`.
+/// When a block started and ended and when the block after it started, read
+/// from `work_block`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RatedBlockBounds {
+    pub started_at: DateTime<Utc>,
     /// `None` while the block has not ended.
     pub ended_at: Option<DateTime<Utc>>,
     /// The start of the block created next, in the order blocks were created,
@@ -202,8 +207,8 @@ pub trait SelfRatingRepo: Send + Sync {
     /// on, or answered the invitation before, keeps its record.
     fn decline_opt_in(&self, at: DateTime<Utc>) -> Result<bool, PersistenceError>;
 
-    /// Reads, never writes: when `block_id` ended and when the next block
-    /// started. `None` for a block not on record.
+    /// Reads, never writes: when `block_id` started and ended and when the
+    /// next block started. `None` for a block not on record.
     fn block_bounds(&self, block_id: &str) -> Result<Option<RatedBlockBounds>, PersistenceError>;
 
     /// Reads, never writes: the start of the Mac's primary period for drift
@@ -370,7 +375,7 @@ impl SelfRatingRepo for SqliteSelfRatingRepo {
         let connection = self.0.connection()?;
         connection
             .query_row(
-                "SELECT block.ended_at,
+                "SELECT block.started_at, block.ended_at,
                         (SELECT next.started_at FROM work_block AS next
                          WHERE next.rowid > block.rowid
                          ORDER BY next.rowid LIMIT 1)
@@ -378,8 +383,9 @@ impl SelfRatingRepo for SqliteSelfRatingRepo {
                 [block_id],
                 |row| {
                     Ok(RatedBlockBounds {
-                        ended_at: optional_timestamp_from_row(row, 0)?,
-                        next_block_started_at: optional_timestamp_from_row(row, 1)?,
+                        started_at: timestamp_from_row(row, 0)?,
+                        ended_at: optional_timestamp_from_row(row, 1)?,
+                        next_block_started_at: optional_timestamp_from_row(row, 2)?,
                     })
                 },
             )
@@ -1050,6 +1056,7 @@ mod tests {
         assert_eq!(
             ratings.block_bounds("first").unwrap(),
             Some(super::RatedBlockBounds {
+                started_at: DateTime::from_timestamp(1_000, 0).unwrap(),
                 ended_at: Some(DateTime::from_timestamp(2_500, 0).unwrap()),
                 next_block_started_at: Some(DateTime::from_timestamp(3_000, 0).unwrap()),
             })
@@ -1065,6 +1072,7 @@ mod tests {
         assert_eq!(
             ratings.block_bounds("third").unwrap(),
             Some(super::RatedBlockBounds {
+                started_at: DateTime::from_timestamp(2_000, 0).unwrap(),
                 ended_at: None,
                 next_block_started_at: None,
             })

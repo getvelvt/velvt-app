@@ -4239,6 +4239,9 @@ impl MessageRouter for R7Router {
                 self.work_block_response(|manager| manager.request_state(Utc::now()))
             }
 
+            // The Settings toggle. Answered with the setting only: the
+            // Settings pane is what sent it, and Swift asks for the result
+            // view's snapshot again if that view is open.
             ClientMessage::SetRatingPromptEnabled(request) => {
                 let Some(rating) = &self.rating_prompt else {
                     return Ok(None);
@@ -4253,6 +4256,24 @@ impl MessageRouter for R7Router {
                         Ok(None)
                     }
                 }
+            }
+
+            // A tap on the one-time invitation. Answered with the snapshot,
+            // so the invitation leaves the result view in the same reply.
+            ClientMessage::RespondRatingOptIn(request) => {
+                let Some(rating) = &self.rating_prompt else {
+                    return Ok(None);
+                };
+                if rating
+                    .respond_to_invitation(request.turn_on, Utc::now())
+                    .is_err()
+                {
+                    tracing::warn!(
+                        error_code = "rating_opt_in_record_failed",
+                        "the reply to the question's invitation was not recorded"
+                    );
+                }
+                self.work_block_response(|manager| manager.request_state(Utc::now()))
             }
 
             ClientMessage::RequestRatingPromptSettings(_) => {

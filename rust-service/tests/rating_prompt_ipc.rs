@@ -25,9 +25,9 @@ use velvt_service::upload::EventIngestor;
 use velvt_service::work_block::{RatingPromptSource, WorkBlockManager};
 use velvt_shared_types::{
     ClientMessage, RateWorkBlock, RatingPromptPresentation, RatingPromptSettings,
-    RequestRatingPromptSettings, RequestWorkBlockState, ServerMessage, SetRatingPromptEnabled,
-    StartWorkBlock, WorkBlockIntensity, WorkBlockRatingAnswer, WorkBlockRatingNotNow,
-    WorkBlockRatingShown, WorkBlockSnapshot,
+    RequestRatingPromptSettings, RequestWorkBlockState, RespondRatingOptIn, ServerMessage,
+    SetRatingPromptEnabled, StartWorkBlock, WorkBlockIntensity, WorkBlockRatingAnswer,
+    WorkBlockRatingNotNow, WorkBlockRatingShown, WorkBlockSnapshot,
 };
 
 #[path = "../shared-types/tests/support/json_schema.rs"]
@@ -289,8 +289,9 @@ async fn a_question_is_asked_seen_put_off_and_answered_over_the_socket() {
     assert!(off.available && !off.enabled);
 }
 
-/// The invitation follows the first block after day 14 until Not now, which
-/// the service records so it never returns.
+/// The invitation follows the first block after day 14 until its own Not
+/// now, which the service records so it never returns. The Settings toggle's
+/// off does not answer it.
 #[tokio::test]
 async fn the_invitation_is_offered_and_its_not_now_is_kept() {
     let service = service(true);
@@ -300,14 +301,83 @@ async fn the_invitation_is_offered_and_its_not_now_is_kept() {
     assert!(offered.rating_opt_in.is_some());
     assert_eq!(offered.rating_prompt, None);
 
-    let declined = settings_from(
+    let toggle = settings_from(
         &service,
         ClientMessage::SetRatingPromptEnabled(SetRatingPromptEnabled { enabled: false }),
     )
     .await;
-    assert!(declined.available && !declined.enabled);
+    assert!(toggle.available && !toggle.enabled);
+    assert!(state(&service).await.rating_opt_in.is_some());
+    assert_eq!(service.ratings.settings().unwrap().opted_out_at, None);
+
+    let declined = snapshot_from(
+        &service,
+        ClientMessage::RespondRatingOptIn(RespondRatingOptIn { turn_on: false }),
+    )
+    .await;
+    assert_eq!(declined.rating_opt_in, None, "the reply withdraws it");
     assert_eq!(state(&service).await.rating_opt_in, None);
     assert!(service.ratings.settings().unwrap().opted_out_at.is_some());
+    assert!(!service.ratings.settings().unwrap().enabled);
+}
+
+/// Turn on, on the invitation, turns the question on and withdraws the
+/// invitation in the same reply. The block it followed is not asked about.
+#[tokio::test]
+async fn turn_on_on_the_invitation_turns_the_question_on() {
+    let service = service(true);
+    let block = history(&service, 20, false);
+    assert!(state(&service).await.rating_opt_in.is_some());
+
+    let accepted = snapshot_from(
+        &service,
+        ClientMessage::RespondRatingOptIn(RespondRatingOptIn { turn_on: true }),
+    )
+    .await;
+    assert_eq!(accepted.rating_opt_in, None);
+    assert_eq!(accepted.rating_prompt, None);
+    assert!(service.ratings.settings().unwrap().enabled);
+    assert!(service
+        .ratings
+        .rating(&block.to_string())
+        .unwrap()
+        .is_none());
+    let read = settings_from(
+        &service,
+        ClientMessage::RequestRatingPromptSettings(RequestRatingPromptSettings {}),
+    )
+    .await;
+    assert!(read.available && read.enabled);
+}
+
+/// Off and on again from Settings does not bring the question back, and
+/// the router refuses every report about it afterwards.
+#[tokio::test]
+async fn off_and_on_again_over_the_socket_does_not_bring_the_question_back() {
+    let service = service(true);
+    let block = history(&service, 20, true);
+    assert!(state(&service).await.rating_prompt.is_some());
+
+    for enabled in [false, true] {
+        settings_from(
+            &service,
+            ClientMessage::SetRatingPromptEnabled(SetRatingPromptEnabled { enabled }),
+        )
+        .await;
+    }
+    assert_eq!(state(&service).await.rating_prompt, None);
+    let answered = snapshot_from(
+        &service,
+        ClientMessage::RateWorkBlock(RateWorkBlock {
+            block_id: block,
+            answer: WorkBlockRatingAnswer::All,
+            via_link: false,
+        }),
+    )
+    .await;
+    assert_eq!(answered.rating_prompt, None);
+    let row = service.ratings.rating(&block.to_string()).unwrap().unwrap();
+    assert_eq!((row.shown_at, row.answer), (None, None));
 }
 
 /// Inside the Mac's first 14 days the toggle is not offered, turning the
@@ -345,6 +415,8 @@ async fn without_the_question_its_messages_change_nothing() {
         }),
         ClientMessage::SetRatingPromptEnabled(SetRatingPromptEnabled { enabled: false }),
         ClientMessage::RequestRatingPromptSettings(RequestRatingPromptSettings {}),
+        ClientMessage::RespondRatingOptIn(RespondRatingOptIn { turn_on: false }),
+        ClientMessage::RespondRatingOptIn(RespondRatingOptIn { turn_on: true }),
     ] {
         assert_eq!(send(&service, message).await, None);
     }

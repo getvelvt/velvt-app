@@ -71,9 +71,12 @@ public enum ClientMessage: Codable, Equatable, Sendable {
     case rateWorkBlock(RateWorkBlock)
     /// Not now on the question after a block (proto v38). Never an answer.
     case workBlockRatingNotNow(WorkBlockIdentifier)
-    /// Turns the question after a block on or off, from Settings or the
-    /// one-time invitation (proto v38).
+    /// The Settings toggle for the question after a block (proto v38). It
+    /// never answers the one-time invitation.
     case setRatingPromptEnabled(SetRatingPromptEnabled)
+    /// A tap on the one-time invitation to turn the question on (proto v38):
+    /// which button, and nothing else. Rust decides what it records.
+    case respondRatingOptIn(RespondRatingOptIn)
     /// Reads the question after a block's setting (proto v38).
     case requestRatingPromptSettings
 
@@ -184,6 +187,8 @@ public enum ClientMessage: Codable, Equatable, Sendable {
             self = .setRatingPromptEnabled(try SetRatingPromptEnabled(from: payload))
         case "request_rating_prompt_settings":
             self = .requestRatingPromptSettings
+        case "respond_rating_opt_in":
+            self = .respondRatingOptIn(try RespondRatingOptIn(from: payload))
         default:
             throw DecodingError.dataCorrupted(
                 .init(codingPath: decoder.codingPath, debugDescription: "Unknown client message type"))
@@ -346,6 +351,9 @@ public enum ClientMessage: Codable, Equatable, Sendable {
         case .requestRatingPromptSettings:
             try envelope.encode("request_rating_prompt_settings", forKey: .type)
             try EmptyPayload().encode(to: envelope.superEncoder(forKey: .payload))
+        case .respondRatingOptIn(let value):
+            try envelope.encode("respond_rating_opt_in", forKey: .type)
+            try value.encode(to: envelope.superEncoder(forKey: .payload))
         }
     }
 }
@@ -3148,7 +3156,8 @@ public struct RatingPrompt: Codable, Equatable, Sendable {
 }
 
 /// The one-time invitation to turn the question after a block on (proto
-/// v38). Turn on sends `setRatingPromptEnabled(true)`; Not now sends false.
+/// v38). Either button sends `respondRatingOptIn`: Turn on with `turnOn`
+/// true, Not now with false.
 public struct RatingOptIn: Codable, Equatable, Sendable {
     public let body: String
     public let turnOn: String
@@ -3187,11 +3196,27 @@ public struct RateWorkBlock: Codable, Equatable, Sendable {
     }
 }
 
-/// Turns the question after a block on or off.
+/// The Settings toggle for the question after a block. Answered with
+/// `ratingPromptSettings` only: if the result view is open, send
+/// `requestWorkBlockState` afterwards so a question or invitation the change
+/// withdrew leaves the screen.
 public struct SetRatingPromptEnabled: Codable, Equatable, Sendable {
     public let enabled: Bool
 
     public init(enabled: Bool) { self.enabled = enabled }
+}
+
+/// A tap on the one-time invitation: `turnOn` is true for Turn on and false
+/// for Not now. Rust decides what it records and answers with
+/// `workBlockState`.
+public struct RespondRatingOptIn: Codable, Equatable, Sendable {
+    public let turnOn: Bool
+
+    public init(turnOn: Bool) { self.turnOn = turnOn }
+
+    private enum CodingKeys: String, CodingKey {
+        case turnOn = "turn_on"
+    }
 }
 
 /// The question after a block's setting and the Settings pane's words.

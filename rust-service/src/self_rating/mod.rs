@@ -15,12 +15,30 @@
 //! block was asked about never depends on what the block looked like, and a
 //! block that was eligible but never seen stays a recorded missing answer.
 //!
-//! The day-14 floor. A block is covered only if it started after its Mac's
-//! drift policy v6 primary period ended: 14 days from the start of the Mac's
-//! first block after the upgrade cut, as item 1 of the draft period note and
-//! `scripts/analyze_ratings.py` define it. So no block inside the period is
-//! ever rated, and the question cannot be turned on inside it either. This
-//! holds even if a build with the question reaches a Mac too early.
+//! The day-14 floor. A block is covered only if it started at or after the
+//! end of its Mac's drift policy v6 primary period: the period starts at the
+//! start of the Mac's first block after the upgrade cut, as item 1 of the
+//! draft period note and `scripts/analyze_ratings.py` define it, and ends
+//! 1,209,600 seconds (14 days) later. So no block that started inside the
+//! period is ever rated, and the question cannot be turned on inside it
+//! either. This holds even if a build with the question reaches a Mac too
+//! early.
+//!
+//! On without a break. The question about a block is shown, and a sighting,
+//! a Not now or an answer about it is taken, only while the question has
+//! stayed on since before the block started: it is on, and it was last
+//! turned on at or before the block's start. Turning it off hides the
+//! question, and turning it on again does not bring it back, because the
+//! block's result card may have been on screen in between and an answer
+//! given after it would not be a first answer. The row expires on its own
+//! schedule.
+//!
+//! The one-time invitation. Swift reports which button was tapped
+//! (`respond_rating_opt_in`); Rust decides what it means. Not now is
+//! recorded only while the invitation is still owed, so a tap on an
+//! invitation left on screen after the question was turned on in Settings
+//! changes nothing. The Settings toggle (`set_rating_prompt_enabled`) never
+//! answers the invitation.
 //!
 //! Isolation. This module writes `work_block_self_rating` and
 //! `rating_prompt_settings` through [`SelfRatingRepo`], and no other table.
@@ -137,9 +155,9 @@ pub fn primary_period_end(period_start: DateTime<Utc>) -> DateTime<Utc> {
     period_start + Duration::seconds(PRIMARY_PERIOD_SECONDS)
 }
 
-/// The rules that hold whatever the setting: long enough, and started after
-/// the Mac's primary period ended. The invitation to turn the question on
-/// follows a block that passes these.
+/// The rules that hold whatever the setting: long enough, and started at or
+/// after the end of the Mac's primary period. The invitation to turn the
+/// question on follows a block that passes these.
 pub fn block_qualifies(
     block: &EndedBlock,
     period_start: Option<DateTime<Utc>>,
@@ -157,8 +175,8 @@ pub fn block_qualifies(
 }
 
 /// Whether `block` is asked about (plan § 3.2): it ran at least five
-/// minutes, it started after its Mac's primary period ended, and the question
-/// was on for the whole of it.
+/// minutes, it started at or after the end of its Mac's primary period, and
+/// the question was on for the whole of it.
 pub fn eligibility(
     block: &EndedBlock,
     period_start: Option<DateTime<Utc>>,
@@ -170,10 +188,22 @@ pub fn eligibility(
     if !settings.enabled {
         return Eligibility::QuestionOff;
     }
-    match settings.opted_in_at {
-        Some(turned_on) if turned_on <= block.started_at => Eligibility::Eligible,
-        _ => Eligibility::StartedBeforeTurnedOn,
+    if on_throughout(settings, block.started_at) {
+        Eligibility::Eligible
+    } else {
+        Eligibility::StartedBeforeTurnedOn
     }
+}
+
+/// Whether the question has been on without a break since `started_at`: it
+/// is on now, and it was last turned on at or before that instant. Turning it
+/// off and on again moves `opted_in_at` forward, so a block that started
+/// before the latest turn-on fails this for good.
+pub fn on_throughout(settings: &RatingPromptSettings, started_at: DateTime<Utc>) -> bool {
+    settings.enabled
+        && settings
+            .opted_in_at
+            .is_some_and(|turned_on| turned_on <= started_at)
 }
 
 /// When the question about a block stops taking an answer: two hours after
@@ -235,7 +265,7 @@ impl RatingPromptManager {
         self.expire_due(now)?;
 
         let prompt = match self.ratings.rating(&block.block_id)? {
-            Some(rating) if settings.enabled && rating.is_open() => {
+            Some(rating) if on_throughout(&settings, block.started_at) && rating.is_open() => {
                 let deadline =
                     answer_deadline(block.ended_at, self.next_block_started_at(&block.block_id)?);
                 Uuid::parse_str(&block.block_id)
@@ -253,20 +283,23 @@ impl RatingPromptManager {
     }
 
     /// The question about `block_id` was on screen at `now`. Only an open
-    /// question, while the question is on, records it; the first one wins.
+    /// question, while the question has been on since before the block
+    /// started, records it; the first one wins.
     pub fn record_shown(
         &self,
         block_id: Uuid,
         now: DateTime<Utc>,
     ) -> Result<bool, PersistenceError> {
-        if !self.prepare_report(now)? {
+        let block_id = block_id.to_string();
+        if !self.prepare_report(&block_id, now)? {
             return Ok(false);
         }
-        self.ratings.mark_shown(&block_id.to_string(), now)
+        self.ratings.mark_shown(&block_id, now)
     }
 
-    /// An answer at `now`. Only an open question, while the question is on,
-    /// takes one, so an answer after the deadline is refused.
+    /// An answer at `now`. Only an open question, while the question has
+    /// been on since before the block started, takes one, so an answer after
+    /// the deadline, or after the question was turned off, is refused.
     pub fn record_answer(
         &self,
         block_id: Uuid,
@@ -274,11 +307,12 @@ impl RatingPromptManager {
         via_link: bool,
         now: DateTime<Utc>,
     ) -> Result<bool, PersistenceError> {
-        if !self.prepare_report(now)? {
+        let block_id = block_id.to_string();
+        if !self.prepare_report(&block_id, now)? {
             return Ok(false);
         }
         self.ratings
-            .record_answer(&block_id.to_string(), stored(answer), via_link, now)
+            .record_answer(&block_id, stored(answer), via_link, now)
     }
 
     /// Not now at `now`. Never an answer; the question stays open.
@@ -287,33 +321,52 @@ impl RatingPromptManager {
         block_id: Uuid,
         now: DateTime<Utc>,
     ) -> Result<bool, PersistenceError> {
-        if !self.prepare_report(now)? {
+        let block_id = block_id.to_string();
+        if !self.prepare_report(&block_id, now)? {
             return Ok(false);
         }
-        self.ratings.record_not_now(&block_id.to_string(), now)
+        self.ratings.record_not_now(&block_id, now)
     }
 
-    /// Turns the question on or off at `now`, from the Settings toggle or the
-    /// invitation. On is refused while the Mac's primary period is not over.
-    /// Off on an install that never turned it on is Not now to the
-    /// invitation, recorded so it is never shown again. Turning it off hides
-    /// an open question; it expires on its own schedule.
+    /// The Settings toggle, at `now`. On is refused while the Mac's primary
+    /// period is not over. Off hides an open question for good: turning the
+    /// question on again does not bring it back, and the row expires on its
+    /// own schedule. Neither answers the invitation: off while the question
+    /// was never on changes nothing.
     pub fn set_enabled(
         &self,
         enabled: bool,
         now: DateTime<Utc>,
     ) -> Result<SettingsPayload, PersistenceError> {
-        let settings = self.ratings.settings()?;
-        if enabled {
-            if self.period_over(now)? {
-                self.ratings.set_enabled(true, now)?;
-            }
-        } else if settings.enabled {
-            self.ratings.set_enabled(false, now)?;
-        } else if invitation_pending(&settings) {
-            self.ratings.decline_opt_in(now)?;
+        if !enabled || self.period_over(now)? {
+            self.ratings.set_enabled(enabled, now)?;
         }
         self.settings(now)
+    }
+
+    /// A tap on the one-time invitation at `now`: Turn on when `turn_on`,
+    /// Not now otherwise. Turn on is the Settings toggle's on, under the same
+    /// floor. Not now is recorded only while the invitation is still owed,
+    /// so it is never shown again; a Not now on an invitation left on screen
+    /// after the question was turned on, or after an earlier Not now,
+    /// changes nothing. Returns whether anything was recorded.
+    pub fn respond_to_invitation(
+        &self,
+        turn_on: bool,
+        now: DateTime<Utc>,
+    ) -> Result<bool, PersistenceError> {
+        if turn_on {
+            return if self.period_over(now)? {
+                self.ratings.set_enabled(true, now)
+            } else {
+                Ok(false)
+            };
+        }
+        if invitation_pending(&self.ratings.settings()?) {
+            self.ratings.decline_opt_in(now)
+        } else {
+            Ok(false)
+        }
     }
 
     /// The setting, with the Settings pane's words. The toggle is offered once
@@ -328,11 +381,16 @@ impl RatingPromptManager {
         })
     }
 
-    /// Expires what is due, then says whether a report may be recorded: only
-    /// while the question is on, because it cannot be on screen otherwise.
-    fn prepare_report(&self, now: DateTime<Utc>) -> Result<bool, PersistenceError> {
+    /// Expires what is due, then says whether a report about `block_id` may
+    /// be recorded: only while the question has been on since before the
+    /// block started, because that is the only time it is on screen.
+    fn prepare_report(&self, block_id: &str, now: DateTime<Utc>) -> Result<bool, PersistenceError> {
         self.expire_due(now)?;
-        Ok(self.ratings.settings()?.enabled)
+        let settings = self.ratings.settings()?;
+        Ok(self
+            .ratings
+            .block_bounds(block_id)?
+            .is_some_and(|bounds| on_throughout(&settings, bounds.started_at)))
     }
 
     /// Expires every open question whose deadline has passed by `now`, at its
@@ -610,6 +668,13 @@ mod tests {
         assert_eq!(inside.rating_prompt, None);
         assert_eq!(inside.rating_opt_in, None);
 
+        assert!(
+            !fixture
+                .rating
+                .respond_to_invitation(true, at(14 * DAY - 1))
+                .unwrap(),
+            "Turn on on an invitation is held to the same floor"
+        );
         let accepted = fixture.rating.set_enabled(true, at(14 * DAY)).unwrap();
         assert!(accepted.available && accepted.enabled);
         let rows = fixture.database.self_rating_repo().open_ratings().unwrap();
@@ -710,8 +775,37 @@ mod tests {
         let later = fixture.manager.request_state(at(16 * DAY)).unwrap();
         assert!(later.rating_opt_in.is_some(), "silence is not an answer");
 
-        let settings = fixture.rating.set_enabled(false, at(16 * DAY + 5)).unwrap();
-        assert!(settings.available && !settings.enabled);
+        let toggle = fixture.rating.set_enabled(false, at(16 * DAY + 2)).unwrap();
+        assert!(toggle.available && !toggle.enabled);
+        assert!(
+            fixture
+                .manager
+                .request_state(at(16 * DAY + 3))
+                .unwrap()
+                .rating_opt_in
+                .is_some(),
+            "the Settings toggle's off is not the invitation's Not now"
+        );
+        assert!(fixture
+            .rating
+            .respond_to_invitation(false, at(16 * DAY + 5))
+            .unwrap());
+        assert!(
+            !fixture
+                .rating
+                .respond_to_invitation(false, at(16 * DAY + 6))
+                .unwrap(),
+            "recorded once"
+        );
+        assert_eq!(
+            fixture
+                .database
+                .self_rating_repo()
+                .settings()
+                .unwrap()
+                .opted_out_at,
+            Some(at(16 * DAY + 5))
+        );
         assert_eq!(
             fixture
                 .manager
@@ -778,6 +872,62 @@ mod tests {
             .unwrap();
         assert_eq!(row.eligible_at, at(15 * DAY + 3_600 + 1_800));
         assert_eq!(row.shown_at, None, "eligible, not yet on screen");
+    }
+
+    /// Turn on, on the invitation, turns the question on. The block the
+    /// invitation followed did not run under it, so it is not asked about;
+    /// the next block is.
+    #[test]
+    fn turn_on_on_the_invitation_covers_the_blocks_after_it() {
+        let fixture = fixture();
+        block(&fixture, 0, 1_500);
+        let (_, ended) = block(&fixture, 15 * DAY, 1_800);
+        assert!(ended.rating_opt_in.is_some());
+        assert!(fixture
+            .rating
+            .respond_to_invitation(true, at(15 * DAY + 1_900))
+            .unwrap());
+        let after = fixture.manager.request_state(at(15 * DAY + 1_910)).unwrap();
+        assert_eq!(after.rating_opt_in, None);
+        assert_eq!(after.rating_prompt, None);
+        let (_, next) = block(&fixture, 15 * DAY + 3_600, 1_800);
+        assert!(next.rating_prompt.is_some());
+    }
+
+    /// Only the invitation's own Not now answers it, and only while it is
+    /// owed. The Settings toggle's off on an install that never turned the
+    /// question on records nothing, and a Not now on an invitation left on
+    /// screen after the question was turned on in Settings changes nothing.
+    #[test]
+    fn a_not_now_on_an_invitation_left_on_screen_changes_nothing() {
+        let fixture = fixture();
+        block(&fixture, 0, 1_500);
+        let (_, ended) = block(&fixture, 15 * DAY, 1_800);
+        assert!(ended.rating_opt_in.is_some());
+
+        fixture
+            .rating
+            .set_enabled(false, at(15 * DAY + 1_850))
+            .unwrap();
+        assert_eq!(
+            fixture.database.self_rating_repo().settings().unwrap(),
+            RatingPromptSettings::default()
+        );
+
+        assert!(
+            fixture
+                .rating
+                .set_enabled(true, at(15 * DAY + 1_900))
+                .unwrap()
+                .enabled
+        );
+        assert!(!fixture
+            .rating
+            .respond_to_invitation(false, at(15 * DAY + 1_910))
+            .unwrap());
+        let settings = fixture.database.self_rating_repo().settings().unwrap();
+        assert!(settings.enabled);
+        assert_eq!(settings.opted_out_at, None);
     }
 
     /// A block under five minutes is never asked about; five minutes is.
@@ -1009,6 +1159,50 @@ mod tests {
                 .expired_at,
             Some(at(end + 7_200))
         );
+    }
+
+    /// Off and on again inside the answer window never brings the question
+    /// back. The block's result card may have been on screen while it was
+    /// off, so an answer given afterwards would not be a first answer.
+    /// Reports about it stay refused, its row expires at its deadline, and a
+    /// block that starts after the turn-on is asked about as usual.
+    #[test]
+    fn turning_it_off_and_on_again_never_brings_a_question_back() {
+        let fixture = turned_on_after_day_14();
+        let (id, ended) = block(&fixture, 16 * DAY, 1_800);
+        assert!(ended.rating_prompt.is_some());
+        let end = 16 * DAY + 1_800;
+        fixture.rating.set_enabled(false, at(end + 30)).unwrap();
+        assert!(
+            fixture
+                .rating
+                .set_enabled(true, at(end + 60))
+                .unwrap()
+                .enabled
+        );
+
+        let after = fixture.manager.request_state(at(end + 90)).unwrap();
+        assert_eq!(after.rating_prompt, None);
+        assert_eq!(after.rating_opt_in, None);
+        assert!(!fixture.rating.record_shown(id, at(end + 91)).unwrap());
+        assert!(!fixture.rating.record_not_now(id, at(end + 92)).unwrap());
+        assert!(!fixture
+            .rating
+            .record_answer(id, WorkBlockRatingAnswer::All, false, at(end + 93))
+            .unwrap());
+
+        fixture.manager.request_state(at(end + 7_200)).unwrap();
+        let row = fixture
+            .database
+            .self_rating_repo()
+            .rating(&id.to_string())
+            .unwrap()
+            .unwrap();
+        assert_eq!((row.shown_at, row.answer), (None, None));
+        assert_eq!(row.expired_at, Some(at(end + 7_200)));
+
+        let (_, next) = block(&fixture, 16 * DAY + 3 * 3_600, 1_800);
+        assert!(next.rating_prompt.is_some());
     }
 
     /// The setting's words come from Rust, and the toggle is offered while

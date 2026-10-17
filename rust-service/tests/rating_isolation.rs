@@ -9,7 +9,9 @@
 //!    turns it on after day 14 and, between blocks, records every kind of
 //!    row: answered straight away, answered through the link after Not now,
 //!    eligible and never shown, expired by the next block, expired while the
-//!    Mac slept, and a block too short to ask about. The trace reaches offers,
+//!    Mac slept, and a block too short to ask about. It also turns the
+//!    question off and on again after a block, and every report about that
+//!    block is refused. The trace reaches offers,
 //!    replies, backoff, a Focus hold, a pause, a restart and demotion. Every
 //!    table except the question's own two must come out byte-identical, row
 //!    by row and column by column as SQLite's `quote()` writes them, and every
@@ -29,8 +31,10 @@
 //!
 //! What this does not cover: the classification ladder and the router's
 //! ingestion path, which #90's `tests/golden_replay.rs` drives. That harness
-//! is not on this branch; once both merge, its trace should run a second time
-//! with the question on (plan § 3.3).
+//! is not on this branch. A question-on arm of it, with the trace moved past
+//! the Mac's first 14 days and the question's messages sent through the
+//! router between blocks, is added when this branch is rebased onto it
+//! (plan § 3.3).
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
@@ -221,6 +225,24 @@ impl Arm {
         }
     }
 
+    fn turn_off(&self, at_offset: i64) {
+        if let Some(rating) = &self.rating {
+            assert!(!rating.set_enabled(false, at(at_offset)).unwrap().enabled);
+        }
+    }
+
+    /// Every report about `block_id` is refused.
+    fn refused(&self, block_id: Uuid, at_offset: i64) {
+        if let Some(rating) = &self.rating {
+            let now = at(at_offset);
+            assert!(!rating.record_shown(block_id, now).unwrap());
+            assert!(!rating.record_not_now(block_id, now).unwrap());
+            assert!(!rating
+                .record_answer(block_id, WorkBlockRatingAnswer::All, false, now)
+                .unwrap());
+        }
+    }
+
     fn shown(&self, block_id: Uuid, at_offset: i64) {
         if let Some(rating) = &self.rating {
             assert!(rating.record_shown(block_id, at(at_offset)).unwrap());
@@ -331,6 +353,12 @@ fn run(arm: &mut Arm) {
     let b6 = arm.start(b6_start, 1_800);
     arm.observe(b6, b6_start, &DRIFT, None);
     arm.state(b6_start + 1_800);
+    // Off and on again: b6's question stays hidden, and every report about
+    // it is refused.
+    arm.turn_off(b6_start + 1_860);
+    arm.turn_on(b6_start + 1_920);
+    arm.state(b6_start + 1_930);
+    arm.refused(b6, b6_start + 1_940);
 
     let start = b6_start + 1_800 + 1_800;
     let b7 = arm.start(start, 1_800);

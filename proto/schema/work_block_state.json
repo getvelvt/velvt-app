@@ -169,7 +169,7 @@
           "maxLength": 240
         },
         "rating_prompt": {
-          "$comment": "Protocol 38. The question after a block. Present only on the snapshot of an ended block (completed, abandoned or expired), only while the question about that block can be answered, and only while the question is on. Omitted otherwise, and on every active or paused block. Rust decides and writes every word; Swift renders it verbatim. `presentation` `question`: before an answer or a Not now, the question sits above the result card and the card's observation and numbers stay hidden. `link`: after Not now, the card shows with `link` under it, which reopens the question. After an answer, Swift shows `acknowledgement`, then the card. `expires_at` is two hours after the block ended or the next block's start, whichever came first. Never a notification.",
+          "$comment": "Protocol 38. The question after a block. Present only on the snapshot of an ended block (completed, abandoned or expired), only while the question about that block can be answered, and only while the question has stayed on since before that block started (turning it off and on again does not bring it back). Omitted otherwise, and on every active or paused block. Rust decides and writes every word; Swift renders it verbatim. `presentation` `question`: before an answer or a Not now, the question sits above the result card and the card's observation and numbers stay hidden. `link`: after Not now, the card shows with `link` under it, which reopens the question. After an answer, Swift shows `acknowledgement`, then the card. `expires_at` is two hours after the block ended or the next block's start, whichever came first. Never a notification.",
           "type": "object",
           "required": [
             "block_id",
@@ -260,7 +260,7 @@
           "additionalProperties": false
         },
         "rating_opt_in": {
-          "$comment": "Protocol 38. The one-time invitation to turn the question after a block on. Present only on the snapshot of an ended block the question would have covered (five minutes or more, started after this Mac's first 14 days of blocks) while the question has never been turned on and the invitation has never been answered. Turn on sends set_rating_prompt_enabled true; Not now sends it false, after which it never appears again. Omitted otherwise.",
+          "$comment": "Protocol 38. The one-time invitation to turn the question after a block on. Present only on the snapshot of an ended block the question would have covered (five minutes or more, started at or after the end of this Mac's first 14 days of blocks) while the question has never been turned on and the invitation has never been answered. Either button sends respond_rating_opt_in: Turn on with turn_on true, Not now with false, after which it never appears again. Omitted otherwise.",
           "type": "object",
           "required": [
             "body",

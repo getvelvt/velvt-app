@@ -141,7 +141,8 @@ Direction is enforced by the workspace message envelopes:
     `acknowledge_weekly_digest`, `request_intervention_explanation`;
   - the question after a block: `work_block_rating_shown`,
     `rate_work_block`, `work_block_rating_not_now`,
-    `set_rating_prompt_enabled`, `request_rating_prompt_settings`.
+    `set_rating_prompt_enabled`, `respond_rating_opt_in`,
+    `request_rating_prompt_settings`.
 - Rust emits only (`ServerMessage`):
   - handshake and errors: `server_hello`, `acknowledged`, `version_mismatch`,
     `malformed_message`, `error_response`, `shutting_down`;
@@ -773,7 +774,9 @@ number is provisional.
 
 - `work_block_state.rating_prompt` [38]: present only on the snapshot of an
   ended block, only while the question about it can be answered, and only
-  while the question is on; omitted on every live block. It holds the block
+  while the question has stayed on since before that block started (off and
+  on again does not bring it back); omitted on every live block. It holds the
+  block
   id, `prompt_version`, `presentation`, the question, five `options`
   (`answer` and `label`, most of the block first), `not_now`, `footnote`,
   `acknowledgement`, `link` and `expires_at`. With `presentation`
@@ -785,6 +788,13 @@ number is provisional.
   question on (`body`, `turn_on`, `not_now`), after a block the question
   would have covered, while the question has never been on and the
   invitation has never been answered.
+- `respond_rating_opt_in` [38]: Swift to Rust, `turn_on` only: which button
+  of the invitation was tapped. Rust decides what it records. Turn on turns
+  the question on under the same floor as the Settings toggle; Not now is
+  recorded only while the invitation is still owed, so it never returns, and
+  a Not now on an invitation left on screen after the question was turned on
+  changes nothing. Answered with `work_block_state`, without the invitation
+  once it is answered.
 - `work_block_rating_shown` [38]: Swift to Rust, `block_id` only. The question
   was drawn. Answered with nothing; the first sighting is kept.
 - `rate_work_block` [38]: Swift to Rust. `block_id`, `answer` (`all`, `most`,
@@ -795,13 +805,17 @@ number is provisional.
   Answered with `work_block_state`.
 - `set_rating_prompt_enabled` / `request_rating_prompt_settings` /
   `rating_prompt_settings` [38]: the setting. The reply carries `available`,
-  `enabled`, `title` and `subtitle`. On is refused, and `available` is false,
-  until the Mac's first 14 days of blocks are over. Off from the invitation is
-  its Not now, which Rust records so the invitation never returns.
+  `enabled`, `title` and `subtitle`. `set_rating_prompt_enabled` is the
+  Settings toggle only and never answers the invitation. On is refused, and
+  `available` is false, until the Mac's first 14 days of blocks are over. The
+  reply does not resend `work_block_state`: while the result view is open,
+  Swift sends `request_work_block_state` after it, so a question or an
+  invitation the change withdrew leaves the screen.
 
 Which blocks are asked about: a block that ran at least five minutes, started
-after the Mac's drift policy v6 primary period ended (14 days from its first
-block after the upgrade cut), and ran wholly while the question was on. No
+at or after the end of the Mac's drift policy v6 primary period (1,209,600
+seconds from the start of its first block after the upgrade cut), and ran
+wholly while the question was on. No
 rule reads an answer, a category or coverage, and no drift decision reads
 anything the question records (`rust-service/tests/rating_isolation.rs`).
 

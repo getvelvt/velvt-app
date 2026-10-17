@@ -17,8 +17,9 @@ migration 0048 (#95).
 
 - Added `rating_prompt` to `work_block_state` (Rust to Swift). Present only on
   the snapshot of an ended block (completed, abandoned or expired), only while
-  the question about it can be answered, and only while the question is on;
-  omitted otherwise and on every active or paused block, so a protocol 37
+  the question about it can be answered, and only while the question has
+  stayed on since before that block started; omitted otherwise and on every
+  active or paused block, so a protocol 37
   payload decodes unchanged. It carries the block id, `prompt_version` (1),
   `presentation`, the question, five options (answer and label, most of the
   block first), Not now, the footnote, the acknowledgement shown after an
@@ -30,6 +31,13 @@ migration 0048 (#95).
   the question on, with its body, Turn on and Not now. Present only after a
   block the question would have covered, while the question has never been on
   and the invitation has never been answered.
+- Added `respond_rating_opt_in {turn_on}` (Swift to Rust): which button of the
+  invitation was tapped, Turn on (true) or Not now (false), and nothing else.
+  Answered with `work_block_state`, which no longer carries the invitation
+  once it is answered. Rust decides what the tap records: Turn on turns the
+  question on under the same floor as the Settings toggle, and Not now is
+  recorded only while the invitation is still owed, so a Not now on an
+  invitation left on screen after the question was turned on changes nothing.
 - Added `work_block_rating_shown {block_id}` (Swift to Rust): the question was
   drawn. Answered with nothing. The first sighting is kept.
 - Added `rate_work_block {block_id, answer, via_link}`: one of `all`, `most`,
@@ -39,22 +47,32 @@ migration 0048 (#95).
 - Added `work_block_rating_not_now {block_id}`. Never an answer: the question
   stays open through the link until it expires. Answered with
   `work_block_state`.
-- Added `set_rating_prompt_enabled {enabled}` and
+- Added `set_rating_prompt_enabled {enabled}` (the Settings toggle) and
   `request_rating_prompt_settings {}`, both answered with the new
   `rating_prompt_settings {available, enabled, title, subtitle}` (Rust to
-  Swift). False from the invitation is its Not now, recorded so it is never
-  shown again. The plan listed four client messages; the settings read is a
-  fifth, so the Settings pane renders Rust's state as it does for initiation
-  invitations.
+  Swift). The toggle never answers the invitation. Its reply does not resend
+  the snapshot, so Swift sends `request_work_block_state` after it while the
+  result view is open; a question or invitation the change withdrew then
+  leaves the screen. Turning the question off hides an open question for good:
+  turning it on again does not bring back a question about a block that
+  started before, because that block's result card may have been on screen in
+  between. The plan listed four client messages. The settings read is a fifth,
+  so the Settings pane renders Rust's state as it does for initiation
+  invitations, and the invitation's reply is a sixth, so Swift reports which
+  button was tapped instead of a command Rust would have to interpret.
 - The rules (`rust-service/src/self_rating/`, `RATING_PROMPT_VERSION` 1). A
   block is asked about when it ran at least five minutes, the question was on
-  for the whole of it, and it started after its Mac's drift policy v6 primary
-  period ended: 14 days from the start of the Mac's first block after the
-  upgrade cut, as the draft period note's item 1 and
-  `scripts/analyze_ratings.py` define it. Its row is written then, with
-  `eligible_at` the block's end, so a question never seen stays a recorded
-  missing answer. It expires two hours after the block ended or when the next
-  block starts, whichever is first, and `expired_at` records that instant.
+  for the whole of it, and it started at or after the end of its Mac's drift
+  policy v6 primary period. The period starts at the start of the Mac's first
+  block after the upgrade cut, as the draft period note's item 1 and
+  `scripts/analyze_ratings.py` define it, and ends 1,209,600 seconds later.
+  Its row is written then, with `eligible_at` the block's end, so a question
+  never seen stays a recorded missing answer. It expires two hours after the
+  block ended or when the next block starts, whichever is first, and
+  `expired_at` records that instant. The service writes `expired_at` when it
+  next builds an ended block's snapshot or takes a report, so a row whose
+  deadline has passed can still read as open in a copy of the database taken
+  before then; the value, once written, is always the deadline.
   `set_rating_prompt_enabled` true is refused, and `available` is false,
   until the Mac's period is over, so the question can never be turned on
   inside it. Nothing depends on an answer, a category or coverage.

@@ -169,8 +169,12 @@ whichever category had the most confident time. In a block with five minutes
 of Xcode and fifteen of YouTube, the offer therefore counts switches away from
 focus work while the result card reads "You left passive consumption 4 times
 and came back 3 of them". Whether the result follows the anchor rule is an
-open founder decision. The cohort export reads none of these fields; the
-weekly digest and the dashboard read `recovery_count`.
+open founder decision. The weekly digest and the dashboard read
+`recovery_count`. The cohort export (format 7) reads the stored result's
+coverage, switch-away and return counts and longest run, as the card states
+them, but only for a block with a row for the question after a block, and
+writes beside them the block's share of confident time in its work anchor, so
+the two are reported side by side and never reconciled.
 
 An observation row's end is the next row's start. At a boundary — pause or
 sleep, a service restart, or the end of the block — there is no next row, and
@@ -421,6 +425,19 @@ Swift draws it and reports taps (`UI/QuestionAfterABlockView.swift`,
 - The one-time invitation (`rating_opt_in`) sits in the same place and reports
   which button was tapped (`respond_rating_opt_in`); Rust decides what that
   records. The Settings toggle is described in `docs/swift-client/settings.md`.
+
+The answers leave the Mac only in the files a tester reads and sends:
+`scripts/export_cohort_evidence.sh` (export format 7) writes every rating row,
+answered or not, to `-ratings.csv`, and a summary of each rated block, and of
+no other block, to `-blockfeatures.csv` (`BLOCK_FEATURE_VERSION` 1). The
+summary is shares, counts, durations and closed-set values worked out on the
+Mac from the observation rows and the stored result; it names no category. The
+definitions are in the exporter's header, restated in
+`scripts/analyze_cohort.py` (`block_features`), and held, with this module's
+own result (`src/work_block/block_feature_vectors.rs`), to
+`scripts/tests/fixtures/block-feature-vectors.json`. A row the app has not yet
+stamped as expired is exported with the deadline it will stamp, when that is
+before the export.
 
 ## Failure Behavior
 

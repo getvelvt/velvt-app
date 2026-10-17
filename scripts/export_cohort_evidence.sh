@@ -8,7 +8,7 @@
 # outcomes are not measurable without the participant deliberately handing
 # them over. This script is that hand-over.
 #
-# What it emits: up to eight CSV files that share one name stem, each with its
+# What it emits: up to ten CSV files that share one name stem, each with its
 # own row grain. They are kept apart on purpose: one file carrying two grains
 # would be pooled by the first person who opened it in a spreadsheet.
 #
@@ -51,10 +51,24 @@
 #                           wrote them (migrations 0017 and 0040). Counts only.
 #                           No key, no hostname, no typed name, no label:
 #                           nothing that names an app, site or window.
+#   <stem>-ratings.csv      one row per block that became eligible for the
+#                           optional question after a block
+#                           (`work_block_self_rating`, migration 0048, export
+#                           format 7), answered or not: its timestamps, whether
+#                           the block's result had been on screen before the
+#                           answer, and the answer, one of five fixed values.
+#   <stem>-blockfeatures.csv one row per block in the ratings file, and no
+#                           other block: a summary of the block worked out on
+#                           this Mac (BLOCK_FEATURE_VERSION 1). Shares, counts,
+#                           durations and closed-set values only. It names no
+#                           category, and the observation rows it is computed
+#                           from stay on this Mac.
 #   <stem>-meta.csv         what this database could and could not record:
 #                           schema version, whether the decision log exists,
-#                           when card sightings started being recorded, and
-#                           whether invitations are switched on.
+#                           when card sightings started being recorded,
+#                           whether invitations are switched on, when the
+#                           question after a block was first turned on, and
+#                           when this Mac's drift policy v6 period started.
 #
 # A database from an older build lacks some tables or columns. The export still
 # runs: a missing column is written as an empty value, and a missing table
@@ -64,7 +78,9 @@
 #
 # What none of the files can emit, by construction: the free-form block
 # intention, app names, window titles, URLs, filenames, or any observation rows.
-# The outcomes file reads observation rows and writes none of them out.
+# The outcomes and block-features files read observation rows and write none of
+# them out. The block-features file reads the stored end-of-block result, a
+# JSON payload, by named field only; its sentence is never selected.
 # Every query below names every column it selects; there is no `SELECT *`
 # anywhere in this file.
 #
@@ -88,6 +104,8 @@ BLOCKS_OUT="$STEM-blocks.csv"
 INVITATIONS_OUT="$STEM-invitations.csv"
 EXPLAIN_OUT="$STEM-explain.csv"
 CORRECTIONS_OUT="$STEM-corrections.csv"
+RATINGS_OUT="$STEM-ratings.csv"
+BLOCKFEATURES_OUT="$STEM-blockfeatures.csv"
 META_OUT="$STEM-meta.csv"
 
 if [[ ! -f "$DB" ]]; then
@@ -157,7 +175,7 @@ fi
 # beside this run's files and be read as part of it. Only this script's own
 # output names are removed.
 rm -f "$DECISIONS_OUT" "$OUTCOMES_OUT" "$BLOCKS_OUT" "$INVITATIONS_OUT" \
-  "$EXPLAIN_OUT" "$CORRECTIONS_OUT" "$META_OUT"
+  "$EXPLAIN_OUT" "$CORRECTIONS_OUT" "$RATINGS_OUT" "$BLOCKFEATURES_OUT" "$META_OUT"
 
 # ---------------------------------------------------------------------------
 # 1. One row per recorded intervention.
@@ -784,7 +802,320 @@ if has_table personal_app_override && has_table personal_override; then
 fi
 
 # ---------------------------------------------------------------------------
-# 7. What this database could record. The analysis reads this to tell "the
+# 7. The optional question after a block (migration 0048, protocol 38), and a
+#    summary of each block it was asked about. Export format 7; workspace
+#    `plan/attention-labels-and-model.md` § 3.4.
+#
+#    The ratings file is every row of `work_block_self_rating`, answered or
+#    not, so a question that was never seen, never answered or put off with
+#    Not now stays a recorded missing value. `answer` is one of the five values
+#    the table's CHECK allows, and anything else (only possible if something
+#    wrote the table around that CHECK) leaves as `unrecognized`.
+#
+#    `expired_at` is the instant the question stopped taking an answer. The app
+#    stamps it late, when it next shows an ended block or takes a report, so a
+#    copy of the database taken first can hold an unanswered row whose deadline
+#    has passed with no `expired_at`. For such a row this file carries the
+#    deadline the app will stamp: two hours after the block ended, or the start
+#    of the next block in creation order if that is sooner
+#    (`self_rating::answer_deadline` and `block_bounds`), when it is at or
+#    before the moment of this export. So a later export of the same Mac says
+#    the same thing. The meta file counts the rows filled this way
+#    (`rating_expiries_filled`).
+#
+#    The block-features file has one row per block that has a rating row, and
+#    no other block (data minimization), at BLOCK_FEATURE_VERSION 1. Every
+#    definition below is also stated in `scripts/analyze_cohort.py`
+#    (`block_features`), and both, with the app's own end-of-block result
+#    (`rust-service/src/work_block/block_feature_vectors.rs`), are held to
+#    scripts/tests/fixtures/block-feature-vectors.json.
+#
+#      policy_version     the drift policy of the block's decision-log rows;
+#                         empty when it has none or they disagree.
+#      card_branch        the branch of the end-of-block result's sentence
+#                         (`block_result_copy`): low_coverage when coverage is
+#                         insufficient or the result names no category, stayed
+#                         with no switch-away, ended_elsewhere with no return,
+#                         came_back otherwise.
+#      elapsed_seconds    ended_at - started_at - total_paused_seconds, the
+#                         gate's arithmetic.
+#      covered_seconds    what the raw activity stream covered with confident
+#                         activity while the block ran, as the result recorded
+#                         it at the block's end (its coverage ratio times its
+#                         elapsed seconds). The raw stream itself is kept 14
+#                         days, so nothing else could recompute it.
+#      coverage_class     the result's: insufficient below 0.25, partial below
+#                         0.75, good otherwise.
+#      work_anchor_share  confident seconds in the block's dominant work
+#                         category (FOCUS_WORK, REFERENCE, TASK_MANAGEMENT or
+#                         COMMUNICATION; the gate's `work_anchor`) over all
+#                         its confident seconds; 0 with no confident second.
+#                         Confident is the gate's test: a closed observation
+#                         row, classified, high or medium, and not SYSTEM,
+#                         UNCLASSIFIED or UNLOGGED.
+#      switch_aways_per_covered_hour  the result's switch-aways over covered
+#                         hours; 0 with no covered second.
+#      longest_run_share  the result's longest run over elapsed seconds.
+#      recovery_ratio     the result's returns over max(switch-aways, 1).
+#      feed_share         confident seconds in SOCIAL_FEED or
+#                         PASSIVE_CONSUMPTION over all confident seconds.
+#      unlogged_share     seconds of closed observation rows that are UNLOGGED
+#                         or UNCLASSIFIED, or not classified (a site or app that
+#                         needs a category), over elapsed seconds.
+#      offer_delivered    1 when the block's offer reached the person (any
+#                         outcome but the two withheld ones); offer_outcome is
+#                         its outcome then, and empty otherwise.
+#      purpose, intensity, planned_minutes (rounded), origin.
+#      hour_bucket        the part of the local day the block started in:
+#                         night (0-5), morning (6-11), afternoon (12-17) or
+#                         evening (18-23). Six-hour parts, not the hour, so the
+#                         file says little about this Mac's time zone.
+#      weekend            1 when it started on a local Saturday or Sunday.
+#
+#    Every share is rounded to six decimal places. Nothing else is read from
+#    the result payload: its sentence, its next action and its reconciliation
+#    line are never selected. A payload that is not valid JSON leaves its
+#    columns empty instead of stopping the export.
+# ---------------------------------------------------------------------------
+RATINGS="absent"
+RATING_ROWS=0
+FEATURE_ROWS=0
+RATING_PROMPT_VERSION=""
+RATING_PROMPT_ENABLED_AT=""
+RATING_EXPIRIES_FILLED=""
+BLOCK_FEATURE_VERSION=""
+if has_table work_block_self_rating; then
+  RATINGS="present"
+  BLOCK_FEATURE_VERSION=1
+  IFS= read -r -d '' DEADLINE_SQL <<'SQL' || true
+SELECT s.block_id AS block_id,
+       CASE
+         WHEN s.answer IS NULL AND s.expired_at IS NULL AND b.ended_at IS NOT NULL
+         THEN MIN(b.ended_at + 7200,
+                  COALESCE((SELECT n.started_at FROM work_block AS n
+                            WHERE n.rowid > b.rowid
+                            ORDER BY n.rowid LIMIT 1),
+                           b.ended_at + 7200))
+       END AS deadline
+FROM work_block_self_rating AS s
+JOIN work_block AS b ON b.block_id = s.block_id
+SQL
+  IFS= read -r -d '' RATINGS_SQL <<'SQL' || true
+WITH due AS (@DEADLINE@)
+SELECT
+    s.block_id,
+    s.prompt_version,
+    s.eligible_at,
+    s.shown_at,
+    s.answered_at,
+    s.not_now_at,
+    CASE
+      WHEN s.expired_at IS NOT NULL THEN s.expired_at
+      WHEN d.deadline IS NOT NULL AND d.deadline <= @EXPORTED_AT@ THEN d.deadline
+    END,
+    s.card_seen_before_answer,
+    CASE
+      WHEN s.answer IS NULL THEN NULL
+      WHEN s.answer IN ('all', 'most', 'half', 'less_than_half', 'little') THEN s.answer
+      ELSE 'unrecognized'
+    END
+FROM work_block_self_rating AS s
+LEFT JOIN due AS d ON d.block_id = s.block_id
+ORDER BY s.eligible_at, s.block_id;
+SQL
+  RATINGS_SQL="${RATINGS_SQL/@DEADLINE@/$DEADLINE_SQL}"
+  RATINGS_SQL="${RATINGS_SQL/@EXPORTED_AT@/$EXPORTED_AT}"
+  write_csv "$RATINGS_OUT" \
+    'block_id,prompt_version,eligible_at,shown_at,answered_at,not_now_at,expired_at,card_seen_before_answer,answer' \
+    "$RATINGS_SQL"
+  RATING_ROWS="$(rows_in "$RATINGS_OUT")"
+  RATING_EXPIRIES_FILLED="$(scalar "WITH due AS ($DEADLINE_SQL)
+    SELECT COUNT(*) FROM due WHERE deadline IS NOT NULL AND deadline <= $EXPORTED_AT;")"
+  RATING_PROMPT_VERSION="$(scalar "SELECT MAX(prompt_version) FROM work_block_self_rating;")"
+  if has_table rating_prompt_settings; then
+    # The first time the question was ever turned on: a later re-enable never
+    # moves it (migration 0048's CHECK keeps it beside `opted_in_at`).
+    RATING_PROMPT_ENABLED_AT="$(scalar "SELECT first_opted_in_at FROM rating_prompt_settings WHERE id = 1;")"
+  fi
+
+  IFS= read -r -d '' FEATURES_SQL <<'SQL' || true
+WITH
+  rated AS (
+    SELECT s.block_id AS block_id FROM work_block_self_rating AS s),
+  spans AS (
+    SELECT o.block_id                          AS block_id,
+           o.category                          AS category,
+           UPPER(o.category)                   AS upper_category,
+           MAX(0, o.ended_at - o.occurred_at)  AS seconds,
+           CASE WHEN o.classification_status = 'classified'
+                 AND o.classification_confidence IN ('high', 'medium')
+                 AND LOWER(o.category) NOT IN ('system', 'unclassified', 'unlogged')
+                THEN 1 ELSE 0 END              AS confident,
+           CASE WHEN UPPER(o.category) IN ('UNLOGGED', 'UNCLASSIFIED')
+                  OR o.classification_status <> 'classified'
+                THEN 1 ELSE 0 END              AS unlogged
+    FROM work_block_observation AS o
+    WHERE o.ended_at IS NOT NULL
+      AND o.block_id IN (SELECT r.block_id FROM rated AS r)),
+  totals AS (
+    SELECT block_id,
+           SUM(CASE WHEN confident = 1 THEN seconds ELSE 0 END) AS confident_seconds,
+           SUM(CASE WHEN confident = 1
+                     AND upper_category IN ('SOCIAL_FEED', 'PASSIVE_CONSUMPTION')
+                    THEN seconds ELSE 0 END)                  AS feed_seconds,
+           SUM(CASE WHEN unlogged = 1 THEN seconds ELSE 0 END)  AS unlogged_seconds
+    FROM spans
+    GROUP BY block_id),
+  -- Per category as stored, as the gate's `work_anchor` groups them; only the
+  -- largest is read, so a tie between two work categories gives one share.
+  work_categories AS (
+    SELECT block_id, category, SUM(seconds) AS seconds
+    FROM spans
+    WHERE confident = 1
+      AND upper_category IN ('FOCUS_WORK', 'REFERENCE', 'TASK_MANAGEMENT', 'COMMUNICATION')
+    GROUP BY block_id, category),
+  work AS (
+    SELECT block_id, MAX(seconds) AS seconds
+    FROM work_categories
+    GROUP BY block_id),
+  results AS (
+    SELECT x.block_id AS block_id,
+           CASE WHEN json_valid(x.payload) THEN json_extract(x.payload, '$.coverage') END
+             AS coverage,
+           CASE WHEN json_valid(x.payload) THEN json_extract(x.payload, '$.coverage_ratio') END
+             AS coverage_ratio,
+           CASE WHEN json_valid(x.payload) THEN json_extract(x.payload, '$.elapsed_duration_seconds') END
+             AS result_elapsed,
+           CASE WHEN json_valid(x.payload) THEN json_extract(x.payload, '$.switch_away_count') END
+             AS switch_aways,
+           CASE WHEN json_valid(x.payload) THEN json_extract(x.payload, '$.recovery_count') END
+             AS recoveries,
+           CASE WHEN json_valid(x.payload) THEN json_extract(x.payload, '$.longest_uninterrupted_seconds') END
+             AS longest,
+           CASE WHEN json_valid(x.payload) THEN json_extract(x.payload, '$.safe_evidence_category') END
+             AS evidence
+    FROM work_block_result AS x
+    WHERE x.block_id IN (SELECT r.block_id FROM rated AS r)),
+  decided AS (
+    SELECT d.block_id AS block_id,
+           CASE WHEN COUNT(DISTINCT d.policy_version) = 1 THEN MIN(d.policy_version) END
+             AS policy_version
+    FROM intervention_decision_log AS d
+    WHERE d.block_id IN (SELECT r.block_id FROM rated AS r)
+    GROUP BY d.block_id),
+  base AS (
+    SELECT b.block_id AS block_id,
+           b.started_at AS started_at,
+           CASE WHEN b.ended_at IS NOT NULL
+                THEN MAX(0, MAX(0, b.ended_at - b.started_at) - b.total_paused_seconds)
+           END AS elapsed,
+           CASE WHEN x.coverage_ratio IS NOT NULL AND x.result_elapsed IS NOT NULL
+                THEN CAST(ROUND(x.coverage_ratio * x.result_elapsed) AS INTEGER)
+           END AS covered,
+           x.coverage AS coverage,
+           x.switch_aways AS switch_aways,
+           x.recoveries AS recoveries,
+           x.longest AS longest,
+           x.evidence AS evidence,
+           b.purpose AS purpose,
+           b.intensity AS intensity,
+           b.planned_duration_seconds AS planned_duration_seconds,
+           @ORIGIN@ AS origin
+    FROM work_block AS b
+    JOIN rated AS r ON r.block_id = b.block_id
+    LEFT JOIN results AS x ON x.block_id = b.block_id)
+SELECT
+    z.block_id,
+    1,
+    p.policy_version,
+    CASE
+      WHEN z.coverage IS NULL THEN NULL
+      WHEN z.coverage = 'insufficient' OR z.evidence IS NULL THEN 'low_coverage'
+      WHEN z.switch_aways = 0 THEN 'stayed'
+      WHEN z.recoveries = 0 THEN 'ended_elsewhere'
+      ELSE 'came_back'
+    END,
+    z.elapsed,
+    z.covered,
+    CASE
+      WHEN z.coverage IS NULL THEN NULL
+      WHEN z.coverage IN ('insufficient', 'partial', 'good') THEN z.coverage
+      ELSE 'unrecognized'
+    END,
+    CASE WHEN COALESCE(t.confident_seconds, 0) > 0
+         THEN ROUND(COALESCE(w.seconds, 0) * 1.0 / t.confident_seconds, 6)
+         ELSE 0.0 END,
+    CASE
+      WHEN z.switch_aways IS NULL OR z.covered IS NULL THEN NULL
+      WHEN z.covered > 0 THEN ROUND(z.switch_aways * 3600.0 / z.covered, 6)
+      ELSE 0.0
+    END,
+    CASE WHEN z.longest IS NOT NULL AND z.elapsed > 0
+         THEN ROUND(z.longest * 1.0 / z.elapsed, 6) END,
+    CASE WHEN z.recoveries IS NOT NULL AND z.switch_aways IS NOT NULL
+         THEN ROUND(z.recoveries * 1.0 / MAX(z.switch_aways, 1), 6) END,
+    CASE WHEN COALESCE(t.confident_seconds, 0) > 0
+         THEN ROUND(COALESCE(t.feed_seconds, 0) * 1.0 / t.confident_seconds, 6)
+         ELSE 0.0 END,
+    CASE WHEN z.elapsed > 0
+         THEN ROUND(COALESCE(t.unlogged_seconds, 0) * 1.0 / z.elapsed, 6) END,
+    CASE WHEN i.block_id IS NOT NULL
+          AND i.outcome NOT IN ('delivery_suppressed_dnd', 'withheld_demotion')
+         THEN 1 ELSE 0 END,
+    CASE WHEN i.block_id IS NOT NULL
+          AND i.outcome NOT IN ('delivery_suppressed_dnd', 'withheld_demotion')
+         THEN i.outcome END,
+    z.purpose,
+    z.intensity,
+    (z.planned_duration_seconds + 30) / 60,
+    z.origin,
+    CASE CAST(strftime('%H', z.started_at, 'unixepoch', 'localtime') AS INTEGER) / 6
+      WHEN 0 THEN 'night'
+      WHEN 1 THEN 'morning'
+      WHEN 2 THEN 'afternoon'
+      ELSE 'evening'
+    END,
+    CASE strftime('%w', z.started_at, 'unixepoch', 'localtime')
+      WHEN '0' THEN 1
+      WHEN '6' THEN 1
+      ELSE 0
+    END
+FROM base AS z
+LEFT JOIN totals AS t ON t.block_id = z.block_id
+LEFT JOIN work AS w ON w.block_id = z.block_id
+LEFT JOIN decided AS p ON p.block_id = z.block_id
+LEFT JOIN work_block_intervention AS i ON i.block_id = z.block_id
+ORDER BY z.started_at, z.block_id;
+SQL
+  if has_column work_block origin; then
+    FEATURES_SQL="${FEATURES_SQL/@ORIGIN@/b.origin}"
+  else
+    FEATURES_SQL="${FEATURES_SQL/@ORIGIN@/NULL}"
+  fi
+  write_csv "$BLOCKFEATURES_OUT" \
+    'block_id,block_feature_version,policy_version,card_branch,elapsed_seconds,covered_seconds,coverage_class,work_anchor_share,switch_aways_per_covered_hour,longest_run_share,recovery_ratio,feed_share,unlogged_share,offer_delivered,offer_outcome,purpose,intensity,planned_minutes,origin,hour_bucket,weekend' \
+    "$FEATURES_SQL"
+  FEATURE_ROWS="$(rows_in "$BLOCKFEATURES_OUT")"
+fi
+
+# The start of this Mac's drift policy v6 primary period, as the app computes
+# it for the question's day-14 floor (`SelfRatingRepo::primary_period_start`):
+# the start of its first block after its last decision row with a policy
+# version below 6, or of its first block if it has none. Clear Local Work
+# Blocks deletes those rows, so it moves this start too, exactly as it moves
+# the app's floor.
+if has_table intervention_decision_log; then
+  V6_PERIOD_START="$(scalar "SELECT MIN(b.started_at) FROM work_block AS b
+    WHERE b.started_at > COALESCE(
+      (SELECT MAX(d.occurred_at) FROM intervention_decision_log AS d
+       WHERE d.policy_version < 6),
+      -9223372036854775808);")"
+else
+  V6_PERIOD_START="$(scalar "SELECT MIN(b.started_at) FROM work_block AS b;")"
+fi
+
+# ---------------------------------------------------------------------------
+# 8. What this database could record. The analysis reads this to tell "the
 #    database had no decision log" from "the decision-log file went missing on
 #    the way", and to report who switched invitations off.
 # ---------------------------------------------------------------------------
@@ -799,7 +1130,7 @@ if has_table initiation_settings; then
 fi
 {
   printf 'key,value\n'
-  printf 'export_format,6\n'
+  printf 'export_format,7\n'
   printf 'exported_at,%s\n' "$EXPORTED_AT"
   printf 'schema_version,%s\n' "$SCHEMA_VERSION"
   printf 'decision_log,%s\n' "$DECISION_LOG"
@@ -813,6 +1144,12 @@ fi
   printf 'delivery_channel_recorded_since,%s\n' "$DELIVERY_SINCE"
   printf 'focus_state_recorded_since,%s\n' "$FOCUS_STATE_SINCE"
   printf 'invitations_enabled,%s\n' "$INVITATIONS_ENABLED"
+  printf 'v6_period_start,%s\n' "$V6_PERIOD_START"
+  printf 'ratings,%s\n' "$RATINGS"
+  printf 'rating_prompt_version,%s\n' "$RATING_PROMPT_VERSION"
+  printf 'rating_prompt_enabled_at,%s\n' "$RATING_PROMPT_ENABLED_AT"
+  printf 'rating_expiries_filled,%s\n' "$RATING_EXPIRIES_FILLED"
+  printf 'block_feature_version,%s\n' "$BLOCK_FEATURE_VERSION"
 } > "$META_OUT"
 
 # ---------------------------------------------------------------------------
@@ -854,6 +1191,14 @@ if [[ "$CORRECTIONS" == "present" ]]; then
   cat <<SUMMARY
 Wrote $CORRECTION_ROWS row(s) of correction counts to:
   $CORRECTIONS_OUT
+SUMMARY
+fi
+if [[ "$RATINGS" == "present" ]]; then
+  cat <<SUMMARY
+Wrote $RATING_ROWS record(s) of the question after a block to:
+  $RATINGS_OUT
+Wrote a summary of each of those $FEATURE_ROWS block(s) to:
+  $BLOCKFEATURES_OUT
 SUMMARY
 fi
 cat <<SUMMARY
@@ -915,7 +1260,34 @@ the nudges and sessions in that week, with each week named by the date of its
 Monday. The corrections file counts the category corrections you have made,
 per broad category only: how many apps, sites and windows you corrected, and
 how many corrections the apps and sites took in total. It does not say which
-apps, sites or windows they were.
+apps, sites or windows they were. The meta file says what this copy of Velvt
+could record, when your first session under its current nudge rules started,
+and when you first turned on the question after a session, if you did.
+SUMMARY
+
+if [[ "$RATINGS" == "present" ]]; then
+  cat <<'SUMMARY'
+
+The ratings file lists every session Velvt could ask about after it ended
+("How much of this block was on what you meant to do?"), whether or not you
+answered: when the question became available, when it was first on screen,
+your answer (one of the five buttons) and when you gave it, when you tapped
+Not now, when the question stopped taking an answer, and whether the
+session's summary had been on screen before you answered. It is empty unless
+you turned the question on. The session summary file has one line for each
+session in the ratings file and no other: how long it ran, how much of it
+Velvt could put in a category, the share of that time on the kind of work
+you spent most of it on and the share on feeds and video, the share Velvt
+could not put in a category, how often you left your main activity and came
+back, your longest stretch, whether a nudge reached you during it and what
+you did with it, its purpose, intensity, planned length and how it started,
+the part of the day it started in (night, morning, afternoon or evening) and
+whether that was a weekend. It is worked out on this Mac, and it names no
+category, app, site or window.
+SUMMARY
+fi
+
+cat <<SUMMARY
 
 Does NOT contain: your block intentions, app names, window titles, URLs,
 filenames, or anything you typed or read. Open the files and check before

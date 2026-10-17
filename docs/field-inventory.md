@@ -56,7 +56,12 @@ singleton, 1.5 into a timestamp, and 0 and 1.5 into a version.
 ## Tables
 
 Migration 0048 creates both tables. Neither table is uploaded, and no upload
-path reads them. `SelfRatingRepo` (`rust-service/src/persistence/self_rating.rs`)
+path reads them. The only other reader is the cohort export a tester runs and
+reads before sending (`scripts/export_cohort_evidence.sh`, export format 7): it
+writes every column of `work_block_self_rating` to `-ratings.csv`, filling in
+`expired_at` with the deadline the app will stamp when that has passed, and
+`rating_prompt_settings.first_opted_in_at` as `rating_prompt_enabled_at` in
+`-meta.csv`. It writes nothing else from either table. `SelfRatingRepo` (`rust-service/src/persistence/self_rating.rs`)
 writes them and no other table, which the same test checks. Its one caller,
 `RatingPromptManager` (`rust-service/src/self_rating/`, protocol 38), writes
 nothing else either: the same test runs every rule it has against a database

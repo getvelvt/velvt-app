@@ -21,6 +21,10 @@
 #                `delivery_channel`), after protocol 34's upload owner (0042)
 #   protocol 36  what the service knew about Focus at each decision (0044,
 #                `intervention_decision_log.focus_state`)
+#   protocol 38  the optional question after a block (0048,
+#                `work_block_self_rating` and `rating_prompt_settings`), which
+#                export format 7 reads. Migrations 0045 to 0047 (stage 2) are
+#                applied too once they are on the branch.
 # shellcheck shell=bash
 
 FIXTURE_MIGRATIONS_PROTOCOL_25=17
@@ -30,6 +34,7 @@ FIXTURE_MIGRATIONS_PROTOCOL_31=38
 FIXTURE_MIGRATIONS_POLICY_V5=40
 FIXTURE_MIGRATIONS_PROTOCOL_35=43
 FIXTURE_MIGRATIONS_PROTOCOL_36=44
+FIXTURE_MIGRATIONS_RATING=48
 
 # migrate_fixture_db DB LAST_VERSION APPLIED_AT
 #   Applies every migration numbered <= LAST_VERSION that DB has not recorded,

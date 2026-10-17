@@ -76,6 +76,19 @@ migration 0048 (#95).
   `set_rating_prompt_enabled` true is refused, and `available` is false,
   until the Mac's period is over, so the question can never be turned on
   inside it. Nothing depends on an answer, a category or coverage.
+- The cohort export (`export_cohort_evidence.sh`, export format 7, attention
+  plan PR-5) writes `-ratings.csv`, every rating row, and `-blockfeatures.csv`,
+  a summary of each rated block and of no other (`BLOCK_FEATURE_VERSION` 1,
+  held to `scripts/tests/fixtures/block-feature-vectors.json` by the exporter,
+  `analyze_cohort.py` and `src/work_block/block_feature_vectors.rs`). Its meta
+  file adds `ratings`, `rating_prompt_version`, `rating_prompt_enabled_at`
+  (`first_opted_in_at`), `rating_expiries_filled`, `block_feature_version` and
+  `v6_period_start`, the same start the day-14 floor uses. `analyze_cohort.py`
+  counts only rows inside each Mac's v6 primary period, its first 14 days, as
+  the drafted v6 primary-period amendment defines it; rows after day 14 and
+  rows at or after `rating_prompt_enabled_at` are two descriptive strata, never
+  pooled, and a rated block or a question-on row inside the period is counted
+  as a protocol deviation.
 - No drift decision changes and `DRIFT_POLICY_VERSION` stays 6. The work-block
   manager consults the question only while building the snapshot of an ended
   block; `rust-service/tests/rating_isolation.rs` replays the same blocks with

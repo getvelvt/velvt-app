@@ -4,8 +4,11 @@
 Input is whatever `export_cohort_evidence.sh` wrote on each tester's Mac: a
 per-offer CSV and, beside it, the companion files that share its name stem
 (`-decisions.csv`, `-outcomes.csv`, `-blocks.csv`, `-invitations.csv`,
-`-explain.csv`, `-corrections.csv`, `-meta.csv`). Pass one folder per
-participant, or the files themselves.
+`-explain.csv`, `-corrections.csv`, `-ratings.csv`, `-blockfeatures.csv`,
+`-meta.csv`). Pass one folder per participant, or the files themselves. The
+ratings and block-features files (export format 7) are analysed by
+`analyze_ratings.py`; this script reads the ratings file only to count a rated
+block inside a Mac's v6 primary period as a protocol deviation.
 Output is the numbers named in `pitch-deck-inputs/evidence/traction-summary.md`,
 each with its numerator, denominator, window and exclusions stated, because a
 ratio on its own is not reportable evidence.
@@ -17,9 +20,17 @@ correction of 2026-08-31, the drift policy v2 amendment and 0.1.6 metrics
 (both 2026-09-25), the drift policy v3 and v4 amendments (both 2026-09-26),
 the drift policy v5 amendment (2026-09-27), the drift policy v6 amendment
 (drafted 2026-10-07; it must be in that file before any v6 build reaches a
-tester), and the instrument addendum that
-fixes how the outcomes are computed (drafted 2026-09-27; it must be in that
-file before any export is used), all written before any cohort data existed.
+tester), the v6 primary-period amendment (drafted 2026-10-17; it must be in
+that file before the first wave-1 link is sent), and the instrument addendum
+that fixes how the outcomes are computed (drafted 2026-09-27; it must be in
+that file before any export is used), all written before any cohort data
+existed.
+
+Every figure below counts only rows inside each Mac's v6 primary period: its
+first 14 days, from the start of its first block after the upgrade cut. Rows
+after day 14, and rows at or after the moment the Mac first turned on the
+question after a block, are reported as two separate descriptive strata and
+never pooled with the figures or with each other (`V6_PRIMARY_PERIOD_SECONDS`).
 Nothing may be added after seeing results. If a definition turns out to be
 wrong, amend it in a dated note stating what was known at the time.
 
@@ -48,8 +59,10 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import math
 import sys
 import textwrap
+import time
 from collections import Counter
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -255,6 +268,118 @@ ANALYSED_POLICY_VERSION = 6
 WORK_ANCHOR_POLICY_VERSION = 6
 WORK_ANCHOR_CATEGORIES = ("FOCUS_WORK", "REFERENCE", "TASK_MANAGEMENT", "COMMUNICATION")
 
+# Note, dated 2026-10-17, the v6 primary-period amendment (founder decision
+# 2026-10-17, "I agree with all 1-7": decision 1 of the attention plan fixes
+# each Mac's v6 primary period at its first 14 days). Drafted in
+# `pitch-deck-inputs/evidence/drafts/2026-10-17-v6-primary-period-note.md`;
+# its items are cited by number below. [Pending: the founder appends the note
+# to traction-summary.md, unchanged or as edited, before the first wave-1 link
+# is sent. If its text changes, this code changes to match before any wave-1
+# result is read.]
+#
+#   1. A Mac's period starts at the started_at of its first block after the
+#      upgrade cut (its last decision row with a policy_version below 6), or
+#      of its first block if it has no such row, and lasts 1,209,600 s. A Mac
+#      whose export holds no such block has no period and counts in no figure
+#      but blocks declared (item 6). An export that states an earlier start
+#      of its own (meta `v6_period_start`, export format 7) had its history
+#      cleared and falls under the reinstall exclusion; one that states a
+#      later start is malformed, and the computed start is used.
+#   2. Every figure counts in-period rows only. A block is placed by its
+#      started_at, a decision point and an offer by their block's, an
+#      invitation by its offered_at. A local week is placed only when the
+#      week, widened by a day at each end, lies on one side of the period's
+#      start, its end and rating_prompt_enabled_at; one that straddles any of
+#      them counts in no figure and is counted. Correction counts carry no
+#      time: reported whole, and flagged when the export holds a block outside
+#      the period or a row at or after rating_prompt_enabled_at. Rows the
+#      upgrade cut keeps but that fall before the period's start count in no
+#      figure and are counted.
+#   3. The power count counts in-period decision points only.
+#   4. Rows at or after the period's end form the "after day 14" stratum,
+#      reported under the same definitions and never pooled.
+#   5. Rows at or after rating_prompt_enabled_at (meta, export format 7: the
+#      first time the question after a block was ever turned on) form the
+#      "question on" stratum, kept out of the figures and of "after day 14".
+#      Such a row inside the period, and any block inside the period with a
+#      row in the export's ratings file, is a protocol deviation, counted.
+#   6. Gate D measure 1 counts in-period blocks only, with the blocks outside
+#      the period reported beside it; its denominator does not change.
+V6_PRIMARY_PERIOD_SECONDS = 1209600  # 14 days
+V6_PERIOD_POLICY_VERSION = 6
+DAY_SECONDS = 24 * 3600
+# Where a row lands, in the order the report lists them. Only the first three
+# are reported as figures or strata; the rest count in no figure.
+PLACEMENTS = (
+    "in_period",
+    "after_day_14",
+    "question_on",
+    "before_period",
+    "no_period",
+    "no_time",
+)
+STRATA = ("after_day_14", "question_on")
+PLACEMENT_LABELS = {
+    "in_period": "inside its Mac's v6 primary period (counted)",
+    "after_day_14": "after day 14 (the 'after day 14' stratum)",
+    "question_on": "at or after rating_prompt_enabled_at (the 'question on' stratum)",
+    "before_period": "after the upgrade cut and before the period's start (in no figure)",
+    "no_period": "on a Mac with no v6 period: no block after the upgrade cut (in no figure)",
+    "no_time": "with no time to place it by (in no figure)",
+    "straddles": "straddling a period boundary, widened by a day (in no figure)",
+}
+# The kinds of row placed, for the report's table.
+PLACED_KINDS = ("decisions", "offers", "blocks", "invitations", "explain_weeks")
+
+# ---------------------------------------------------------------------------
+# Export format 7: the optional question after a block (migration 0048).
+# `analyze_ratings.py` analyses these files; the column lists are its
+# contract with the exporter, and `block_features` below restates how the
+# exporter computes each block's summary so the two can be held to
+# scripts/tests/fixtures/block-feature-vectors.json.
+# ---------------------------------------------------------------------------
+
+RATINGS_COLUMNS = (
+    "block_id",
+    "prompt_version",
+    "eligible_at",
+    "shown_at",
+    "answered_at",
+    "not_now_at",
+    "expired_at",
+    "card_seen_before_answer",
+    "answer",
+)
+BLOCK_FEATURE_VERSION = 1
+BLOCK_FEATURE_COLUMNS = (
+    "block_id",
+    "block_feature_version",
+    "policy_version",
+    "card_branch",
+    "elapsed_seconds",
+    "covered_seconds",
+    "coverage_class",
+    "work_anchor_share",
+    "switch_aways_per_covered_hour",
+    "longest_run_share",
+    "recovery_ratio",
+    "feed_share",
+    "unlogged_share",
+    "offer_delivered",
+    "offer_outcome",
+    "purpose",
+    "intensity",
+    "planned_minutes",
+    "origin",
+    "hour_bucket",
+    "weekend",
+)
+FEED_CATEGORIES = ("SOCIAL_FEED", "PASSIVE_CONSUMPTION")
+NEEDS_A_CATEGORY = ("UNLOGGED", "UNCLASSIFIED")
+COVERAGE_CLASSES = ("insufficient", "partial", "good")
+# Six-hour parts of the local day, by the hour the block started in.
+HOUR_BUCKETS = ("night", "morning", "afternoon", "evening")
+
 # A `work_block_intervention` row has no policy column. It takes the
 # policy_version of the decision-log row for the same block_id whose verdict is
 # one of these: the three verdicts that write an intervention row.
@@ -411,6 +536,10 @@ COMPANION_SUFFIXES = {
     "explain": "-explain.csv",
     "corrections": "-corrections.csv",
     "outcomes": "-outcomes.csv",
+    # Export format 7. Named here so a folder holding them is one export, not
+    # two per-offer files.
+    "ratings": "-ratings.csv",
+    "blockfeatures": "-blockfeatures.csv",
     "meta": "-meta.csv",
 }
 FILE_KINDS = ("offers",) + tuple(COMPANION_SUFFIXES)
@@ -422,6 +551,7 @@ META_TABLE_KEYS = {
     "explain": "explain_probe",
     "corrections": "corrections",
     "outcomes": "outcomes",
+    "ratings": "ratings",
 }
 
 WEEK_SECONDS = 7 * 24 * 3600
@@ -458,6 +588,56 @@ class Excluded:
 
 
 @dataclass
+class Period:
+    """One Mac's v6 primary period (items 1 and 5 of the amendment)."""
+
+    start: int | None = None
+    upgrade_cut: int | None = None
+    stated_start: int | None = None
+    rating_prompt_enabled_at: int | None = None
+
+    @property
+    def end(self) -> int | None:
+        return None if self.start is None else self.start + V6_PRIMARY_PERIOD_SECONDS
+
+    def inside(self, at: int | None) -> bool:
+        return self.start is not None and at is not None and self.start <= at < self.end
+
+    def place(self, at: int | None) -> str:
+        """Where a row placed at `at` counts: one of PLACEMENTS."""
+        if self.start is None:
+            return "no_period"
+        if at is None:
+            return "no_time"
+        if at < self.start:
+            return "before_period"
+        if self.rating_prompt_enabled_at is not None and at >= self.rating_prompt_enabled_at:
+            return "question_on"
+        if at < self.end:
+            return "in_period"
+        return "after_day_14"
+
+    def place_week(self, week: str) -> str:
+        """A local week (its Monday's date), widened by a day at each end. A
+        local date cannot be placed on the UTC axis exactly, so a week placed
+        this way has no boundary strictly inside it, or it straddles."""
+        if self.start is None:
+            return "no_period"
+        try:
+            monday = datetime.strptime(week, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+        except ValueError:
+            return "no_time"
+        low = int(monday.timestamp()) - DAY_SECONDS
+        high = int(monday.timestamp()) + 8 * DAY_SECONDS
+        boundaries = [self.start, self.end]
+        if self.rating_prompt_enabled_at is not None:
+            boundaries.append(self.rating_prompt_enabled_at)
+        if any(low < boundary < high for boundary in boundaries):
+            return "straddles"
+        return self.place(low)
+
+
+@dataclass
 class Participant:
     name: str
     files: dict = field(default_factory=dict)
@@ -472,6 +652,9 @@ class Participant:
     # `outcomes_unusable`.
     outcome_rows: list | None = None
     outcomes_unusable: str = ""
+    # Export format 7: the blocks the ratings file has a row for.
+    rated_block_ids: set = field(default_factory=set)
+    period: Period = field(default_factory=Period)
 
 
 @dataclass
@@ -504,6 +687,16 @@ class Cohort:
     # policy.
     corrections: dict = field(default_factory=dict)
     corrections_span_policy_change: list[str] = field(default_factory=list)
+    # The v6 primary period (2026-10-17 amendment). Everything above holds
+    # in-period rows only; `strata` holds a Cohort per descriptive stratum.
+    strata: dict = field(default_factory=dict)
+    periods: dict = field(default_factory=dict)
+    placed: dict = field(default_factory=dict)
+    question_on_inside_period: Counter = field(default_factory=Counter)
+    rated_blocks_inside_period: Counter = field(default_factory=Counter)
+    blocks_outside_period: Counter = field(default_factory=Counter)
+    corrections_with_rows_outside_period: list[str] = field(default_factory=list)
+    period_problems: list[str] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -713,6 +906,143 @@ def label_decision(
 
 
 # ---------------------------------------------------------------------------
+# Per-block summary of a rated block (export format 7, BLOCK_FEATURE_VERSION 1)
+#
+# The exporter computes it in SQL on the tester's Mac, from the block, its
+# observation rows, the stored end-of-block result and its decision and offer
+# rows. This is the same definition, written as plain code. Nothing in this
+# script reads it; `analyze_ratings.py` reads the exported file. It exists so
+# the exporter and this statement are held to one set of vectors, which the
+# app's own result is held to as well
+# (`rust-service/src/work_block/block_feature_vectors.rs`).
+# ---------------------------------------------------------------------------
+
+
+def _share6(part: float, whole: float) -> float:
+    return round(part / whole, 6)
+
+
+def block_features(
+    block: dict,
+    observations: list[dict],
+    result: dict | None,
+    policy_versions: list[int],
+    offer_outcome: str | None,
+) -> dict:
+    """The block-features row for one block, as `{column: value}` (None is an
+    empty cell).
+
+    `block` holds the `work_block` columns (`block_id`, `started_at`,
+    `ended_at`, `total_paused_seconds`, `purpose`, `intensity`,
+    `planned_duration_seconds`, `origin`). `observations` are its
+    `work_block_observation` rows as `label_decision` takes them. `result` is
+    the stored result payload, decoded, or None when there is none.
+    `policy_versions` are those of the block's decision-log rows, and
+    `offer_outcome` is its `work_block_intervention` outcome or None. The hour
+    bucket and weekend use this process's local time zone, as the exporter's
+    `localtime` does on the tester's Mac.
+    """
+    started = block["started_at"]
+    ended = block.get("ended_at")
+    paused = block.get("total_paused_seconds") or 0
+    elapsed = None if ended is None else max(0, max(0, ended - started) - paused)
+
+    confident_seconds = 0
+    feed_seconds = 0
+    unlogged_seconds = 0
+    work_seconds: dict[str, int] = {}
+    for row in observations:
+        if row["ended_at"] is None:
+            continue
+        seconds = max(0, row["ended_at"] - row["occurred_at"])
+        category = row["category"]
+        status = row["classification_status"]
+        if _is_confident(category, status, row["classification_confidence"]):
+            confident_seconds += seconds
+            if category.upper() in FEED_CATEGORIES:
+                feed_seconds += seconds
+            # Grouped by the category as stored, as the gate's work_anchor
+            # groups it; only the largest is read.
+            if category.upper() in WORK_ANCHOR_CATEGORIES:
+                work_seconds[category] = work_seconds.get(category, 0) + seconds
+        if category.upper() in NEEDS_A_CATEGORY or status != "classified":
+            unlogged_seconds += seconds
+
+    result = result or {}
+    coverage = result.get("coverage")
+    ratio = result.get("coverage_ratio")
+    result_elapsed = result.get("elapsed_duration_seconds")
+    switch_aways = result.get("switch_away_count")
+    recoveries = result.get("recovery_count")
+    longest = result.get("longest_uninterrupted_seconds")
+    evidence = result.get("safe_evidence_category")
+    # SQLite's ROUND on a non-negative value: half away from zero.
+    covered = (
+        None if ratio is None or result_elapsed is None
+        else int(math.floor(ratio * result_elapsed + 0.5))
+    )
+
+    if coverage is None:
+        branch = None
+    elif coverage == "insufficient" or evidence is None:
+        branch = "low_coverage"
+    elif switch_aways == 0:
+        branch = "stayed"
+    elif recoveries == 0:
+        branch = "ended_elsewhere"
+    else:
+        branch = "came_back"
+
+    if switch_aways is None or covered is None:
+        per_hour = None
+    elif covered > 0:
+        per_hour = round(switch_aways * 3600.0 / covered, 6)
+    else:
+        per_hour = 0.0
+
+    versions = set(policy_versions)
+    delivered = offer_outcome is not None and offer_outcome not in WITHHELD_TERMINAL_OUTCOMES
+    local = time.localtime(started)
+    return {
+        "block_id": block.get("block_id"),
+        "block_feature_version": BLOCK_FEATURE_VERSION,
+        "policy_version": next(iter(versions)) if len(versions) == 1 else None,
+        "card_branch": branch,
+        "elapsed_seconds": elapsed,
+        "covered_seconds": covered,
+        "coverage_class": (
+            None if coverage is None
+            else coverage if coverage in COVERAGE_CLASSES
+            else "unrecognized"
+        ),
+        "work_anchor_share": (
+            _share6(max(work_seconds.values(), default=0), confident_seconds)
+            if confident_seconds > 0 else 0.0
+        ),
+        "switch_aways_per_covered_hour": per_hour,
+        "longest_run_share": (
+            _share6(longest, elapsed) if longest is not None and elapsed else None
+        ),
+        "recovery_ratio": (
+            _share6(recoveries, max(switch_aways, 1))
+            if recoveries is not None and switch_aways is not None else None
+        ),
+        "feed_share": (
+            _share6(feed_seconds, confident_seconds) if confident_seconds > 0 else 0.0
+        ),
+        "unlogged_share": _share6(unlogged_seconds, elapsed) if elapsed else None,
+        "offer_delivered": int(delivered),
+        "offer_outcome": offer_outcome if delivered else None,
+        "purpose": block.get("purpose"),
+        "intensity": block.get("intensity"),
+        "planned_minutes": (block["planned_duration_seconds"] + 30) // 60,
+        "origin": block.get("origin"),
+        "hour_bucket": HOUR_BUCKETS[local.tm_hour // 6],
+        "weekend": int(local.tm_wday in (5, 6)),
+    }
+
+
+# ---------------------------------------------------------------------------
 # Finding each participant's files
 # ---------------------------------------------------------------------------
 
@@ -876,21 +1206,32 @@ def load(
             continue
         participant.decision_rows = rows
 
-        for kind in ("blocks", "invitations", "explain", "corrections", "outcomes"):
+        for kind in ("blocks", "invitations", "explain", "corrections", "outcomes", "ratings",
+                     "blockfeatures"):
             path = participant.files.get(kind)
+            meta_key = META_TABLE_KEYS.get(kind, "ratings" if kind == "blockfeatures" else "")
             if path is None:
-                if participant.meta.get(META_TABLE_KEYS.get(kind, ""), "") == "present":
+                if participant.meta.get(meta_key, "") == "present":
                     cohort.malformed.append(
                         f"{name}: the export wrote a {kind} file and it was not received"
                     )
                     if kind == "outcomes":
                         participant.outcomes_unusable = "outcomes file written and not received"
                 continue
+            if kind == "blockfeatures":
+                # Read by analyze_ratings.py, not here.
+                continue
             rows, fields, error = _read_csv(path)
             if error:
                 cohort.malformed.append(f"{name}: {kind} file {error}")
                 if kind == "outcomes":
                     participant.outcomes_unusable = "outcomes file unreadable"
+                continue
+            if kind == "ratings":
+                if "block_id" not in fields:
+                    cohort.malformed.append(f"{name}: ratings file has no block_id column")
+                    continue
+                participant.rated_block_ids = {_text(r, "block_id") for r in rows if _text(r, "block_id")}
                 continue
             if kind == "outcomes":
                 version = participant.meta.get("outcomes_definition_version", "")
@@ -927,11 +1268,64 @@ def load(
             )
             continue
 
+        period = v6_period(participant)
+        if period.start is not None and period.stated_start is not None:
+            if period.stated_start < period.start:
+                cohort.excluded_whole[name] = (
+                    f"history cleared: the export states a v6 period start ({period.stated_start}) "
+                    f"earlier than its blocks give ({period.start}); the reinstall exclusion "
+                    "applies (v6 primary-period amendment, item 1)"
+                )
+                continue
+            if period.stated_start > period.start:
+                problem = (
+                    f"{name}: the meta's v6_period_start {period.stated_start} is later than the "
+                    f"start its blocks give ({period.start}); the computed start is used"
+                )
+                cohort.malformed.append(problem)
+                cohort.period_problems.append(problem)
+        elif period.stated_start is not None:
+            problem = (
+                f"{name}: the meta states a v6_period_start ({period.stated_start}) and the export "
+                "holds no block after the upgrade cut; the Mac has no period"
+            )
+            cohort.malformed.append(problem)
+            cohort.period_problems.append(problem)
+        participant.period = period
         cohort.analysed.append(participant)
 
+    cohort.strata = {stratum: Cohort() for stratum in STRATA}
     for participant in cohort.analysed:
         _load_participant(cohort, participant)
     return cohort
+
+
+def v6_period(participant: Participant) -> Period:
+    """Item 1 of the v6 primary-period amendment, from the export's own rows.
+
+    The upgrade cut is the occurred_at of the Mac's last decision row with a
+    policy_version below 6. The period starts at the earliest block start
+    after it, read from the blocks file, and from the decisions and offers
+    files, which carry their block's start (they add a block only to an export
+    with no blocks file). The meta's stated start is returned beside it, never
+    used in its place.
+    """
+    older = []
+    for row in participant.decision_rows:
+        version, occurred = _int(row, "policy_version"), _int(row, "occurred_at")
+        if version is not None and occurred is not None and version < V6_PERIOD_POLICY_VERSION:
+            older.append(occurred)
+    cut = max(older) if older else None
+    starts = [_int(row, "started_at") for row in participant.block_rows or []]
+    starts += [_int(row, "block_started_at") for row in participant.decision_rows]
+    starts += [_int(row, "started_at") for row in participant.offer_rows]
+    after_cut = [s for s in starts if s is not None and (cut is None or s > cut)]
+    return Period(
+        start=min(after_cut) if after_cut else None,
+        upgrade_cut=cut,
+        stated_start=_int(participant.meta, "v6_period_start"),
+        rating_prompt_enabled_at=_int(participant.meta, "rating_prompt_enabled_at"),
+    )
 
 
 def _non_work_anchors(participant: Participant) -> list[str]:
@@ -1002,6 +1396,22 @@ def _outcome_disagreement(decision: dict, outcome: dict, exported_at: int | None
 
 def _load_participant(cohort: Cohort, participant: Participant) -> None:
     name = participant.name
+    period = participant.period
+    cohort.periods[name] = period
+    placed_here: Counter = Counter()
+
+    def route(kind: str, at: int | None) -> Cohort | None:
+        """Where a row placed at `at` counts (amendment item 2): this cohort
+        when it is inside the period, a stratum's cohort, or None for a row
+        that counts in no figure. Every row routed is counted by placement."""
+        placement = period.place(at)
+        cohort.placed.setdefault(kind, Counter())[placement] += 1
+        placed_here[(kind, placement)] += 1
+        if placement == "question_on" and period.inside(at):
+            cohort.question_on_inside_period[kind] += 1
+        if placement == "in_period":
+            return cohort
+        return cohort.strata.get(placement)
 
     # --- Outcome labels, by decision ----------------------------------------
     outcomes: dict[str, dict] = {}
@@ -1051,8 +1461,14 @@ def _load_participant(cohort: Cohort, participant: Participant) -> None:
             other_policy_times.append(occurred)
             continue
         analysed_times.append(occurred)
+        # A decision point is placed by its block's start; one logged without
+        # a block, by its own time.
+        block_started = _int(row, "block_started_at")
+        target = route("decisions", occurred if block_started is None else block_started)
+        if target is None:
+            continue
         record = {"participant": name, "row": row}
-        cohort.analysed_decisions.append(record)
+        target.analysed_decisions.append(record)
         if verdict != "offered":
             continue
         elapsed = _elapsed(
@@ -1061,7 +1477,7 @@ def _load_participant(cohort: Cohort, participant: Participant) -> None:
             _int(row, "block_total_paused_seconds"),
         )
         if elapsed is not None and elapsed < WARMUP_EXCLUSION_SECONDS:
-            cohort.excluded.append(
+            target.excluded.append(
                 Excluded(name, f"decision {_text(row, 'decision_id')}",
                          f"block elapsed {elapsed}s < {WARMUP_EXCLUSION_SECONDS}s warm-up",
                          WARMUP_CATEGORY)
@@ -1087,7 +1503,7 @@ def _load_participant(cohort: Cohort, participant: Participant) -> None:
                 cohort.malformed.append(f"{name}: outcome for decision {decision_id}: {disagreement}")
             else:
                 point["outcome"] = outcomes[decision_id]
-        cohort.eligible.append(point)
+        target.eligible.append(point)
 
     # Rows with no policy column of their own (blocks, invitations, explain
     # weeks) are counted under the analysed policy only if they come after this
@@ -1140,11 +1556,15 @@ def _load_participant(cohort: Cohort, participant: Participant) -> None:
             )
             continue
 
+        # An offer is placed by its block's start.
+        target = route("offers", _int(row, "started_at"))
+        if target is None:
+            continue
         elapsed = _elapsed(
             _int(row, "started_at"), _int(row, "ended_at"), _int(row, "total_paused_seconds")
         )
         if elapsed is not None and elapsed < WARMUP_EXCLUSION_SECONDS:
-            cohort.excluded.append(
+            target.excluded.append(
                 Excluded(name, f"offer {block_id}",
                          f"block elapsed {elapsed}s < {WARMUP_EXCLUSION_SECONDS}s warm-up",
                          WARMUP_CATEGORY)
@@ -1198,9 +1618,9 @@ def _load_participant(cohort: Cohort, participant: Participant) -> None:
             focus_state=focus_state,
         )
         if outcome in WITHHELD_TERMINAL_OUTCOMES:
-            cohort.withheld.append(record)
+            target.withheld.append(record)
         else:
-            cohort.offers.append(record)
+            target.offers.append(record)
 
     # --- Blocks ---------------------------------------------------------------
     if participant.block_rows is not None:
@@ -1221,7 +1641,20 @@ def _load_participant(cohort: Cohort, participant: Participant) -> None:
             if not in_analysed_era(started):
                 cohort.era_excluded["blocks"] += 1
                 continue
-            kept.append({"phase": phase, "origin": origin, "started_at": started})
+            if period.inside(started) and _text(row, "block_id") in participant.rated_block_ids:
+                cohort.rated_blocks_inside_period[name] += 1
+            if period.start is not None and not period.inside(started):
+                cohort.blocks_outside_period[name] += 1
+            target = route("blocks", started)
+            if target is None:
+                continue
+            entry = {"phase": phase, "origin": origin, "started_at": started}
+            if target is cohort:
+                kept.append(entry)
+            else:
+                target.blocks.setdefault(name, []).append(entry)
+        # Gate D measure 1 counts every participant with a blocks file, a Mac
+        # with no period as zero (item 6).
         cohort.blocks[name] = kept
 
     # --- Invitations ------------------------------------------------------------
@@ -1236,8 +1669,17 @@ def _load_participant(cohort: Cohort, participant: Participant) -> None:
             if not in_analysed_era(offered):
                 cohort.era_excluded["invitations"] += 1
                 continue
-            kept.append({"outcome": outcome, "policy_version": _text(row, "policy_version")})
-        cohort.invitations[name] = kept
+            target = route("invitations", offered)
+            if target is None:
+                continue
+            entry = {"outcome": outcome, "policy_version": _text(row, "policy_version")}
+            if target is cohort:
+                kept.append(entry)
+            else:
+                target.invitations.setdefault(name, []).append(entry)
+        # A Mac with no period counts in no figure but blocks declared (item 1).
+        if period.start is not None:
+            cohort.invitations[name] = kept
 
     # --- Explain probe weeks ----------------------------------------------------
     if participant.explain_rows is not None:
@@ -1262,13 +1704,25 @@ def _load_participant(cohort: Cohort, participant: Participant) -> None:
             if cutoff is not None and week <= cutoff:
                 cohort.era_excluded["explain_weeks"] += 1
                 continue
-            kept.append(
-                {"week": week, "taps": taps, "delivered": delivered, "blocks": declared}
-            )
-        cohort.explain[name] = kept
+            placement = period.place_week(week)
+            cohort.placed.setdefault("explain_weeks", Counter())[placement] += 1
+            placed_here[("explain_weeks", placement)] += 1
+            if placement == "question_on":
+                monday = datetime.strptime(week, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+                if period.inside(int(monday.timestamp()) - DAY_SECONDS):
+                    cohort.question_on_inside_period["explain_weeks"] += 1
+            entry = {"week": week, "taps": taps, "delivered": delivered, "blocks": declared}
+            if placement == "in_period":
+                kept.append(entry)
+            elif placement in STRATA:
+                cohort.strata[placement].explain.setdefault(name, []).append(entry)
+        if period.start is not None:
+            cohort.explain[name] = kept
 
     # --- Corrections (2026-08-17 measure 3) -------------------------------------
-    if participant.correction_rows is not None:
+    # They carry no time, so they are reported whole (item 2), and only for a
+    # Mac with a period (item 1).
+    if participant.correction_rows is not None and period.start is not None:
         counted: dict[str, dict[str, tuple[int, int]]] = {
             scope: {} for scope in COUNTED_CORRECTION_SCOPES
         }
@@ -1310,6 +1764,13 @@ def _load_participant(cohort: Cohort, participant: Participant) -> None:
         }
         if other_policy_until is not None:
             cohort.corrections_span_policy_change.append(name)
+        outside = any(
+            count and (placement == "question_on"
+                       or (kind == "blocks" and placement in ("after_day_14", "before_period")))
+            for (kind, placement), count in placed_here.items()
+        )
+        if outside:
+            cohort.corrections_with_rows_outside_period.append(name)
 
 
 # ---------------------------------------------------------------------------
@@ -1438,7 +1899,8 @@ def _primary(cohort: Cohort) -> dict:
         ),
         "eligible_decision_points": eligible,
         "eligible_definition": (
-            f"policy_version {ANALYSED_POLICY_VERSION} decision-log rows with gate_verdict 'offered', after "
+            f"policy_version {ANALYSED_POLICY_VERSION} decision-log rows with gate_verdict 'offered', in "
+            "blocks inside their Mac's v6 primary period, after "
             "the warm-up exclusion. With propensity fixed at 1.0 the shipped "
             "gate_verdict CHECK has no eligible-but-silent value, so the eligible "
             "set and the offered set are the same (2026-08-31 correction)."
@@ -1510,13 +1972,20 @@ def _blocks_per_week(cohort: Cohort, start: datetime | None, weeks: int) -> dict
                     outside += 1
             entry["by_cohort_week"] = buckets
         per_participant[name] = entry
+        if cohort.blocks_outside_period.get(name):
+            entry["blocks_outside_their_v6_period"] = cohort.blocks_outside_period[name]
     measured = sorted(per_participant)
     result: dict = {
         "definition": (
             "Gate D measure 1: distinct declared work blocks per participant per "
             "cohort week, from the per-block CSV. Every declared block counts, "
-            "whether or not it produced an offer; no warm-up exclusion applies."
+            "whether or not it produced an offer; no warm-up exclusion applies. "
+            "Only blocks inside their Mac's v6 primary period count (the v6 "
+            "primary-period amendment, item 6); a block outside it is not counted "
+            "and is reported beside the figure, and weeks after a Mac's period "
+            "still count in the denominator."
         ),
+        "blocks_outside_their_v6_period": sum(cohort.blocks_outside_period.values()),
         "participants_measured": len(measured),
         "participants_with_zero_blocks": [n for n in measured if not per_participant[n]["blocks_declared"]],
         "per_participant": per_participant,
@@ -1598,7 +2067,8 @@ def _invitations(cohort: Cohort) -> dict:
         },
         "participants_with_invitations_off": turned_off,
         "not_measurable_for": sorted(
-            p.name for p in cohort.analysed if p.name not in cohort.invitations
+            p.name for p in cohort.analysed
+            if p.name not in cohort.invitations and p.period.start is not None
         ),
     }
 
@@ -1631,7 +2101,8 @@ def _explain(cohort: Cohort) -> dict:
         "weekly_active_participant_weeks": len(active),
         "weekly_active_participant_weeks_with_a_tap": len(active_tapped),
         "not_measurable_for": sorted(
-            p.name for p in cohort.analysed if p.name not in cohort.explain
+            p.name for p in cohort.analysed
+            if p.name not in cohort.explain and p.period.start is not None
         ),
     }
 
@@ -1716,8 +2187,10 @@ def _corrections(cohort: Cohort) -> dict:
             n for n in measured if not per_participant[n]["site_rules_recordable"]
         ],
         "includes_history_before_analysed_policy": sorted(cohort.corrections_span_policy_change),
+        "includes_rows_outside_the_v6_period": sorted(cohort.corrections_with_rows_outside_period),
         "not_measurable_for": sorted(
-            p.name for p in cohort.analysed if p.name not in cohort.corrections
+            p.name for p in cohort.analysed
+            if p.name not in cohort.corrections and p.period.start is not None
         ),
     }
 
@@ -1746,6 +2219,135 @@ def _integrity(cohort: Cohort) -> dict:
             "1": anchor_seen["1"], "0": anchor_seen["0"], "NULL": anchor_seen["NULL"],
         },
         "anchor_seen_note": "NULL is unresolved. It is never imputed and never counted as a failure.",
+    }
+
+
+def _period_report(cohort: Cohort) -> dict:
+    per_participant = {}
+    for name, period in sorted(cohort.periods.items()):
+        per_participant[name] = {
+            "start": period.start,
+            "end": period.end,
+            "upgrade_cut": period.upgrade_cut,
+            "stated_start": period.stated_start,
+            "rating_prompt_enabled_at": period.rating_prompt_enabled_at,
+        }
+    by_kind = {
+        kind: {
+            placement: cohort.placed.get(kind, Counter())[placement]
+            for placement in PLACEMENTS + ("straddles",)
+            if cohort.placed.get(kind, Counter())[placement]
+        }
+        for kind in PLACED_KINDS
+    }
+    question_on_inside = {
+        kind: cohort.question_on_inside_period[kind]
+        for kind in PLACED_KINDS if cohort.question_on_inside_period[kind]
+    }
+    rated_inside = dict(sorted(cohort.rated_blocks_inside_period.items()))
+    return {
+        "status": (
+            "The v6 primary-period amendment, drafted 2026-10-17 after the founder fixed "
+            "the period at 14 days. Pending: it applies once the founder appends it to "
+            "traction-summary.md, before the first wave-1 link."
+        ),
+        "definition": (
+            "Each Mac's v6 primary period starts at the started_at of its first block "
+            "after the upgrade cut (its last decision row with a policy_version below 6), "
+            f"and lasts {V6_PRIMARY_PERIOD_SECONDS} s (14 days). Every figure in this "
+            "report counts rows inside it: a block by its start, a decision point and an "
+            "offer by their block's start, an invitation by its offered_at, and a local "
+            "week only when the week widened by a day at each end lies on one side of "
+            "every boundary. Rows after day 14, and rows at or after the Mac's "
+            "rating_prompt_enabled_at, are separate descriptive strata, never pooled."
+        ),
+        "period_seconds": V6_PRIMARY_PERIOD_SECONDS,
+        "per_participant": per_participant,
+        "participants_without_a_period": sorted(
+            name for name, period in cohort.periods.items() if period.start is None
+        ),
+        "rows_by_placement": by_kind,
+        "placement_labels": PLACEMENT_LABELS,
+        "protocol_deviations": {
+            "definition": (
+                "Item 5: a row at or after the Mac's rating_prompt_enabled_at that is "
+                "inside its period, and a block inside its period that has a row in the "
+                "export's ratings file. The app refuses both (the question cannot be "
+                "turned on, or asked about a block, before day 14), so each one is "
+                "counted and reported."
+            ),
+            "rows_at_or_after_rating_prompt_enabled_at_inside_the_period": question_on_inside,
+            "rated_blocks_inside_the_period": rated_inside,
+            "total": sum(question_on_inside.values()) + sum(rated_inside.values()),
+        },
+        "problems": list(cohort.period_problems),
+    }
+
+
+STRATUM_DEFINITIONS = {
+    "after_day_14": (
+        "Rows at or after the end of their Mac's v6 primary period, and before its "
+        "rating_prompt_enabled_at if it has one (amendment item 4)."
+    ),
+    "question_on": (
+        "Rows at or after the moment their Mac first turned on the question after a "
+        "block, inside the period or after it (amendment item 5)."
+    ),
+}
+
+
+def _stratum_summary(stratum: Cohort, name: str) -> dict:
+    """A descriptive stratum, under the same definitions as the figures."""
+    result = analyse(stratum)
+    primary = result["primary_outcome"]
+    free = primary["secondary"]["departure_free_600s"]
+    invitations = result["invitation_acceptance"]
+    explain = result["explain_tap_rate"]
+    return {
+        "status": (
+            "DESCRIPTIVE STRATUM. Counted under the same definitions as the figures "
+            "above, and never pooled with them, with the other stratum, or into the "
+            "power count."
+        ),
+        "definition": STRATUM_DEFINITIONS[name],
+        "decision_log_rows": result["decision_log_integrity"]["rows"],
+        "eligible_decision_points": primary["eligible_decision_points"],
+        "with_outcome_row": primary["with_outcome_row"],
+        "censored": primary["censored"],
+        "sustained_anchor_900s": {
+            "numerator": primary["numerator"], "denominator": primary["denominator"],
+        },
+        "departure_free_600s": {
+            "numerator": free["numerator"], "denominator": free["denominator"],
+        },
+        "decisions_recorded": {
+            "delivered": result["decisions_recorded"]["delivered"],
+            "withheld": result["decisions_recorded"]["withheld"],
+        },
+        "trust": {
+            key: result["trust"][key]
+            for key in ("was_focused", "wrong_classification", "combined_numerator", "denominator")
+        },
+        "retired_return_within_10min": {
+            "numerator": result["retired_return_within_10min"]["numerator"],
+            "denominator": result["retired_return_within_10min"]["denominator"],
+        },
+        "withheld_by_outcome": result["withheld"]["by_outcome"],
+        "blocks_declared": {
+            participant: entry["blocks_declared"]
+            for participant, entry in result["blocks_per_participant"]["per_participant"].items()
+        },
+        "completion_by_origin": result["completion_by_origin"]["by_origin"],
+        "invitations": {
+            "accepted": invitations["accepted"],
+            "terminal": invitations["terminal"],
+            "by_outcome": invitations["by_outcome"],
+        },
+        "explain": {
+            "participant_weeks": len(explain["participant_weeks"]),
+            "taps": explain["taps"],
+            "delivered_interventions": explain["delivered_interventions"],
+        },
     }
 
 
@@ -1810,6 +2412,13 @@ def analyse(cohort: Cohort, cohort_start: datetime | None = None, cohort_weeks: 
             excluded_reasons[
                 f"decision rows not under policy_version {ANALYSED_POLICY_VERSION}"
             ] += other_policy
+    # Rows outside each Mac's v6 primary period (the 2026-10-17 amendment).
+    for kind in PLACED_KINDS:
+        for placement, count in cohort.placed.get(kind, Counter()).items():
+            if placement != "in_period" and count:
+                excluded_reasons[
+                    f"{kind.replace('_', ' ')} {PLACEMENT_LABELS[placement]}"
+                ] += count
 
     return {
         "participants": {
@@ -1849,6 +2458,7 @@ def analyse(cohort: Cohort, cohort_start: datetime | None = None, cohort_weeks: 
             "delivered": denominator,
             "withheld": len(withheld),
         },
+        "v6_primary_period": _period_report(cohort),
         "power": {
             "required_decision_points": POWER_REQUIRED_DECISION_POINTS,
             "observed_eligible_decision_points": eligible,
@@ -1856,8 +2466,9 @@ def analyse(cohort: Cohort, cohort_start: datetime | None = None, cohort_weeks: 
             "assumptions": POWER_ASSUMPTIONS,
             "sufficient": eligible >= POWER_REQUIRED_DECISION_POINTS,
             "note": (
-                f"Counts policy_version {ANALYSED_POLICY_VERSION} eligible decision points only, before "
-                "censoring, so it is an upper bound on how close this data gets."
+                f"Counts policy_version {ANALYSED_POLICY_VERSION} eligible decision points inside "
+                "each Mac's v6 primary period only (amendment item 3), before censoring, so it "
+                "is an upper bound on how close this data gets."
             ),
         },
         "primary_outcome": primary,
@@ -1991,6 +2602,9 @@ def analyse(cohort: Cohort, cohort_start: datetime | None = None, cohort_weeks: 
                 "any participant who reinstalled mid-cohort (local history resets with the database)",
                 f"rows not attributable to policy_version {ANALYSED_POLICY_VERSION}, and "
                 "exports without the decision log (2026-09-25, 2026-09-26)",
+                "rows outside each Mac's v6 primary period, its first 14 days (the v6 "
+                "primary-period amendment, pending): rows after day 14 and rows at or after "
+                "rating_prompt_enabled_at are reported as separate strata, never pooled",
             ],
             "applied_here": sum(excluded_reasons.values()),
             "by_reason": dict(sorted(excluded_reasons.items())),
@@ -2000,6 +2614,9 @@ def analyse(cohort: Cohort, cohort_start: datetime | None = None, cohort_weeks: 
                 {"participant": e.participant, "row": e.row, "reason": e.reason}
                 for e in cohort.excluded
             ],
+        },
+        "strata": {
+            name: _stratum_summary(stratum, name) for name, stratum in cohort.strata.items()
         },
         "data_quality": {"malformed": cohort.malformed},
     }
@@ -2058,6 +2675,35 @@ def render(result: dict) -> str:
             f"{policy['rows_before_last_other_policy_decision_excluded']}")
     if policy["non_monotonic_policy_history"]:
         add(f"  ! policy history goes back and forth on: {policy['non_monotonic_policy_history']}")
+
+    period = result["v6_primary_period"]
+    heading("V6 PRIMARY PERIOD (each Mac's first 14 days)")
+    para(period["definition"])
+    para(period["status"])
+    for name, entry in period["per_participant"].items():
+        if entry["start"] is None:
+            add(f"  {name:24} no period: no block after the upgrade cut")
+            continue
+        enabled = entry["rating_prompt_enabled_at"]
+        add(f"  {name:24} {_when(entry['start'])} to {_when(entry['end'])}; question first on: "
+            f"{_when(enabled) if enabled is not None else 'never'}")
+    if period["participants_without_a_period"]:
+        para(f"No period, so in no figure but blocks declared (Gate D measure 1, as zero): "
+             f"{', '.join(period['participants_without_a_period'])}.")
+    add(f"  rows by where they count ({', '.join(PLACEMENTS[:3])}; the rest in no figure):")
+    for kind, counts in period["rows_by_placement"].items():
+        shown = ", ".join(f"{placement} {count}" for placement, count in counts.items())
+        add(f"    {kind.replace('_', ' '):16} {shown or 'none'}")
+    deviations = period["protocol_deviations"]
+    add(f"  protocol deviations (item 5): {deviations['total']}")
+    if deviations["rows_at_or_after_rating_prompt_enabled_at_inside_the_period"]:
+        add(f"    rows at or after rating_prompt_enabled_at inside the period: "
+            f"{deviations['rows_at_or_after_rating_prompt_enabled_at_inside_the_period']}")
+    if deviations["rated_blocks_inside_the_period"]:
+        add(f"    blocks inside the period with a rating row: "
+            f"{deviations['rated_blocks_inside_the_period']}")
+    for problem in period["problems"]:
+        add(f"  ! {problem}")
 
     power = result["power"]
     heading("POWER")
@@ -2236,6 +2882,8 @@ def render(result: dict) -> str:
             f"{blocks['blocks_outside_cohort_window']} outside the window)")
     else:
         add(f"  {blocks['note']}")
+    add(f"  blocks outside their Mac's v6 period, not counted: "
+        f"{blocks['blocks_outside_their_v6_period']}")
     if blocks["not_measurable_for"]:
         add(f"  no per-block CSV, not measurable: {blocks['not_measurable_for']}")
 
@@ -2306,6 +2954,9 @@ def render(result: dict) -> str:
     if corrections["includes_history_before_analysed_policy"]:
         add(f"  ! counts include time before policy v{ANALYSED_POLICY_VERSION}, not separable: "
             f"{corrections['includes_history_before_analysed_policy']}")
+    if corrections["includes_rows_outside_the_v6_period"]:
+        add(f"  ! counts carry no time and are reported whole; these exports hold rows "
+            f"outside the v6 period: {corrections['includes_rows_outside_the_v6_period']}")
 
     integrity = result["decision_log_integrity"]
     heading(f"DECISION-LOG INTEGRITY (policy_version {ANALYSED_POLICY_VERSION} rows)")
@@ -2317,6 +2968,37 @@ def render(result: dict) -> str:
     seen_600 = integrity["anchor_seen_within_600s"]
     add(f"  anchor_seen_within_600s: 1={seen_600['1']} 0={seen_600['0']} "
         f"NULL={seen_600['NULL']} (NULL is unresolved, never imputed)")
+
+    for name, stratum in result["strata"].items():
+        title = {"after_day_14": "AFTER DAY 14", "question_on": "QUESTION ON"}[name]
+        heading(f"{title} (descriptive stratum, never pooled)")
+        para(stratum["definition"])
+        para(stratum["status"])
+        censored = stratum["censored"]
+        sustained = stratum["sustained_anchor_900s"]
+        free = stratum["departure_free_600s"]
+        recorded = stratum["decisions_recorded"]
+        trust = stratum["trust"]
+        retired = stratum["retired_return_within_10min"]
+        invitations = stratum["invitations"]
+        explain = stratum["explain"]
+        add(f"  decision-log rows: {stratum['decision_log_rows']}; eligible decision points: "
+            f"{stratum['eligible_decision_points']}, {stratum['with_outcome_row']} with an outcome row")
+        add(f"  censored: block_ended {censored['block_ended']}, observer_gap "
+            f"{censored['observer_gap']}, export_ended {censored['export_ended']}")
+        add(f"  sustained anchor 900 s: {sustained['numerator'] or 0} of {sustained['denominator']} "
+            f"uncensored point(s); departure-free 600 s: {free['numerator']} of {free['denominator']}; "
+            f"{ASSOCIATIONAL_TAG}")
+        add(f"  offers delivered: {recorded['delivered']}, withheld: {recorded['withheld']} "
+            f"{stratum['withheld_by_outcome'] or ''}".rstrip())
+        add(f"  was_focused {trust['was_focused']}, wrong_classification "
+            f"{trust['wrong_classification']}, of {trust['denominator']} delivered; returned "
+            f"within 600 s unanswered: {retired['numerator']} of {retired['denominator']}")
+        add(f"  blocks declared: {sum(stratum['blocks_declared'].values())} "
+            f"{stratum['blocks_declared'] or ''}".rstrip())
+        add(f"  invitations accepted: {invitations['accepted']} of {invitations['terminal']} "
+            f"terminal; explain weeks: {explain['participant_weeks']} (taps {explain['taps']} "
+            f"over {explain['delivered_interventions']} delivered)")
 
     exclusions = result["exclusions"]
     heading("EXCLUSIONS (declared in advance)")
@@ -2342,6 +3024,10 @@ def render(result: dict) -> str:
     add("")
     add("Report numerator and denominator, never the ratio alone.")
     return "\n".join(out)
+
+
+def _when(timestamp: int) -> str:
+    return datetime.fromtimestamp(timestamp, tz=timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
 
 
 def _date(value: str) -> datetime:

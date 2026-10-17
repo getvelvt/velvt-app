@@ -2523,6 +2523,9 @@ fn idle_snapshot() -> WorkBlockSnapshot {
 }
 
 #[cfg(test)]
+mod block_feature_vectors;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::persistence::SqlitePersistence;

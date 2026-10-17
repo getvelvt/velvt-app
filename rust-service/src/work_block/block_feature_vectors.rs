@@ -16,6 +16,8 @@
 //!   so a renamed field or a changed count fails here rather than in an
 //!   export;
 //! - the card's branch, read from the sentence [`block_result_copy`] chose;
+//! - whether the category that sentence is about is one of the gate's work
+//!   categories ([`ANCHOR_CATEGORIES`]), which the exporter's list must equal;
 //! - the work share, from [`work_anchor`] and [`is_confident`], and the feed
 //!   share, from [`is_confident`].
 //!
@@ -108,12 +110,19 @@ fn share(part: u32, whole: u32) -> f64 {
     }
 }
 
+/// The exporter's SQL and `analyze_cohort.py` name the work categories in
+/// their own words; this is the list they copy, and it must be the gate's.
+#[test]
+fn the_exported_work_categories_are_the_gates() {
+    assert_eq!(WORK_CATEGORIES, ANCHOR_CATEGORIES);
+}
+
 #[test]
 fn block_feature_vectors_match_the_result_the_app_records() {
     let vectors: Value = serde_json::from_str(VECTORS).expect("the vectors are JSON");
     assert_eq!(vectors["block_feature_version"], 1);
     let cases = vectors["cases"].as_array().expect("cases");
-    assert!(cases.len() >= 10, "the vectors lost their cases");
+    assert!(cases.len() >= 12, "the vectors lost their cases");
     for case in cases {
         let name = text(case, "name");
         let base = integer(case, "base");
@@ -171,10 +180,28 @@ fn block_feature_vectors_match_the_result_the_app_records() {
         for (key, want) in case["result"].as_object().expect("result") {
             assert_eq!(&stored[key], want, "{name}: stored result field {key}");
         }
+        let branch = branch_of(&result.observation);
+        assert_eq!(branch, text(expect, "card_branch"), "{name}: card branch");
+
+        // Whether the card is about work: the category its sentence names is
+        // the stored safe_evidence_category, and a card with nothing honest
+        // to say names none.
+        let anchor_is_work = if branch == "low_coverage" {
+            Value::Null
+        } else {
+            let category = result
+                .safe_evidence_category
+                .as_deref()
+                .expect("a card that is not low coverage names a category");
+            Value::from(i64::from(
+                ANCHOR_CATEGORIES
+                    .iter()
+                    .any(|work| work.eq_ignore_ascii_case(category)),
+            ))
+        };
         assert_eq!(
-            branch_of(&result.observation),
-            text(expect, "card_branch"),
-            "{name}: card branch"
+            &anchor_is_work, &expect["card_anchor_is_work"],
+            "{name}: card_anchor_is_work"
         );
 
         // The shares, from the gate's own test of evidence and its own anchor.

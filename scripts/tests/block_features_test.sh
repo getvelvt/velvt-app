@@ -24,6 +24,9 @@
 #    It catches the two drifting apart.
 # 4. The column lists are one contract: the exporter's headers, this script's
 #    and, once it is merged, analyze_ratings.py's.
+# 5. The hour bucket and weekend are local: the vectors run again under two
+#    other time zones (one on a half hour), where both must give the local
+#    answer the vectors' `zones` hold, not the UTC one.
 #
 # The databases are built by replaying the shipped migrations, up to the
 # schema with the question after a block (0048).
@@ -46,7 +49,8 @@ command -v sqlite3 >/dev/null 2>&1 || { echo "ERROR: sqlite3 not on PATH" >&2; e
 
 tester_bash="bash"
 if [[ -x /bin/bash ]]; then tester_bash="/bin/bash"; fi
-# The hour bucket and weekend are local; the vectors are worked out in UTC.
+# The hour bucket and weekend are local; the vectors' `expect` is worked out
+# in UTC, and section 5 runs them under other zones.
 export TZ=UTC
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
@@ -279,12 +283,24 @@ assert len(names) == len(set(names)), "duplicate case names"
 assert all(c.get("rule") for c in cases), "a case without its rule"
 expects = [c["expect"] for c in cases]
 assert {e["card_branch"] for e in expects} == {"stayed", "came_back", "ended_elsewhere", "low_coverage"}
+assert {e["card_anchor_is_work"] for e in expects} == {0, 1, None}
+# A card about something other than work, in more than one branch.
+assert {e["card_branch"] for e in expects if e["card_anchor_is_work"] == 0} >= {"stayed", "came_back"}
 assert {e["coverage_class"] for e in expects} == {"insufficient", "partial", "good"}
 assert {e["hour_bucket"] for e in expects} == {"night", "morning", "afternoon", "evening"}
 assert {e["weekend"] for e in expects} == {0, 1}
 assert {e["offer_delivered"] for e in expects} == {0, 1}
 assert None in {e["policy_version"] for e in expects}
 assert None in {e["purpose"] for e in expects}
+# Every case has a local answer in each zone, and each zone moves at least
+# one bucket and one weekend flag off its UTC value.
+zones = json.load(open(sys.argv[1]))["zones"]
+assert len(zones) >= 2, zones
+for zone, answers in zones.items():
+    assert sorted(answers) == sorted(names), (zone, sorted(set(names) ^ set(answers)))
+    utc = {c["name"]: [c["expect"]["hour_bucket"], c["expect"]["weekend"]] for c in cases}
+    assert any(answers[n][0] != utc[n][0] for n in names), zone
+    assert any(answers[n][1] != utc[n][1] for n in names), zone
 PY
 
 # ===========================================================================
@@ -333,7 +349,8 @@ for number in range(300):
         "recovery_count": rng.randint(0, switch),
         "longest_uninterrupted_seconds": rng.randint(0, max(1, elapsed)),
         "safe_evidence_category": None if ratio < 0.25 or rng.random() < 0.05 else
-                                  rng.choice(["FOCUS_WORK", "REFERENCE", "PASSIVE_CONSUMPTION"]),
+                                  rng.choice(["FOCUS_WORK", "REFERENCE", "PASSIVE_CONSUMPTION",
+                                              "SOCIAL_FEED", "focus_work", "Odd Label"]),
     }
     if rng.random() < 0.04:
         result["coverage"] = "weird"
@@ -373,6 +390,8 @@ assert all(branches[b] >= 5 for b in ("stayed", "came_back", "ended_elsewhere", 
 assert branches[""] >= 3, branches                               # no result, or not JSON
 assert Counter(r["coverage_class"] for r in rows)["unrecognized"] >= 3
 assert Counter(r["policy_version"] for r in rows)[""] >= 20
+anchor = Counter(r["card_anchor_is_work"] for r in rows)
+assert anchor["0"] >= 20 and anchor["1"] >= 20 and anchor[""] >= 20, anchor
 assert {r["hour_bucket"] for r in rows} == {"night", "morning", "afternoon", "evening"}
 assert any(r["offer_delivered"] == "0" and r["offer_outcome"] == "" for r in rows)
 assert any(float(r["unlogged_share"] or 0) > 0 for r in rows)
@@ -409,5 +428,29 @@ if ratings.is_file():
 else:
     print("analyze_ratings.py is not on this branch; its columns are checked once it is")
 PY
+
+# ===========================================================================
+# 5. Local time. The same vectors under two other zones: the exporter's
+#    `localtime` and block_features' time.localtime must both follow TZ, the
+#    stand-in here for the tester's Mac's zone. Kolkata is on a half hour.
+# ===========================================================================
+for zone in America/Los_Angeles Asia/Kolkata; do
+  tag="$(printf '%s' "$zone" | tr '/A-Z' '-a-z')"
+  python3 - "$work/vectors.json.expect" "$zone" "$work/vectors-$tag.json" <<'PY'
+import json, sys
+spec = json.load(open(sys.argv[1]))
+answers = spec["zones"][sys.argv[2]]
+moved = 0
+for case in spec["cases"]:
+    if case["expect"] is None or case.get("unrated"):
+        continue
+    bucket, weekend = answers[case["name"]]
+    moved += [bucket, weekend] != [case["expect"]["hour_bucket"], case["expect"]["weekend"]]
+    case["expect"].update(hour_bucket=bucket, weekend=weekend)
+assert moved, "this zone moves nothing, so it cannot tell local time from UTC"
+json.dump(spec, open(sys.argv[3], "w"))
+PY
+  ( export TZ="$zone"; run_case "vectors-$tag" "$work/vectors-$tag.json" --expect )
+done
 
 echo "block_features_test.sh: OK"

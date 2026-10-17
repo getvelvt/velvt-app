@@ -173,8 +173,10 @@ open founder decision. The weekly digest and the dashboard read
 `recovery_count`. The cohort export (format 7) reads the stored result's
 coverage, switch-away and return counts and longest run, as the card states
 them, but only for a block with a row for the question after a block, and
-writes beside them the block's share of confident time in its work anchor, so
-the two are reported side by side and never reconciled.
+writes beside them the block's share of confident time in its work anchor and
+whether the category the card is about is a work category
+(`card_anchor_is_work`), so the two are reported side by side and never
+reconciled.
 
 An observation row's end is the next row's start. At a boundary — pause or
 sleep, a service restart, or the end of the block — there is no next row, and
@@ -431,7 +433,10 @@ The answers leave the Mac only in the files a tester reads and sends:
 answered or not, to `-ratings.csv`, and a summary of each rated block, and of
 no other block, to `-blockfeatures.csv` (`BLOCK_FEATURE_VERSION` 1). The
 summary is shares, counts, durations and closed-set values worked out on the
-Mac from the observation rows and the stored result; it names no category. The
+Mac from the observation rows and the stored result; it names no category. Its
+part of the day and weekend flag are read on the Mac's clock when the export
+runs, so beside the blocks file's UTC start times they show the Mac's time
+zone to about an hour; the participant summary says so. The
 definitions are in the exporter's header, restated in
 `scripts/analyze_cohort.py` (`block_features`), and held, with this module's
 own result (`src/work_block/block_feature_vectors.rs`), to

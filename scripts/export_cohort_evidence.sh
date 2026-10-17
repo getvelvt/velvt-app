@@ -837,6 +837,12 @@ fi
 #                         insufficient or the result names no category, stayed
 #                         with no switch-away, ended_elsewhere with no return,
 #                         came_back otherwise.
+#      card_anchor_is_work 1 when the category the sentence is about (the
+#                         result's `safe_evidence_category`, the one with the
+#                         most confident time) is a work category (FOCUS_WORK,
+#                         REFERENCE, TASK_MANAGEMENT or COMMUNICATION), 0 when
+#                         it is any other, empty for low_coverage. "stayed" on
+#                         a feed and "stayed" on work are different cards.
 #      elapsed_seconds    ended_at - started_at - total_paused_seconds, the
 #                         gate's arithmetic.
 #      covered_seconds    what the raw activity stream covered with confident
@@ -868,9 +874,17 @@ fi
 #      purpose, intensity, planned_minutes (rounded), origin.
 #      hour_bucket        the part of the local day the block started in:
 #                         night (0-5), morning (6-11), afternoon (12-17) or
-#                         evening (18-23). Six-hour parts, not the hour, so the
-#                         file says little about this Mac's time zone.
+#                         evening (18-23).
 #      weekend            1 when it started on a local Saturday or Sunday.
+#
+#                         Local is this Mac's time zone when the export runs,
+#                         not the zone the block ran in, so a tester who has
+#                         travelled since sees their blocks shifted. Neither
+#                         column hides the time zone: the blocks file carries
+#                         each block's UTC start under the same block_id, and
+#                         each rated block's part of the day narrows the UTC
+#                         offset to six hours, a few of them to about an hour.
+#                         The participant summary below says so.
 #
 #    Every share is rounded to six decimal places. Nothing else is read from
 #    the result payload: its sentence, its next action and its reconciliation
@@ -1035,6 +1049,12 @@ SELECT
       WHEN z.recoveries = 0 THEN 'ended_elsewhere'
       ELSE 'came_back'
     END,
+    CASE
+      WHEN z.coverage IS NULL OR z.coverage = 'insufficient' OR z.evidence IS NULL THEN NULL
+      WHEN UPPER(z.evidence) IN ('FOCUS_WORK', 'REFERENCE', 'TASK_MANAGEMENT', 'COMMUNICATION')
+      THEN 1
+      ELSE 0
+    END,
     z.elapsed,
     z.covered,
     CASE
@@ -1093,7 +1113,7 @@ SQL
     FEATURES_SQL="${FEATURES_SQL/@ORIGIN@/NULL}"
   fi
   write_csv "$BLOCKFEATURES_OUT" \
-    'block_id,block_feature_version,policy_version,card_branch,elapsed_seconds,covered_seconds,coverage_class,work_anchor_share,switch_aways_per_covered_hour,longest_run_share,recovery_ratio,feed_share,unlogged_share,offer_delivered,offer_outcome,purpose,intensity,planned_minutes,origin,hour_bucket,weekend' \
+    'block_id,block_feature_version,policy_version,card_branch,card_anchor_is_work,elapsed_seconds,covered_seconds,coverage_class,work_anchor_share,switch_aways_per_covered_hour,longest_run_share,recovery_ratio,feed_share,unlogged_share,offer_delivered,offer_outcome,purpose,intensity,planned_minutes,origin,hour_bucket,weekend' \
     "$FEATURES_SQL"
   FEATURE_ROWS="$(rows_in "$BLOCKFEATURES_OUT")"
 fi
@@ -1281,9 +1301,12 @@ you spent most of it on and the share on feeds and video, the share Velvt
 could not put in a category, how often you left your main activity and came
 back, your longest stretch, whether a nudge reached you during it and what
 you did with it, its purpose, intensity, planned length and how it started,
-the part of the day it started in (night, morning, afternoon or evening) and
+whether the activity its end-of-session summary was about counts as work, the
+part of the day it started in (night, morning, afternoon or evening) and
 whether that was a weekend. It is worked out on this Mac, and it names no
-category, app, site or window.
+category, app, site or window. The part of the day is read on your Mac's
+clock, so next to the start times in the blocks file it shows roughly which
+time zone your Mac is set to.
 SUMMARY
 fi
 

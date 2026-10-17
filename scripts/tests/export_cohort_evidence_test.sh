@@ -708,7 +708,7 @@ mkdir -p "$work/p48"
 echo "stale" > "$work/p48/export-ratings.csv"
 run_export "$db48" "$work/p48/export.csv" "$work/p48/log.txt"
 RATINGS_HEADER='block_id,prompt_version,eligible_at,shown_at,answered_at,not_now_at,expired_at,card_seen_before_answer,answer'
-BLOCKFEATURES_HEADER='block_id,block_feature_version,policy_version,card_branch,elapsed_seconds,covered_seconds,coverage_class,work_anchor_share,switch_aways_per_covered_hour,longest_run_share,recovery_ratio,feed_share,unlogged_share,offer_delivered,offer_outcome,purpose,intensity,planned_minutes,origin,hour_bucket,weekend'
+BLOCKFEATURES_HEADER='block_id,block_feature_version,policy_version,card_branch,card_anchor_is_work,elapsed_seconds,covered_seconds,coverage_class,work_anchor_share,switch_aways_per_covered_hour,longest_run_share,recovery_ratio,feed_share,unlogged_share,offer_delivered,offer_outcome,purpose,intensity,planned_minutes,origin,hour_bucket,weekend'
 check_header "$work/p48/export-ratings.csv" "$RATINGS_HEADER"
 check_header "$work/p48/export-blockfeatures.csv" "$BLOCKFEATURES_HEADER"
 check_header "$work/p48/export-blocks.csv" "$BLOCKS_HEADER"
@@ -741,7 +741,8 @@ assert [f["block_id"] for f in features] == ["r-1", "r-2", "r-3", "r-4", "r-5", 
 f = {row["block_id"]: row for row in features}
 assert dict(f["r-1"]) == {
     "block_id": "r-1", "block_feature_version": "1", "policy_version": "6",
-    "card_branch": "came_back", "elapsed_seconds": "1800", "covered_seconds": "1700",
+    "card_branch": "came_back", "card_anchor_is_work": "1",
+    "elapsed_seconds": "1800", "covered_seconds": "1700",
     "coverage_class": "good", "work_anchor_share": "0.823529",
     "switch_aways_per_covered_hour": "2.117647", "longest_run_share": "0.5",
     "recovery_ratio": "1.0", "feed_share": "0.176471", "unlogged_share": "0.0",
@@ -750,7 +751,8 @@ assert dict(f["r-1"]) == {
     "hour_bucket": "morning", "weekend": "0"}, dict(f["r-1"])
 assert dict(f["r-2"]) == {
     "block_id": "r-2", "block_feature_version": "1", "policy_version": "",
-    "card_branch": "low_coverage", "elapsed_seconds": "1800", "covered_seconds": "0",
+    "card_branch": "low_coverage", "card_anchor_is_work": "",
+    "elapsed_seconds": "1800", "covered_seconds": "0",
     "coverage_class": "insufficient", "work_anchor_share": "0.0",
     "switch_aways_per_covered_hour": "0.0", "longest_run_share": "0.0",
     "recovery_ratio": "0.0", "feed_share": "0.0", "unlogged_share": "0.0",
@@ -759,6 +761,8 @@ assert dict(f["r-2"]) == {
     "hour_bucket": "morning", "weekend": "0"}, dict(f["r-2"])
 assert (f["r-3"]["card_branch"], f["r-4"]["card_branch"], f["r-5"]["card_branch"]) == (
     "stayed", "came_back", "ended_elsewhere"), features
+# r-3's card is about REFERENCE, a work category.
+assert {f[b]["card_anchor_is_work"] for b in ("r-3", "r-4", "r-5", "r-6")} == {"1"}, features
 # A withheld offer was not delivered; a block with no purpose writes none; a
 # block with no decision row (r-2, above) has no policy version.
 assert (f["r-4"]["offer_delivered"], f["r-4"]["offer_outcome"], f["r-4"]["purpose"]) == ("0", "", ""), f["r-4"]
@@ -789,6 +793,8 @@ for phrase in "record(s) of the question after a block to:" \
               "How much of this block was on what you meant to do?" \
               "whether or not you answered" \
               "It is worked out on this Mac, and it names no category, app, site or window." \
+              "whether the activity its end-of-session summary was about counts as work" \
+              "it shows roughly which time zone your Mac is set to." \
               "when you first turned on the question after a session, if you did."; do
   grep -qF -- "$phrase" <<<"$folded48" || fail "format 7 disclosure omits: $phrase"
 done
@@ -822,6 +828,43 @@ on = r["strata"]["question_on"]
 assert on["blocks_declared"] == {"p48": 6}, on
 assert on["eligible_decision_points"] == 1 and on["decisions_recorded"]["withheld"] == 1, on
 assert r["strata"]["after_day_14"]["blocks_declared"] == {"p48": 1}, r["strata"]["after_day_14"]
+PY
+
+# The kit sends the exporter as a script, so a graduate on a build with the
+# question can run an older copy of it. Its meta has the schema version and
+# no `ratings` row, and it writes neither format 7 file. That export cannot
+# say when the question was turned on: everything after day 14 counts in no
+# figure and in neither stratum, and the deviations are not measurable.
+mkdir -p "$work/cohort48-old/p48-old"
+for f in "$work/p48"/export*.csv; do
+  case "$f" in *-ratings.csv|*-blockfeatures.csv|*-meta.csv) continue ;; esac
+  cp "$f" "$work/cohort48-old/p48-old/"
+done
+python3 - "$work/p48/export-meta.csv" "$work/cohort48-old/p48-old/export-meta.csv" <<'PY'
+import csv, sys
+FORMAT_7 = {"ratings", "rating_prompt_version", "rating_prompt_enabled_at",
+            "rating_expiries_filled", "block_feature_version", "v6_period_start"}
+rows = [r for r in csv.reader(open(sys.argv[1])) if r[0] not in FORMAT_7]
+rows = [["export_format", "6"] if r[0] == "export_format" else r for r in rows]
+csv.writer(open(sys.argv[2], "w", newline="")).writerows(rows)
+PY
+python3 "$analyze" --json "$work/cohort48-old/p48-old" > "$work/analysis48-old.json"
+python3 - "$work/analysis48-old.json" <<'PY' || fail "an older exporter's copy of a database with the question"
+import json, sys
+r = json.load(open(sys.argv[1]))
+assert r["participants"]["analysed"] == 1, r["participants"]
+period = r["v6_primary_period"]
+assert period["per_participant"]["p48-old"]["question_boundary_unknown"] is True, period
+placed = period["rows_by_placement"]
+assert placed["blocks"] == {"in_period": 1, "question_unknown": 7}, placed
+assert placed["decisions"] == {"in_period": 1, "question_unknown": 5}, placed
+assert r["strata"]["after_day_14"]["blocks_declared"] == {}, r["strata"]
+assert r["strata"]["question_on"]["blocks_declared"] == {}, r["strata"]
+deviations = period["protocol_deviations"]
+assert (deviations["total"], deviations["not_measurable_for"]) == (0, ["p48-old"]), deviations
+assert any("older than format 7" in m for m in r["data_quality"]["malformed"]), r["data_quality"]
+# In-period figures stand: the app refuses to turn the question on before day 14.
+assert r["power"]["observed_eligible_decision_points"] == 1, r["power"]
 PY
 #    and say "unknown", never fail and never say "unseen".
 # ===========================================================================

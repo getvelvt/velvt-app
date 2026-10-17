@@ -88,7 +88,9 @@ migration 0048 (#95).
   the drafted v6 primary-period amendment defines it; rows after day 14 and
   rows at or after `rating_prompt_enabled_at` are two descriptive strata, never
   pooled, and a rated block or a question-on row inside the period is counted
-  as a protocol deviation.
+  as a protocol deviation. An older copy of the exporter run on a database with
+  migration 0048 cannot say when the question was turned on: its rows after
+  day 14 count nowhere and its deviations are reported as not measurable.
 - No drift decision changes and `DRIFT_POLICY_VERSION` stays 6. The work-block
   manager consults the question only while building the snapshot of an ended
   block; `rust-service/tests/rating_isolation.rs` replays the same blocks with

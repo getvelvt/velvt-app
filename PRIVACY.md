@@ -404,20 +404,36 @@ this is the whole of what it reaches:
   `explain_probe_week`. It does not reach the classification and correction
   tables, the needs-a-category prompt's three tables, `out_of_block_run`, or
   `antecedent_finding`.
-- **Delete Account** is a request to the cloud. The Rust service marks an open
-  invitation expired, relays the deletion to the account-deletion endpoint, and
-  on acceptance clears the session it holds in memory, destroys the upload
-  batches still waiting to be sent, and makes every event not yet in a batch
-  local-only, so none of it is sent under the next account to sign in. It
-  deletes nothing else from this database (`ClientMessage::DeleteAccount`,
+- **Delete Account** is a request to the cloud. The Rust service first marks
+  an open invitation expired (`initiation_invitation`), then relays the
+  deletion to the account-deletion endpoint (`ClientMessage::DeleteAccount`,
   `rust-service/src/ipc/router.rs`). An account deleted from another Mac is
-  treated the same way here once the server answers this Mac that the account
-  was deleted.
-- **Signing out** keeps what is waiting to upload, under the account it was
-  recorded for. It is sent if that account signs in again on this Mac, and
-  discarded, never sent, once a different account signs in: activity recorded
-  under one account is never uploaded into another
-  (`SessionOwnership`, `rust-service/src/upload/coordinator.rs`).
+  treated the same way here, once the server tells this Mac that the account
+  was deleted. Once the cloud accepts the deletion, the service does three
+  things, and deletes nothing else from this database:
+  - It clears the session it holds in memory.
+  - It deletes the upload batches still waiting to be sent: the pending and
+    failed `upload_batch` rows, and their `batch_event` rows. Batches already
+    sent, rejected or abandoned stay until their retention ends.
+  - It makes every event that was waiting to be sent local-only, whether it
+    was in one of those batches or not yet in a batch. It sets
+    `raw_event_buffer.upload_eligible` to 0 and clears
+    `upload_owner_user_id`, so none of it is sent under the next account to
+    sign in.
+- **Signing out** deletes nothing from this database. It marks an open
+  invitation expired (`initiation_invitation`), as Delete Account does.
+  - **What is waiting to upload stays, under the account it was recorded
+    for.** That includes the activity held in memory for the next batch,
+    which is written to the queue at sign-out.
+  - **It is sent only under that account.** It is sent if that account signs in
+    again on this Mac. Once a different account signs in, it is discarded and
+    never sent. Activity recorded under one account is never uploaded into
+    another (`SessionOwnership`, `rust-service/src/upload/coordinator.rs`).
+
+`rust-service/tests/field_inventory.rs` checks this list against the service.
+It runs each of these four actions against a database holding a row in every
+table. It fails if an action changes a table its entry here does not name, or
+changes any table other than as that test's `REACH` table records.
 
 A deleted row is also gone from the file itself. The service opens the database
 with SQLite's `secure_delete` on, so SQLite overwrites a deleted row's bytes with
@@ -594,6 +610,17 @@ work-block-intervention rows without the columns migrations 0032, 0035, and
 requests only the Accessibility and Notifications permissions, leaving out the
 optional Focus status permission and the application metadata the client
 reads. Corrected here on 2026-09-25.
+
+A previous version of the list of what the app's destructive actions remove
+said that list was the whole of what each action reaches, and it was not:
+
+- It did not say that signing out marks an open invitation expired.
+- It named no table for Delete Account.
+- It said Delete Account makes only the events not yet in a batch local-only.
+  The events in the batches it deletes become local-only too.
+
+Each entry now names every table its action changes, and a build test holds
+the list to the service. Corrected here on 2026-10-17.
 
 ## What is transmitted to the cloud, and in what form
 

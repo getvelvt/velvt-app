@@ -3,12 +3,16 @@
 Every notarized Velvt build that has been released, and the source it came
 from, as far as that source can still be identified. Ten builds have been
 notarized and released: 1.0.0, 1.0.1, 1.0.3, 1.0.4, 1.0.6, 1.0.7, 1.0.8,
-1.0.9, 1.0.10 and 1.0.11. There was no 1.0.2 and no 1.0.5.
+1.0.9, 1.0.10 and 1.0.11. There was no 1.0.2 and no 1.0.5. Two later builds,
+1.0.12 (build 18) and 1.0.13 (build 19), were built, installed on the
+founder's Macs and tagged `v1.0.12` and `v1.0.13` in the maintainer's clone,
+but have no rows in the table yet (see "Pending: 1.0.14" below).
 
-Source tags exist for **v1.0.0, v1.0.1, v1.0.9 and v1.0.11 only**. The source
-of 1.0.10 was not preserved, and the source of 1.0.3 through 1.0.7 was never
-recorded. No release has been shown to rebuild byte for byte from its tag, so
-this ledger does not claim that any release is reproducible.
+Of the ten in the table, source tags exist for **v1.0.0, v1.0.1, v1.0.9 and
+v1.0.11 only**. The source of 1.0.10 was not preserved, and the source of
+1.0.3 through 1.0.7 was never recorded. No release has been shown to rebuild
+byte for byte from its tag, so this ledger does not claim that any release is
+reproducible.
 
 **Recipients, all releases: the founder's own Macs only.** There are two
 installs, both on the founder's Macs, and no external installs. No
@@ -68,6 +72,43 @@ Not in the table:
 - **`v0.1.0`**, a tag in the maintainer's local clone only, at `6bab95f`
   (2026-07-31), which is an ancestor of `develop`. It marks no notarized build.
   It has never been pushed, and it is being left as it is.
+
+## Pending: 1.0.14 (build 20), not built yet
+
+The next release. velvt-app PR #74 sets it in `Version.xcconfig`. Its build
+number follows 1.0.12 (build 18) and 1.0.13 (build 19). Both were built and
+installed on the founder's Macs and are tagged `v1.0.12` and `v1.0.13` in the
+maintainer's clone, but neither has a row in the table above yet.
+
+This is a plan, not a release. Its Version cell is not a bare version number,
+so `scripts/release_provenance.sh` does not read it as shipped. Once the DMG is
+notarized, replace this section with a row in the table above (DMG date,
+sha256, notarization IDs) that also says it runs drift policy 6.
+
+| Version | Build | IPC protocol | Migrations | Drift policy | Source |
+|---|---:|---:|---|---|---|
+| 1.0.14 (pending) | 20 | 36 | 0001–0044 | 6: browser tabs by site (#62), YouTube by video title and TikTok's web app as a feed (#78), and an anchor that is always a work category (#83) | `develop` after #83 (`fix/anchor-work-lane`), then #84 (`fix/focus-status-unknown`, protocol 36, migration 0044), then #74, which merges last. Untagged |
+
+Before cutting it:
+
+1. Merge #83, then #84, then #74. #74 merged on its own would give 1.0.14 to a
+   protocol 35 tree that still has the anchor rule #83 replaces. No build of
+   that tree may reach a tester.
+2. Check the tree to be built: `proto/version` is 36, the newest file in
+   `rust-service/migrations/` is `0044_decision_focus_state.sql`, and
+   `DRIFT_POLICY_VERSION` in `rust-service/src/work_block/mod.rs` is 6.
+3. The v6 pre-registration, which describes the work-category anchor, must be
+   appended to `pitch-deck-inputs/evidence/traction-summary.md` before the
+   build is cut. It is not there yet.
+4. Before any tester gets 1.0.14, make the privacy copy say what v6 reads. v6
+   decides a YouTube tab's category on the Mac from words in its video title
+   (#78). The velvt-web privacy page from velvt-web #18
+   (`fix/privacy-permission-list`,
+   `apps/web/components/marketing/privacy-page.tsx`) says Velvt does not read
+   what you "type, click or watch" on a page. Rewrite that sentence to say
+   that, on the Mac, a YouTube tab's category is decided from its video
+   title, and bump the page's "Last updated" date. `PRIVACY.md` must say the
+   same; on `develop` it does not mention the video title yet.
 
 ## Cutting the next release
 

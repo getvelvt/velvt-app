@@ -15,8 +15,8 @@
 #   protocol 30  1.0.11 (0036) the first with card_seen_at (0032, protocol 29)
 #   protocol 31  develop on 2026-09-25 (0038), in no shipped build yet: salted
 #                stable keys (0037) and the egress ledger (0038)
-#   policy v5    velvt-app PR #62 (0040, site rules), the schema wave 1 is
-#                meant to run
+#   policy v5    velvt-app PR #62 (0040, site rules), which no release carried
+#                on its own; wave 1 runs 1.0.14 (policy v6, protocol 36, 0044)
 #   protocol 35  what became of each offer's notification (0043,
 #                `delivery_channel`), after protocol 34's upload owner (0042)
 #   protocol 36  what the service knew about Focus at each decision (0044,

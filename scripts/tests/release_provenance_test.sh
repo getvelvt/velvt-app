@@ -80,6 +80,8 @@ repo="$fixture_dir/repo"
 mkdir -p "$repo/scripts" "$repo/swift-client/Configs" "$repo/docs"
 cp "$provenance" "$repo/scripts/"
 script="$repo/scripts/release_provenance.sh"
+# The pending row names the very version and build the checks below cut: a
+# release written down before it is built must not refuse its own build.
 cat >"$repo/docs/RELEASES.md" <<'LEDGER'
 | Version | Build | Notes |
 |---|---:|---|
@@ -87,6 +89,10 @@ cat >"$repo/docs/RELEASES.md" <<'LEDGER'
 | 1.0.10 | 16 | shipped |
 
 | Something else | 99 | not a release row |
+
+| Version | Build | Notes |
+|---|---:|---|
+| 1.0.12 (pending) | 18 | not built yet |
 LEDGER
 set_version() {
   printf 'MARKETING_VERSION = %s\nCURRENT_PROJECT_VERSION = %s\n' "$1" "$2" >"$repo/swift-client/Configs/Version.xcconfig"

@@ -347,6 +347,51 @@ per week (`explain_probe_week`) — the pre-registered R4 gate metric — and
 the delivered denominator is derived from the same stored predicate the
 counter uses. No upload path for these counts exists in this release.
 
+## The Question After a Block (protocol 38)
+
+An optional measurement instrument (workspace
+`plan/attention-labels-and-model.md` § 3, founder decision 2026-10-17): "How
+much of this block was on what you meant to do?", five answers, Not now.
+`rust-service/src/self_rating/` owns every rule and every word: which ended
+blocks it covers (five minutes or more, started at least 14 days after the
+Mac's v6 primary period began, the question on for the whole block), when it
+expires (two hours after the block ended or when the next block starts), and
+what a sighting, a Not now and an answer record. It never changes a drift
+decision: the gate does not read it, and `tests/rating_isolation.rs` and the
+golden replay hold every drift table byte-identical with it on.
+
+Swift draws it and reports taps (`UI/QuestionAfterABlockView.swift`,
+`WorkBlockCoordinator`):
+
+- It is drawn only from the snapshot of an ended block, for that block, before
+  `expires_at`. It is never drawn during a block, and it is never a
+  notification: no delivery path reads it.
+- It sits directly above the block's result on both surfaces that show one:
+  the result view in the focus-session popover, and the Now tab of the panel,
+  whose fragmentation card summarises the same block. While the popover is
+  open the panel leaves the question to it, so one set of answers is on
+  screen.
+- While it is up for the first time (`presentation: question`), the block's
+  observation and numbers are held back on both surfaces, and so is the
+  panel's last-hour early signal, which a block that just ended mostly is.
+  Velvt's summary would anchor the answer; an answer given after the summary
+  was seen is a separate stratum, which Rust records only through Not now or
+  the link.
+- Not now is reported once (`work_block_rating_not_now`), and Rust's reply
+  shows the result with the link under it. The link reopens the question above
+  the result, and an answer from there carries `via_link`. Not now on the
+  reopened question closes it and reports nothing new.
+- An answer (`rate_work_block`) disables the five answers until the reply; the
+  acknowledgement ("Noted.") appears only once the reply no longer carries the
+  question, and the result appears under it.
+- The sighting (`work_block_rating_shown`) is reported only from a surface that
+  is on screen, as the drift card's is.
+- At `expires_at` the coordinator asks for the block's state once, because the
+  service publishes on commands, not on a timer.
+- The one-time invitation (`rating_opt_in`) sits in the same place and reports
+  which button was tapped (`respond_rating_opt_in`); Rust decides what that
+  records. The Settings toggle is described in `docs/swift-client/settings.md`.
+
 ## Failure Behavior
 
 - Offline Swift sends fail without creating optimistic local state. Persisted

@@ -74,6 +74,25 @@ try await ipcClient.send(.flushUploadQueue)
 
 Rust responds at once with a `menu_status` showing the queue as it stands and sends the queue in the background; the next `menu_status` shows the outcome. Since 1.0.14 Rust no longer sends `error_response(upload_flush_failed)`; the client still handles it.
 
+## Collection Settings
+
+The Collection Settings submenu holds the Offline Event Collection toggle, the
+Initiation Invitations toggle, the toggle for the optional question after a
+block, and Clear Local Work Blocks.
+
+The question's toggle (protocol 38) is a Rust-owned setting, like initiation
+invitations. `RatingPromptSettingsToggle` (`UI/QuestionAfterABlockView.swift`)
+renders `rating_prompt_settings` verbatim, title and subtitle included, and is
+drawn only while that message says `available`: once the Mac's first 14 days of
+blocks are over, or while the question is on. Off is the default, and Swift
+assumes nothing before the service reports. The submenu asks again each time it
+opens, with `request_rating_prompt_settings`, because the switch becomes
+available on day 14 without a reconnect. A change sends
+`set_rating_prompt_enabled`; its reply carries only the setting, so after a
+block has ended Swift also sends `request_work_block_state`, and a question the
+change withdrew leaves the result view. The toggle never answers the one-time
+invitation. Swift stores none of this.
+
 ## Persisted Local UI State
 
 Swift persists only lightweight UI/session state:

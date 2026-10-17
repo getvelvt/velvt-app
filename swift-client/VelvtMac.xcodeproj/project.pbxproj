@@ -25,6 +25,7 @@
 		A1C4E7F2B93D4E118C6A5D30 /* InterventionNotifier.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3F8B2D6A47E14C9EB05719D2 /* InterventionNotifier.swift */; };
 		C47E0B1A5D2F4E3B9A61C001 /* CategoryPromptCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = C47E0B1A5D2F4E3B9A61C002 /* CategoryPromptCoordinator.swift */; };
 		C47E0B1A5D2F4E3B9A61C003 /* CategoryPromptCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = C47E0B1A5D2F4E3B9A61C004 /* CategoryPromptCard.swift */; };
+		D58A2C6E1F3B4A7C9E0D5A01 /* QuestionAfterABlockView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D58A2C6E1F3B4A7C9E0D5A02 /* QuestionAfterABlockView.swift */; };
 		38ABFEC236C54BCDBB9D836F /* PermissionManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 93C055AD72C0443A8CD98C13 /* PermissionManager.swift */; };
 		4346E234F70547A289E2D2EE /* AuthViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 81032E99C0684420AFA1791A /* AuthViewModel.swift */; };
 		443F93164E6A45C582B1BB38 /* MenuBarController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A9ADCDFF34741EE93EC7B6A /* MenuBarController.swift */; };
@@ -97,6 +98,7 @@
 		3F8B2D6A47E14C9EB05719D2 /* InterventionNotifier.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = InterventionNotifier.swift; path = Delivery/InterventionNotifier.swift; sourceTree = "<group>"; };
 		C47E0B1A5D2F4E3B9A61C002 /* CategoryPromptCoordinator.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = CategoryPromptCoordinator.swift; path = Delivery/CategoryPromptCoordinator.swift; sourceTree = "<group>"; };
 		C47E0B1A5D2F4E3B9A61C004 /* CategoryPromptCard.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = CategoryPromptCard.swift; path = UI/CategoryPromptCard.swift; sourceTree = "<group>"; };
+		D58A2C6E1F3B4A7C9E0D5A02 /* QuestionAfterABlockView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = QuestionAfterABlockView.swift; path = UI/QuestionAfterABlockView.swift; sourceTree = "<group>"; };
 		9C77572FBDDF8D193EC7E44C /* DeviceModule.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = DeviceModule.swift; path = Device/DeviceModule.swift; sourceTree = "<group>"; };
 		9D9324F3356F46669B6FC8E7 /* InsightCardView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = InsightCardView.swift; path = UI/InsightCardView.swift; sourceTree = "<group>"; };
 		9DB1CFA42FE2CD6F00632E03 /* Debug.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = Debug.xcconfig; path = "../../Configs/Debug.xcconfig"; sourceTree = "<group>"; };
@@ -209,6 +211,7 @@
 				B20C7D204B9345F3A6E1C102 /* WorkBlockCoordinator.swift */,
 				B20C7D204B9345F3A6E1C104 /* WorkBlockView.swift */,
 				C47E0B1A5D2F4E3B9A61C004 /* CategoryPromptCard.swift */,
+				D58A2C6E1F3B4A7C9E0D5A02 /* QuestionAfterABlockView.swift */,
 				7D6BCAC4A9634F0D97B2C99E /* VelvtPopoverContentView.swift */,
 				A1B2C3D4E5F601234567890F /* ServiceUnavailableView.swift */,
 				9DB1CFA42FE2CD6F00632E03 /* Debug.xcconfig */,
@@ -414,6 +417,7 @@
 				B20C7D204B9345F3A6E1C101 /* WorkBlockCoordinator.swift in Sources */,
 				B20C7D204B9345F3A6E1C103 /* WorkBlockView.swift in Sources */,
 				C47E0B1A5D2F4E3B9A61C003 /* CategoryPromptCard.swift in Sources */,
+				D58A2C6E1F3B4A7C9E0D5A01 /* QuestionAfterABlockView.swift in Sources */,
 				E7695F6AD86A41B6B9D74D9F /* VelvtPopoverContentView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;

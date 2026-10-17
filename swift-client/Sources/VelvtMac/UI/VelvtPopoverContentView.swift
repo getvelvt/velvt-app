@@ -603,14 +603,25 @@ public struct MinimalDashboardWorkspaceView: View {
     private let onStartWorkBlock: () -> Void
     private let highlightsInsight: Bool
     private let highlightsFocus: Bool
+    private let surfaceIsOnScreen: Bool
+    private let focusSessionIsOpen: Bool
 
+    /// - Parameters:
+    ///   - surfaceIsOnScreen: whether the panel drawing this tab is on screen.
+    ///     The question after a block reports a sighting only while it is.
+    ///   - focusSessionIsOpen: whether the focus-session popover, which draws
+    ///     the same block's result and the same question, is open over this
+    ///     tab. The question is then left to it, so one set of answers is on
+    ///     screen.
     public init(
         coordinator: ConcreteDisplayDataCoordinator,
         workBlockCoordinator: WorkBlockCoordinator,
         localDashboardCoordinator: LocalDashboardCoordinator,
         onStartWorkBlock: @escaping () -> Void,
         highlightsInsight: Bool = false,
-        highlightsFocus: Bool = false
+        highlightsFocus: Bool = false,
+        surfaceIsOnScreen: Bool = false,
+        focusSessionIsOpen: Bool = false
     ) {
         self.coordinator = coordinator
         self.workBlockCoordinator = workBlockCoordinator
@@ -618,6 +629,8 @@ public struct MinimalDashboardWorkspaceView: View {
         self.onStartWorkBlock = onStartWorkBlock
         self.highlightsInsight = highlightsInsight
         self.highlightsFocus = highlightsFocus
+        self.surfaceIsOnScreen = surfaceIsOnScreen
+        self.focusSessionIsOpen = focusSessionIsOpen
     }
 
     public var body: some View {
@@ -630,19 +643,49 @@ public struct MinimalDashboardWorkspaceView: View {
 
             TodaySoFarView(day: localDashboardCoordinator.snapshot?.dailyActivity.last)
 
-            latestInsight
-                .tourHighlight(highlightsInsight)
+            if showsLatestInsight {
+                latestInsight
+                    .tourHighlight(highlightsInsight)
+            }
 
-            FocusFragmentationView(
-                focus: localDashboardCoordinator.snapshot?.focusFragmentation,
-                errorMessage: localDashboardCoordinator.commandError,
-                onStartWorkBlock: onStartWorkBlock,
-                header: workBlockCardHeader
-            )
-            .tourHighlight(highlightsFocus)
+            if !focusSessionIsOpen {
+                QuestionAfterABlockView(
+                    coordinator: workBlockCoordinator,
+                    parts: [.ask, .acknowledgement],
+                    surfaceIsOnScreen: surfaceIsOnScreen
+                )
+            }
+
+            if !workBlockCoordinator.withholdsBlockSummary {
+                FocusFragmentationView(
+                    focus: localDashboardCoordinator.snapshot?.focusFragmentation,
+                    errorMessage: localDashboardCoordinator.commandError,
+                    onStartWorkBlock: onStartWorkBlock,
+                    header: workBlockCardHeader
+                )
+                .tourHighlight(highlightsFocus)
+
+                if !focusSessionIsOpen {
+                    QuestionAfterABlockView(
+                        coordinator: workBlockCoordinator,
+                        parts: [.link],
+                        surfaceIsOnScreen: surfaceIsOnScreen
+                    )
+                }
+            }
         }
         .padding(VelvtMetrics.spaceMD)
         .onAppear { localDashboardCoordinator.refresh() }
+    }
+
+    /// The insight slot, except while the question after a block is up for
+    /// the first time and the slot would hold the local early signal. That
+    /// signal summarises the last hour, which a block that just ended
+    /// mostly is, in the same words and numbers as the block's own card; it
+    /// is held back with that card until an answer or Not now. A cloud
+    /// insight is about a whole day and stays.
+    private var showsLatestInsight: Bool {
+        !workBlockCoordinator.withholdsBlockSummary || coordinator.insightAvailability == .available
     }
 
     /// The intention the user typed when they declared this block, else the

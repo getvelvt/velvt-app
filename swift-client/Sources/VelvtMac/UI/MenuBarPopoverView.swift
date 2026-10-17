@@ -2308,7 +2308,9 @@ public struct MenuBarPopoverView: View {
                     onStartWorkBlock: { showsFocusSession = true },
                     highlightsInsight: guidedTour.isPresented && guidedTour.step == .earlySignal,
                     highlightsFocus: guidedTour.isPresented
-                        && guidedTour.step == .focusFragmentation
+                        && guidedTour.step == .focusFragmentation,
+                    surfaceIsOnScreen: panelIsOnScreen,
+                    focusSessionIsOpen: showsFocusSession
                 )
 
                 DisclosureGroup("Privacy details", isExpanded: $showsSystemState) {
@@ -2787,6 +2789,7 @@ public struct MenuBarPopoverView: View {
                 .padding(.horizontal, 16)
                 .padding(.bottom, 12)
                 .accessibilityHint("Off silences soft-start invitations entirely")
+                RatingPromptSettingsToggle(coordinator: workBlockCoordinator)
                 Button("Clear Local Work Blocks", role: .destructive) {
                     confirmsWorkBlockClear = true
                 }
@@ -2805,6 +2808,9 @@ public struct MenuBarPopoverView: View {
                     Button("Cancel", role: .cancel) {}
                 }
             }
+            // The question's switch appears on day 14, so it is read again
+            // whenever this pane opens rather than only at connect.
+            .onAppear { workBlockCoordinator.refreshRatingPromptSettings() }
 
         case .onboarding:
             VStack(spacing: 0) {

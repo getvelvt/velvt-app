@@ -14,7 +14,7 @@ use super::{
 use crate::abstraction::{EmbeddingSalt, StableKeySalt};
 use chrono::{DateTime, Utc};
 use std::collections::HashMap;
-use velvt_shared_types::WorkBlockResult;
+use velvt_shared_types::{ClassificationSource, WorkBlockResult};
 
 pub trait AbstractionMapRepo: Send + Sync {
     fn upsert(&self, mapping: &AbstractionMapping) -> Result<(), PersistenceError>;
@@ -656,10 +656,36 @@ pub trait WorkBlockRepo: Send + Sync {
         block_id: &str,
         at: DateTime<Utc>,
     ) -> Result<(), PersistenceError>;
+    /// Appends one observation, with the ladder rung that classified it
+    /// (`classification_source`, migration 0045).
+    ///
+    /// The source is written beside the row and never read back:
+    /// [`WorkBlockObservation`], which every gate and result reads, has no
+    /// field for it. It is a record of where the evidence came from, kept so
+    /// the decision log can show that no synced rule decided anything, and it
+    /// cannot become an input by accident.
     fn append_observation(
         &self,
         block_id: &str,
         observation: &WorkBlockObservation,
+        source: ClassificationSource,
+    ) -> Result<(), PersistenceError>;
+    /// Records the rung of a report that the block's open observation
+    /// absorbed: one whose category, status and confidence matched the open
+    /// row, so it extended that row instead of opening its own.
+    ///
+    /// The open row's `classification_source` becomes `source` when `source`
+    /// outranks it, in the order `vault_rule`, then `user_rule`, then every
+    /// other rung, which never replaces the rung that opened the row. A rule
+    /// that classified any report a row absorbed therefore shows on that row,
+    /// so `synced_rule_evidence` counted from the rows cannot miss evidence a
+    /// rule extended (personal-vault design § 11.1, lock 3). A record, like
+    /// the source `append_observation` writes: nothing reads it back, closed
+    /// rows never change, and with no open row it changes nothing.
+    fn record_absorbed_source(
+        &self,
+        block_id: &str,
+        source: ClassificationSource,
     ) -> Result<(), PersistenceError>;
     fn observations(&self, block_id: &str) -> Result<Vec<WorkBlockObservation>, PersistenceError>;
     fn latest_observation(

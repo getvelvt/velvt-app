@@ -19,6 +19,7 @@ The Rust service is organized around narrow modules that own one runtime concern
 | `src/work_block/` | Versioned work-block state machine, safe observation aggregation, deterministic copy, restart recovery, and one-shot deadline |
 | `src/self_rating/` | The optional question after a block (protocol 38): which ended blocks it covers, its frozen copy, its expiry, and what a sighting, Not now or answer records. Consulted by the work-block snapshot of an ended block only |
 | `src/lifecycle/` | Cancellation token used by long-running tasks |
+| `src/vault/` | Sync v1's personal vault: the vault key and what derives from it, the sealed `prefs` document, signed statements, setup codes, the HLC merge, and `vault::sync`, the engine that fetches, verifies (design §6.1), merges and writes the copy, keeps the per-account trust anchor in `vault_state` (migration 0046), holds security notices until a work block ends, and applies only the daily-insight routing register. Nothing constructs the engine until protocol 38 (A4). Formats in `docs/architecture/vault-v1-formats.md`; the engine in `docs/architecture/vault-v1-sync.md` |
 | `shared-types/` | IPC DTOs and protocol constants shared by service tests and Swift-equivalent schemas |
 
 ## Startup Path
@@ -155,6 +156,14 @@ and the singular recovery action. At a block boundary it reads the reported
 dwells overlapping the block back from `raw_event_buffer` (start, duration,
 and category evidence only) to close the last observation where its dwell
 ended and to measure coverage against what was actually reported. Swift receives a ready-to-render snapshot.
+`WorkBlockManager` also receives the ladder rung that produced each piece of
+evidence (`ClassificationSource`) and stores it on the observation row the
+report opens (`work_block_observation.classification_source`, migration 0045).
+A report whose evidence matches the open row opens nothing; if a rule
+classified it, the open row records that rule instead of the rung that opened
+it. That is a record, not an input: `WorkBlockObservation`, which every gate
+and result reads, has no field for it, and `tests/golden_replay.rs` holds the
+decisions to the ones recorded before the column existed.
 Deadline scheduling uses a replaceable one-shot sleep rather than polling. See
 `docs/architecture/work-block-loop.md` for the state machine and field boundary.
 

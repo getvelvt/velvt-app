@@ -9,6 +9,7 @@ lint-rust` and `make lint-swift` actually check.
 |---|---|---|---|
 | Rust | 1.96.0, with clippy and rustfmt | `rust-service/rust-toolchain.toml` | rustup, inside `rust-service/`, locally and in CI |
 | Xcode | 16.3 (build 16E140, Swift 6.1, macOS 15.4 SDK) | `.xcode-version` | CI's `swift` and `package` jobs select it. `make package-release`, and so `dmg`, `alpha-dmg` and `release`, stops unless `xcodebuild -version` reports it |
+| Rust nightly, for fuzzing only | `nightly-2026-10-01` and cargo-fuzz 0.13.2 | `Makefile` (`FUZZ_TOOLCHAIN`, `CARGO_FUZZ_VERSION`) | The Fuzz workflow reads both from `make print-fuzz-toolchain` and `make print-cargo-fuzz-version`. Nothing else builds with it, and no shipped build does |
 | Python | 3.13 | `.python-version` | CI installs it with `actions/setup-python` for `make test-measurement` and for the dmgbuild venv. pyenv, uv and asdf read the file locally. A plain `python3` ignores it, so check `python3 --version` yourself |
 
 **Why these versions.** Velvt 1.0.11 (build 17) was built with Xcode 16.3: its
@@ -43,6 +44,30 @@ cargo fmt --all --check
 warnings` covered only the root package's lib and bin. That gap let a
 `clippy::assertions_on_constants` error sit in `shared-types` tests without any
 gate catching it.
+
+## `make fuzz-vault`
+
+`rust-service/fuzz` holds the cargo-fuzz targets for `src/vault`: the document
+decoder, the setup-code parser, the statement parsers and the handoff payload
+opener. It is its own Cargo workspace, so `cargo test --workspace`, clippy and
+the shipped helper never resolve `libfuzzer-sys`. Two gates use it:
+
+- `make test-rust` replays every committed corpus input through the same entry
+  points (`tests/vault_fuzz_corpus.rs`), on the pinned stable toolchain, on
+  every pull request.
+- `.github/workflows/fuzz.yml` runs each target under libFuzzer: 10 minutes each
+  on a push to `develop` that touches `src/vault`, the fuzz crate or the
+  lockfile, and nightly; 1 minute each on a pull request that touches them. It
+  is not a required check. GitHub runs a schedule only from the default branch
+  (`main`), so the nightly run checks out `develop` and starts once the
+  workflow is on `main`; until then the pushes to `develop` are the long runs.
+- A crash fails the job. libFuzzer prints a crashing input inline only when it
+  is 256 bytes or less, so a failed run uploads `fuzz/artifacts/` as the
+  `vault-fuzz-artifacts` artifact. Add the crashing input to the target's
+  `fuzz/corpus/` directory with the fix.
+- `make fuzz-vault` locally writes the inputs libFuzzer finds to
+  `fuzz/scratch-corpus/` (gitignored) and only reads `fuzz/corpus/`, so the
+  committed corpus stays curated.
 
 ## `make lint-swift`
 

@@ -10,9 +10,10 @@ use chrono::{DateTime, Duration, Utc};
 use tokio::sync::watch;
 use uuid::Uuid;
 use velvt_shared_types::{
-    ActiveIntervention, ClassificationConfidence, ClassificationStatus, ConfidenceLevel,
-    InterventionDeliveryChannel, InterventionResponse, InterventionSalience, RatingOptIn,
-    RatingPrompt, StartWorkBlock, WorkBlockCoverage, WorkBlockDndOutcome, WorkBlockIntensity,
+    ActiveIntervention, ClassificationConfidence, ClassificationSource, ClassificationStatus,
+    ConfidenceLevel, InterventionDeliveryChannel, InterventionResponse, InterventionSalience,
+    RatingOptIn, RatingPrompt, StartWorkBlock, WorkBlockCoverage, WorkBlockDndOutcome,
+    WorkBlockIntensity,
     WorkBlockLifecycleEvent, WorkBlockNextAction, WorkBlockPhase, WorkBlockPurpose,
     WorkBlockResult, WorkBlockSnapshot, WORK_BLOCK_STATE_VERSION,
 };
@@ -697,11 +698,25 @@ impl WorkBlockManager {
         }
     }
 
+    /// Records one classified observation against the active block and runs
+    /// the drift gate on it.
+    ///
+    /// `source` is the ladder rung that classified it, and it decides
+    /// nothing: the gate, the outcome resolver and the result read
+    /// `category`, `status` and `confidence` only, and two reports with the
+    /// same evidence from different rungs are the same evidence here. It is
+    /// recorded (`classification_source`, migration 0045) on the row this
+    /// report opens, or, when the open row absorbs the report because the
+    /// evidence matches, on that row if a rule produced it
+    /// ([`WorkBlockRepo::record_absorbed_source`]). So a rule that extended a
+    /// span shows on it even though it opened nothing: without the rule that
+    /// report might have been a switch away.
     pub fn observe_safe_category(
         &self,
         category: &str,
         status: ClassificationStatus,
         confidence: ClassificationConfidence,
+        source: ClassificationSource,
         occurred_at: DateTime<Utc>,
     ) -> Result<Option<ObservationOutcome>, WorkBlockError> {
         let Some(record) = self.repo.latest()? else {
@@ -736,11 +751,24 @@ impl WorkBlockManager {
         // begins, and closed, with the same `occurred_at`, when it ends. The
         // first report opens the row and runs the gate; the second finds its
         // own row still open with the same evidence and stops here, so one
-        // dwell is one observation and one decision either way.
+        // dwell is one observation and one decision either way. A different
+        // dwell with the same evidence stops here too. Either way the report's
+        // rung is recorded on the row that absorbed it, which is a record
+        // only: the row's evidence, and so every decision, is unchanged. Like
+        // the decision log, a record that cannot be written changes nothing
+        // else, so its error is logged, not returned.
         if latest
             .as_ref()
             .is_some_and(|latest| latest.ended_at.is_none() && same_evidence(latest))
         {
+            if let Err(error) = self.repo.record_absorbed_source(&record.block_id, source) {
+                tracing::error!(
+                    error_code = "observation_source_record_failed",
+                    error = %error,
+                    "the classifier rung of an absorbed report could not be recorded; \
+                     the observation itself is unchanged"
+                );
+            }
             return Ok(None);
         }
         // A boundary between the two reports (a pause, a sleep, a service
@@ -765,7 +793,7 @@ impl WorkBlockManager {
             classification_confidence: confidence,
         };
         self.repo
-            .append_observation(&record.block_id, &observation)?;
+            .append_observation(&record.block_id, &observation, source)?;
         if continues_decided_dwell {
             let snapshot = self.snapshot_for(record, at)?;
             return Ok(Some(ObservationOutcome {
@@ -2571,6 +2599,161 @@ mod tests {
         assert_eq!(invited.planned_duration_seconds, 1_500);
     }
 
+    /// The rung an observation was classified by is recorded with it
+    /// (migration 0045) and decides nothing. One block of evidence is replayed
+    /// twice: once with every report from the seed table, once with each
+    /// report from a different rung. The decisions, the offer and its outcome,
+    /// and the observation rows the gate reads are the same. The two reports
+    /// of one dwell from two rungs are still one observation, because the
+    /// evidence, not its source, is what makes a report new.
+    #[test]
+    fn the_classification_source_changes_no_decision() {
+        use ClassificationConfidence::{High, Medium, None as Unrated};
+        use ClassificationStatus::{Classified, Unclassified};
+        let evidence = [
+            ("FOCUS_WORK", Classified, High, 10),
+            ("COMMUNICATION", Classified, High, 200),
+            ("FOCUS_WORK", Classified, High, 215),
+            ("UNLOGGED", Unclassified, Unrated, 240),
+            ("COMMUNICATION", Classified, Medium, 260),
+            ("FOCUS_WORK", Classified, High, 275),
+            ("PASSIVE_CONSUMPTION", Classified, Medium, 320),
+            ("PASSIVE_CONSUMPTION", Classified, Medium, 320),
+            ("FOCUS_WORK", Classified, High, 380),
+            ("REFERENCE", Classified, Medium, 700),
+        ];
+        let rungs = [
+            ClassificationSource::Seed,
+            ClassificationSource::Heuristic,
+            ClassificationSource::Embedding,
+            ClassificationSource::UserRule,
+            ClassificationSource::DeclaredDocumentTypes,
+            ClassificationSource::DeclaredAppCategory,
+            ClassificationSource::Fallback,
+        ];
+        let replay = |source_of: &dyn Fn(usize) -> ClassificationSource| {
+            let (manager, repo) = manager_with_repo();
+            let block_id = manager
+                .start(request(1_500), at(0))
+                .unwrap()
+                .block_id
+                .unwrap();
+            let offers: Vec<_> = evidence
+                .iter()
+                .enumerate()
+                .map(|(index, (category, status, confidence, seconds))| {
+                    manager
+                        .observe_safe_category(
+                            category,
+                            *status,
+                            *confidence,
+                            source_of(index),
+                            at(*seconds),
+                        )
+                        .unwrap()
+                        .and_then(|outcome| outcome.intervention)
+                        .map(|offer| (offer.action_id, offer.salience))
+                })
+                .collect();
+            manager.end(block_id, at(900)).unwrap();
+            let block = block_id.to_string();
+            let decisions: Vec<_> = repo
+                .decisions(&block)
+                .unwrap()
+                .into_iter()
+                .map(|decision| InterventionDecision {
+                    decision_id: String::new(),
+                    block_id: None,
+                    ..decision
+                })
+                .collect();
+            (
+                offers,
+                decisions,
+                repo.intervention(&block).unwrap(),
+                repo.observations(&block).unwrap(),
+            )
+        };
+
+        let seed_only = replay(&|_| ClassificationSource::Seed);
+        let every_rung = replay(&|index| rungs[index % rungs.len()]);
+
+        assert_eq!(seed_only, every_rung);
+        assert!(
+            seed_only.0.iter().any(Option::is_some),
+            "the evidence must reach an offer, or the comparison says nothing"
+        );
+        assert_eq!(
+            seed_only.3.len(),
+            evidence.len() - 1,
+            "the repeated report is not a new observation"
+        );
+    }
+
+    /// A dwell that a rule classified into the same evidence as the open row
+    /// opens no row of its own; the open row absorbs it. Its rung is still
+    /// recorded, on that row: without the rule the dwell might have been a
+    /// switch away, so a row that only named the rung that opened it would
+    /// hide the rule's effect on the evidence (personal-vault design § 11.1,
+    /// lock 3). The absorbing report still returns nothing and decides
+    /// nothing, and a later report from another rung does not take the rule
+    /// back.
+    #[test]
+    fn a_rule_report_the_open_row_absorbs_is_recorded_on_it() {
+        let directory =
+            std::env::temp_dir().join(format!("velvt-absorbed-source-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("velvt-service.sqlite3");
+        let manager =
+            WorkBlockManager::new(SqlitePersistence::open(&path).unwrap().work_block_repo());
+        let observe = |category: &str, source: ClassificationSource, seconds: i64| {
+            manager
+                .observe_safe_category(
+                    category,
+                    ClassificationStatus::Classified,
+                    ClassificationConfidence::High,
+                    source,
+                    at(seconds),
+                )
+                .unwrap()
+        };
+        let block_id = manager
+            .start(request(1_500), at(0))
+            .unwrap()
+            .block_id
+            .unwrap();
+
+        assert!(observe("FOCUS_WORK", ClassificationSource::Seed, 10).is_some());
+        assert!(
+            observe("FOCUS_WORK", ClassificationSource::UserRule, 200).is_none(),
+            "a report with the open row's evidence is absorbed, as before"
+        );
+        assert!(observe("FOCUS_WORK", ClassificationSource::Heuristic, 260).is_none());
+        assert!(observe("COMMUNICATION", ClassificationSource::Seed, 300).is_some());
+        assert!(observe("COMMUNICATION", ClassificationSource::Fallback, 320).is_none());
+        manager.end(block_id, at(600)).unwrap();
+
+        let sources: Vec<(String, Option<String>)> = rusqlite::Connection::open(&path)
+            .unwrap()
+            .prepare(
+                "SELECT category, classification_source FROM work_block_observation
+                 ORDER BY id",
+            )
+            .unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        let _ = std::fs::remove_dir_all(&directory);
+        assert_eq!(
+            sources,
+            vec![
+                ("FOCUS_WORK".to_owned(), Some("user_rule".to_owned())),
+                ("COMMUNICATION".to_owned(), Some("seed".to_owned())),
+            ]
+        );
+    }
+
     /// The origin marker never crosses IPC: the snapshot for an invited
     /// block serializes without any origin or invitation field.
     #[test]
@@ -2698,6 +2881,7 @@ mod tests {
                 category,
                 ClassificationStatus::Classified,
                 ClassificationConfidence::High,
+                ClassificationSource::Seed,
                 at(seconds),
             )
             .unwrap()
@@ -2768,6 +2952,7 @@ mod tests {
                     category,
                     ClassificationStatus::Classified,
                     ClassificationConfidence::High,
+                    ClassificationSource::Seed,
                     at(start + offset),
                 )
                 .unwrap()
@@ -3153,6 +3338,7 @@ mod tests {
                     category,
                     ClassificationStatus::Classified,
                     ClassificationConfidence::High,
+                    ClassificationSource::Seed,
                     at(offset),
                 )
                 .unwrap()
@@ -3643,6 +3829,7 @@ mod tests {
                 "FOCUS_WORK",
                 ClassificationStatus::Classified,
                 ClassificationConfidence::Low,
+                ClassificationSource::Seed,
                 at(560),
             )
             .unwrap()
@@ -3854,6 +4041,7 @@ mod tests {
                     "COMMUNICATION",
                     ClassificationStatus::Ambiguous,
                     ClassificationConfidence::Low,
+                    ClassificationSource::Seed,
                     at(seconds),
                 )
                 .unwrap();
@@ -4076,6 +4264,7 @@ mod tests {
                 "COMMUNICATION",
                 ClassificationStatus::Ambiguous,
                 ClassificationConfidence::Low,
+                ClassificationSource::Seed,
                 at(10),
             )
             .unwrap();
@@ -4264,6 +4453,7 @@ mod tests {
                     "COMMUNICATION",
                     ClassificationStatus::Classified,
                     confidence,
+                    ClassificationSource::Seed,
                     at(seconds),
                 )
                 .unwrap()
@@ -4372,7 +4562,13 @@ mod tests {
             })
             .unwrap();
         manager
-            .observe_safe_category(category, status, confidence, at(start))
+            .observe_safe_category(
+                category,
+                status,
+                confidence,
+                ClassificationSource::Seed,
+                at(start),
+            )
             .unwrap()
     }
 
@@ -4905,6 +5101,7 @@ mod tests {
                 "FOCUS_WORK",
                 ClassificationStatus::Classified,
                 ClassificationConfidence::High,
+                ClassificationSource::Seed,
                 at(1),
             )
             .unwrap()
@@ -4914,6 +5111,7 @@ mod tests {
                 "FOCUS_WORK",
                 ClassificationStatus::Classified,
                 ClassificationConfidence::High,
+                ClassificationSource::Seed,
                 at(60),
             )
             .unwrap()
@@ -4999,8 +5197,16 @@ mod tests {
             &self,
             block_id: &str,
             observation: &WorkBlockObservation,
+            source: ClassificationSource,
         ) -> Result<(), PersistenceError> {
-            self.0.append_observation(block_id, observation)
+            self.0.append_observation(block_id, observation, source)
+        }
+        fn record_absorbed_source(
+            &self,
+            block_id: &str,
+            source: ClassificationSource,
+        ) -> Result<(), PersistenceError> {
+            self.0.record_absorbed_source(block_id, source)
         }
         fn observations(
             &self,
@@ -5656,6 +5862,7 @@ mod tests {
                 "FOCUS_WORK",
                 ClassificationStatus::Classified,
                 ClassificationConfidence::Low,
+                ClassificationSource::Seed,
                 at(10),
             )
             .unwrap();

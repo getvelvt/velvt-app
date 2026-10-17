@@ -17,7 +17,10 @@
 #      bash and sqlite3 cannot decode one, and Velvt stores four: the
 #      256-number embedding sketch in `semantic_embedding_cache` and in
 #      `personal_semantic_prototype`, and the two 32-byte per-install
-#      salts in `embedding_salt` and `stable_key_salt`. Those are the only
+#      salts in `embedding_salt` and `stable_key_salt`. `vault_state`
+#      declares five more for sync across your Macs, empty until sync is
+#      turned on: the encrypted synced copy, its hash, the vault's public
+#      key, and the host binding and its salt. Those are the only
 #      things on this disk this script cannot read out to you, so it names
 #      them rather than leaving the columns out. What CAN be recovered from a sketch — and it is more
 #      than nothing — is in PRIVACY.md, "The embedding sketch, and what can
@@ -405,8 +408,10 @@ cat <<'CAVEAT'
 
   It does not read out the columns it cannot decode. Every BLOB is named above
   as UNINSPECTED with a byte count: the embedding sketches in
-  semantic_embedding_cache and personal_semantic_prototype, and the 32-byte
-  salts in embedding_salt and stable_key_salt. A sketch is not a window title,
+  semantic_embedding_cache and personal_semantic_prototype, the 32-byte
+  salts in embedding_salt and stable_key_salt, and, once sync across your
+  Macs is on, vault_state's encrypted copy, its hash, the vault's public key
+  and the host binding and its salt. A sketch is not a window title,
   but individual words of one are partially recoverable from it — PRIVACY.md
   says how, and PRIVACY_AUDIT.md Audit 7 is the method and the numbers. This script names those columns rather
   than letting "bash could not read it" pass for "there is nothing in it".

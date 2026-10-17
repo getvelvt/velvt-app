@@ -197,7 +197,9 @@ rust-service/
 │   ├── retention/      # RetentionScheduler and its RetentionTarget implementations
 │   ├── lifecycle/      # CancellationToken and graceful shutdown
 │   ├── config/         # Typed, validated runtime configuration
+│   ├── vault/          # Sync v1: crypto, prefs document, HLC merge, setup codes, and the sync engine (`vault::sync`); nothing can turn sync on yet
 │   └── behavior/       # Shadow models (BOCPD, HMM, antecedent miner): no caller in the shipped path
+├── fuzz/               # cargo-fuzz targets for src/vault: its own workspace, run by the Fuzz workflow
 ├── migrations/         # 0001_…sql onward, embedded by build.rs
 ├── shared-types/       # IPC DTOs (ClientMessage / ServerMessage)
 ├── resources/          # Taxonomy JSON (optional model artifacts are not in the repository)

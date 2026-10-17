@@ -115,10 +115,22 @@ pub trait QuietHoursSource: Send + Sync {
     fn quiet_hours_end(&self, at: DateTime<Utc>) -> Option<DateTime<Utc>>;
 }
 
+/// Answers "does this Mac post the daily-insight notification?" for the
+/// delivery path: the per-Mac switch the synced document carries, which
+/// `vault::sync` applies (design §10.1). The insight itself always reaches
+/// the popover; only the notification is routed.
+///
+/// Declared here, beside the consumer, like [`QuietHoursSource`]. Absent, as
+/// in every build until sync can be turned on, every Mac posts it.
+pub trait InsightNotificationRoute: Send + Sync {
+    fn daily_insight_notifications(&self) -> bool;
+}
+
 pub struct PollScheduler<H> {
     client: PollClient<H>,
     push_adapter: Arc<PushAdapter>,
     quiet_hours: Option<Arc<dyn QuietHoursSource>>,
+    insight_route: Option<Arc<dyn InsightNotificationRoute>>,
     auth_state: watch::Receiver<AuthState>,
     shutdown: watch::Receiver<bool>,
     dedupe: InsightDedupeGuard,
@@ -137,6 +149,7 @@ impl<H: HttpClient> PollScheduler<H> {
             client,
             push_adapter,
             quiet_hours: None,
+            insight_route: None,
             auth_state,
             shutdown,
             dedupe: InsightDedupeGuard::default(),
@@ -149,6 +162,12 @@ impl<H: HttpClient> PollScheduler<H> {
     /// is the behaviour this scheduler had before quiet hours were wired up.
     pub fn with_quiet_hours(mut self, quiet_hours: Arc<dyn QuietHoursSource>) -> Self {
         self.quiet_hours = Some(quiet_hours);
+        self
+    }
+
+    /// Route the daily-insight notification by the synced per-Mac switch.
+    pub fn with_insight_route(mut self, route: Arc<dyn InsightNotificationRoute>) -> Self {
+        self.insight_route = Some(route);
         self
     }
 
@@ -171,11 +190,16 @@ impl<H: HttpClient> PollScheduler<H> {
                         .quiet_hours
                         .as_ref()
                         .and_then(|source| source.quiet_hours_end(Utc::now()));
-                    deliver_polled_insight(
+                    let notify_here = self
+                        .insight_route
+                        .as_ref()
+                        .is_none_or(|route| route.daily_insight_notifications());
+                    deliver_routed_insight(
                         &self.push_adapter,
                         &mut self.dedupe,
                         *insight,
                         quiet_until,
+                        notify_here,
                     )
                     .await;
                 }
@@ -391,13 +415,27 @@ pub async fn deliver_polled_insight(
     insight: PolledInsight,
     do_not_disturb_until: Option<DateTime<Utc>>,
 ) {
+    deliver_routed_insight(push_adapter, dedupe, insight, do_not_disturb_until, true).await;
+}
+
+/// [`deliver_polled_insight`], with the notification left out when this Mac's
+/// synced daily-insight switch is off (`notify_here` false). The insight is
+/// pushed to the popover either way.
+pub async fn deliver_routed_insight(
+    push_adapter: &PushAdapter,
+    dedupe: &mut InsightDedupeGuard,
+    insight: PolledInsight,
+    do_not_disturb_until: Option<DateTime<Utc>>,
+    notify_here: bool,
+) {
     if !dedupe.should_deliver(&insight.id) {
         tracing::debug!("duplicate long-poll insight suppressed");
         return;
     }
     let notification_id = uuid::Uuid::new_v4();
     let title = "Your Velvt insight is ready";
-    let should_notify = insight.payload.evidence.tone_stage != EmotionalStage::Early
+    let should_notify = notify_here
+        && insight.payload.evidence.tone_stage != EmotionalStage::Early
         && insight.payload.evidence.observation_type != "recorded_activity";
     let body = notification_body(&insight.payload);
     let date = insight.payload.date;
@@ -910,6 +948,35 @@ mod tests {
             queue.try_pop().await.is_none(),
             "generic activity recaps are UI content, not interruption-worthy notifications"
         );
+    }
+
+    /// A Mac whose synced daily-insight switch is off gets the insight in the
+    /// popover and no notification (design §10.1); with the switch on, the
+    /// same insight notifies as before.
+    #[tokio::test]
+    async fn a_mac_routed_off_shows_the_insight_without_a_notification() {
+        for (notify_here, notifications) in [(false, 0), (true, 1)] {
+            let queue = crate::delivery::PushQueue::new(10);
+            let push = crate::delivery::PushAdapter::new(Arc::clone(&queue));
+            let insight = PolledInsight {
+                id: "routed".into(),
+                payload: payload(
+                    "Your longest uninterrupted work block was 40 minutes today.",
+                    "Your longest uninterrupted work block was 40 minutes today.",
+                ),
+            };
+            deliver_routed_insight(
+                &push,
+                &mut InsightDedupeGuard::default(),
+                insight,
+                None,
+                notify_here,
+            )
+            .await;
+            let (insights, bodies) = delivered(&queue).await;
+            assert_eq!(insights.len(), 1);
+            assert_eq!(bodies.len(), notifications, "notify_here = {notify_here}");
+        }
     }
 
     /// Everything `deliver_polled_insight` pushed, as (insight text,

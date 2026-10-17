@@ -30,9 +30,10 @@ use velvt_service::persistence::{
 use velvt_service::upload::EventIngestor;
 use velvt_service::work_block::{FocusStateSource, WorkBlockManager};
 use velvt_shared_types::{
-    ClassificationConfidence, ClassificationStatus, ClientMessage, DismissInitiationInvitation,
-    EndWorkBlock, LogOut, RequestInitiationInvitation, RequestInitiationSettings, ServerMessage,
-    SetInitiationSettings, StartWorkBlock, WorkBlockIntensity, WorkBlockPhase,
+    ClassificationConfidence, ClassificationSource, ClassificationStatus, ClientMessage,
+    DismissInitiationInvitation, EndWorkBlock, LogOut, RequestInitiationInvitation,
+    RequestInitiationSettings, ServerMessage, SetInitiationSettings, StartWorkBlock,
+    WorkBlockIntensity, WorkBlockPhase,
 };
 
 struct OfflineHttp;
@@ -161,6 +162,7 @@ fn completed_block_covering_this_hour(
             classification_status: ClassificationStatus::Classified,
             classification_confidence: ClassificationConfidence::High,
         },
+        ClassificationSource::Seed,
     )
     .unwrap();
 }

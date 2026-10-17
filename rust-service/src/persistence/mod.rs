@@ -5,6 +5,7 @@ mod models;
 mod self_rating;
 mod sqlite;
 mod traits;
+mod vault_state;
 
 pub use egress_ledger::EgressLedgerRepo;
 pub use models::{out_of_block_run_bucket, OUT_OF_BLOCK_RUN_BUCKET_SECONDS};
@@ -32,4 +33,8 @@ pub use traits::{
     HistoryCacheRepo, InitiationRepo, InsightCacheRepo, RawEventRepo, ReceiptsRepo,
     UploadBatchRepo, WorkBlockRepo, TRIAGE_MAX_ENTRIES, TRIAGE_MAX_LOOKBACK_DAYS,
     TRIAGE_MIN_SECONDS,
+};
+pub use vault_state::{
+    KnownDeviceRecord, LocalSyncSettings, SyncNoticeRecord, VaultRuleLinkRecord, VaultStateRecord,
+    VaultStateRepo,
 };

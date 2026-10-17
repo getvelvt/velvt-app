@@ -275,12 +275,14 @@ Rust uses an internal `HttpClient` trait and `ReqwestHttpClient` implementation.
 
 Cloud DTOs must be audited against the forbidden-field list. Tests in `rust-service/tests/upload_batching.rs` are the first place to update when upload shape changes.
 
-The table above omits two requests the source also makes: `GET /v1/auth/session`
-(`AuthManager`, restoring a saved session) and
+The table above omits requests the source also makes: `GET /v1/auth/session`
+(`AuthManager`, restoring a saved session),
 `PATCH /v1/events/{event_id}/classification` (the router, syncing a
-classification correction). `src/egress/mod.rs` (`ENDPOINTS`) is the complete
-list, and `rust-service/tests/egress_ledger.rs` fails when it stops matching the
-paths the source builds.
+classification correction), and sync's five (`vault::sync::api`, which nothing
+in this build calls): `GET /v1/vault`, `GET` and `PUT /v1/vault/blobs/prefs`,
+`POST /v1/vault` and `GET /v1/devices`. `src/egress/mod.rs` (`ENDPOINTS`) is the
+complete list, and `rust-service/tests/egress_ledger.rs` fails when it stops
+matching the paths the source builds.
 
 ### Egress Ledger
 

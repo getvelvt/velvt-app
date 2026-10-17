@@ -374,6 +374,38 @@ pub const ENDPOINTS: &[Endpoint] = &[
         when: "when the menu asks whether the server is reachable, at most once a minute",
         body: "none",
     },
+    // Sync across your Macs (design PR #87, §8.3). Nothing in this build can
+    // turn sync on, so none of the five below is sent yet.
+    Endpoint {
+        method: "GET",
+        path: "/v1/vault",
+        when: "only once you turn on sync across your Macs: every 10 minutes, on wake, and when you open Your Macs (at most once a minute); and, with sync off on this Mac, once after you sign in, only if your iCloud Keychain already holds a sync key for your account, to ask whether to turn sync on here",
+        body: "none",
+    },
+    Endpoint {
+        method: "GET",
+        path: "/v1/vault/blobs/prefs",
+        when: "only with sync on, right after GET /v1/vault: the encrypted copy of your synced choices, unless this Mac already has the current one",
+        body: "none (the version this Mac holds goes in an If-None-Match header)",
+    },
+    Endpoint {
+        method: "PUT",
+        path: "/v1/vault/blobs/prefs",
+        when: "only with sync on, 5 s after your synced choices change on this Mac",
+        body: "an encrypted copy of your synced choices and a signature, with its key id and version numbers: {\"key_id\", \"schema\", \"new_version\", \"ciphertext_b64\", \"put_sig_b64\"}. Velvt cannot read it; it never holds the key",
+    },
+    Endpoint {
+        method: "POST",
+        path: "/v1/vault",
+        when: "when you turn on sync and your account has no synced copy yet",
+        body: "the first encrypted copy, the key id and the public key that checks its signatures, and two signatures: {\"key_id\", \"write_pk_b64\", \"blob\": {\"name\", \"schema\", \"ciphertext_b64\"}, \"create_sig_b64\", \"put_sig_b64\"}. The key itself never leaves your Macs and iCloud Keychain",
+    },
+    Endpoint {
+        method: "GET",
+        path: "/v1/devices",
+        when: "only with sync on: every 10 minutes, so Your Macs can list your signed-in Macs and say when a new one signs in",
+        body: "none",
+    },
 ];
 
 #[cfg(test)]

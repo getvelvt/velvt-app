@@ -64,6 +64,24 @@
 //! before the plugins), Focus on during a block, and quiet hours. It is
 //! recorded as a second trace and golden on the code before A7, so this
 //! golden stays as it is.
+//!
+//! **The question after a block** (attention plan § 3.3 and § 4.3). Two more
+//! arms replay the same trace after the Mac's first 14 days, which is the
+//! only time the question can be asked: a block 15 days before the trace
+//! starts the Mac's primary period, and is removed before the dump, so the
+//! dump is the trace's own. One arm has no question. The other attaches one
+//! `RatingPromptManager` to the manager and the router, as `main.rs` does,
+//! turns the question on before the trace, and after each block records one
+//! kind of row ([`AFTER_BLOCK`]): answered, answered through the link after
+//! Not now, seen and never answered, never shown, and hidden by turning the
+//! question off and on again. The router stamps the question's messages with
+//! the wall clock, years after this 2023 trace, so those rows are recorded
+//! through the manager on the trace's own clock; the router's handlers are
+//! also driven between blocks, with every message the question has, and are
+//! refused or change nothing, as a late message would be. Both arms must
+//! reproduce `decisions.golden` and `provenance.golden` exactly, and the
+//! question's arm must hold every kind of row, so the comparison is not
+//! vacuous.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::PathBuf;
@@ -87,11 +105,17 @@ use velvt_service::focus::FocusManager;
 use velvt_service::ipc::{MessageRouter, R7Router};
 use velvt_service::persistence::SqlitePersistence;
 use velvt_service::retention::{InterventionDecisionOutcomeTarget, RetentionTarget};
+use velvt_service::self_rating::RatingPromptManager;
 use velvt_service::upload::EventIngestor;
-use velvt_service::work_block::{FocusStateSource, WorkBlockManager, DRIFT_POLICY_VERSION};
+use velvt_service::work_block::{
+    FocusStateSource, RatingPromptSource, WorkBlockManager, DRIFT_POLICY_VERSION,
+};
 use velvt_shared_types::{
-    ClientMessage, InterventionResponse, RawEvent, RawEventAck, RawEventStatus, ServerMessage,
-    SetApplicationCategory, SetSiteCategory, StartWorkBlock, WorkBlockIntensity, WorkBlockPurpose,
+    ClientMessage, InterventionResponse, RateWorkBlock, RatingPromptPresentation, RawEvent,
+    RawEventAck, RawEventStatus, RequestRatingPromptSettings, RequestWorkBlockState,
+    RespondRatingOptIn, ServerMessage, SetApplicationCategory, SetRatingPromptEnabled,
+    SetSiteCategory, StartWorkBlock, WorkBlockIntensity, WorkBlockPurpose, WorkBlockRatingAnswer,
+    WorkBlockRatingNotNow, WorkBlockRatingShown,
 };
 
 const TRACE: &str = "trace.json";
@@ -375,9 +399,11 @@ struct Service {
     router: R7Router,
     manager: Arc<WorkBlockManager>,
     pushes: Arc<PushQueue>,
+    /// The question after a block, on the arm that has it.
+    rating: Option<Arc<RatingPromptManager>>,
 }
 
-fn service(scratch: &ScratchDatabase) -> Service {
+fn service(scratch: &ScratchDatabase, arm: Arm) -> Service {
     let persistence = SqlitePersistence::open(&scratch.path).unwrap();
     // Replaced before anything is classified, so no cached sketch was made
     // under the salt the database minted.
@@ -405,10 +431,17 @@ fn service(scratch: &ScratchDatabase) -> Service {
     // quiets an offer inside Velvt's quiet hours. The trace reports no Focus
     // state and sets no quiet hours, so neither changes anything here.
     let focus = FocusManager::new(persistence.focus_repo());
-    let manager = Arc::new(
-        WorkBlockManager::new(persistence.work_block_repo())
-            .with_focus_source(Arc::clone(&focus) as Arc<dyn FocusStateSource>),
-    );
+    // As main.rs wires it: one manager for the question, which the
+    // work-block manager consults while it builds an ended block's snapshot
+    // and the router hands the question's messages to.
+    let rating = (arm == Arm::PastDay14WithQuestion)
+        .then(|| Arc::new(RatingPromptManager::new(persistence.self_rating_repo())));
+    let mut manager = WorkBlockManager::new(persistence.work_block_repo())
+        .with_focus_source(Arc::clone(&focus) as Arc<dyn FocusStateSource>);
+    if let Some(rating) = &rating {
+        manager = manager.with_rating_prompt(Arc::clone(rating) as Arc<dyn RatingPromptSource>);
+    }
+    let manager = Arc::new(manager);
     let pushes = PushQueue::new(256);
     let account = Arc::new(AccountAuthService::new(
         Arc::new(OfflineHttp),
@@ -430,13 +463,66 @@ fn service(scratch: &ScratchDatabase) -> Service {
     )
     .with_work_blocks(manager.clone(), PushAdapter::new(pushes.clone()))
     .with_focus(focus);
+    let router = match &rating {
+        Some(rating) => router.with_rating_prompt(Arc::clone(rating)),
+        None => router,
+    };
     Service {
         persistence,
         router,
         manager,
         pushes,
+        rating,
     }
 }
+
+// ---------------------------------------------------------------------------
+// The question after a block
+// ---------------------------------------------------------------------------
+
+/// How the trace is replayed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Arm {
+    /// The golden's own replay: the trace is the Mac's first evening.
+    Plain,
+    /// A block 15 days earlier starts the Mac's primary period, so the trace
+    /// runs after its first 14 days, with no question.
+    PastDay14,
+    /// The same, with the question attached and turned on before the trace.
+    PastDay14WithQuestion,
+}
+
+/// The first block of the Mac, this long before the trace's origin.
+const PERIOD_SEED_OFFSET: i64 = -15 * 86_400;
+/// When the question is turned on, before the trace's first block and after
+/// the seeded period's end (day 14, one day before the origin).
+const TURNED_ON_OFFSET: i64 = -3_600;
+
+/// What happens to the question about each of the trace's blocks, in order.
+#[derive(Debug, Clone, Copy)]
+enum AfterBlock {
+    /// Seen, then answered.
+    Answered(WorkBlockRatingAnswer),
+    /// Seen, Not now, then answered through the link with the card seen.
+    AnsweredThroughTheLink(WorkBlockRatingAnswer),
+    /// Seen and never answered: the next block's start expires it.
+    SeenOnly,
+    /// Never on screen: the next block's start expires it.
+    NeverShown,
+    /// The question turned off and on again in Settings. It stays hidden,
+    /// every report about the block is refused, and the next block's start
+    /// expires it.
+    OffAndOnAgain,
+}
+
+const AFTER_BLOCK: [AfterBlock; 6] = [
+    AfterBlock::Answered(WorkBlockRatingAnswer::Most),
+    AfterBlock::AnsweredThroughTheLink(WorkBlockRatingAnswer::Half),
+    AfterBlock::SeenOnly,
+    AfterBlock::NeverShown,
+    AfterBlock::OffAndOnAgain,
+    AfterBlock::Answered(WorkBlockRatingAnswer::Little),
+];
 
 // ---------------------------------------------------------------------------
 // Replay
@@ -457,6 +543,10 @@ struct Replayer<'a> {
     /// Each work-block push, as one line: which report sent it and the offer
     /// it carried, if any.
     pushes: Vec<String>,
+    /// How many of the trace's blocks have ended.
+    ended: usize,
+    /// How many snapshots carried the question, on the question's arm.
+    asked: usize,
 }
 
 impl Replayer<'_> {
@@ -557,6 +647,105 @@ impl Replayer<'_> {
         );
     }
 
+    /// The question's side of the trace, after a block ends at `end`. Does
+    /// nothing on an arm without the question. Rows are recorded on the
+    /// trace's clock through the manager the router holds; then, for a block
+    /// whose question is already closed, every message the question has is
+    /// also sent through the router, which stamps the wall clock, so each is
+    /// refused or changes nothing.
+    async fn after_block_end(&mut self, block: Uuid, end: i64) {
+        let Some(rating) = self.service.rating.clone() else {
+            return;
+        };
+        let what = AFTER_BLOCK[self.ended];
+        self.ended += 1;
+        let manager = self.service.manager.clone();
+        let snapshot = manager.request_state(self.instant(end + 5)).unwrap();
+        let prompt = snapshot.rating_prompt.as_ref();
+        if prompt.is_some() {
+            self.asked += 1;
+        }
+        let at = |offset: i64| self.instant(end + offset);
+        match what {
+            AfterBlock::Answered(answer) => {
+                assert_eq!(prompt.map(|prompt| prompt.block_id), Some(block));
+                assert!(rating.record_shown(block, at(5)).unwrap());
+                assert!(rating.record_answer(block, answer, false, at(20)).unwrap());
+            }
+            AfterBlock::AnsweredThroughTheLink(answer) => {
+                assert!(rating.record_shown(block, at(5)).unwrap());
+                assert!(rating.record_not_now(block, at(10)).unwrap());
+                let link = manager.request_state(at(15)).unwrap().rating_prompt;
+                assert_eq!(
+                    link.map(|prompt| prompt.presentation),
+                    Some(RatingPromptPresentation::Link)
+                );
+                assert!(rating.record_answer(block, answer, true, at(300)).unwrap());
+            }
+            AfterBlock::SeenOnly => {
+                assert!(rating.record_shown(block, at(5)).unwrap());
+            }
+            AfterBlock::NeverShown => {
+                assert!(prompt.is_some(), "eligible, and never reported seen");
+            }
+            AfterBlock::OffAndOnAgain => {
+                assert!(prompt.is_some());
+                assert!(!rating.set_enabled(false, at(30)).unwrap().enabled);
+                assert!(rating.set_enabled(true, at(60)).unwrap().enabled);
+                assert_eq!(manager.request_state(at(65)).unwrap().rating_prompt, None);
+                assert!(!rating.record_shown(block, at(70)).unwrap());
+                assert!(!rating.record_not_now(block, at(71)).unwrap());
+                assert!(!rating
+                    .record_answer(block, WorkBlockRatingAnswer::All, false, at(72))
+                    .unwrap());
+            }
+        }
+        if matches!(
+            what,
+            AfterBlock::Answered(_) | AfterBlock::AnsweredThroughTheLink(_)
+        ) {
+            self.late_messages(block).await;
+        }
+    }
+
+    /// Every message the question has, sent through the router for a block
+    /// whose question is answered. Each is refused or changes nothing, the
+    /// replies carry neither the question nor the invitation, and nothing is
+    /// pushed.
+    async fn late_messages(&mut self, block: Uuid) {
+        let router = &self.service.router;
+        let messages = [
+            ClientMessage::WorkBlockRatingShown(WorkBlockRatingShown { block_id: block }),
+            ClientMessage::WorkBlockRatingNotNow(WorkBlockRatingNotNow { block_id: block }),
+            ClientMessage::RateWorkBlock(RateWorkBlock {
+                block_id: block,
+                answer: WorkBlockRatingAnswer::All,
+                via_link: false,
+            }),
+            ClientMessage::RespondRatingOptIn(RespondRatingOptIn { turn_on: false }),
+            ClientMessage::RespondRatingOptIn(RespondRatingOptIn { turn_on: true }),
+            ClientMessage::RequestRatingPromptSettings(RequestRatingPromptSettings {}),
+            ClientMessage::RequestWorkBlockState(RequestWorkBlockState {}),
+        ];
+        for message in messages {
+            match router.route(message.clone()).await.unwrap() {
+                None => assert!(matches!(message, ClientMessage::WorkBlockRatingShown(_))),
+                Some(ServerMessage::WorkBlockState(snapshot)) => {
+                    assert_eq!(snapshot.rating_prompt, None, "{message:?}");
+                    assert_eq!(snapshot.rating_opt_in, None, "{message:?}");
+                }
+                Some(ServerMessage::RatingPromptSettings(settings)) => {
+                    assert!(settings.enabled && settings.available, "{message:?}");
+                }
+                Some(other) => panic!("{message:?} was answered with {other:?}"),
+            }
+        }
+        assert!(
+            self.service.pushes.try_pop().await.is_none(),
+            "a message about the question pushed a work-block state"
+        );
+    }
+
     async fn run(&mut self) {
         let trace = self.trace;
         for (index, step) in trace.steps.iter().enumerate() {
@@ -606,10 +795,11 @@ impl Replayer<'_> {
                         .report_intervention_outcome(self.block(step), response_of(response), at)
                         .unwrap_or_else(|error| panic!("step {index}: {error:?}"));
                 }
-                Step::End { .. } => {
+                Step::End { at: offset } => {
                     manager
                         .end(self.block(step), at)
                         .unwrap_or_else(|error| panic!("step {index}: {error:?}"));
+                    self.after_block_end(self.block(step), *offset).await;
                 }
                 Step::TeachApp { app, category, .. } => {
                     let salt = self
@@ -653,22 +843,107 @@ impl Replayer<'_> {
 struct Replayed {
     decisions: String,
     provenance: String,
+    /// Every row of `work_block_self_rating`, block ids canonical, on the
+    /// question's arm; empty otherwise.
+    ratings: Vec<String>,
+    /// How many snapshots carried the question.
+    asked: usize,
 }
 
 async fn replay(trace: &Trace) -> Replayed {
+    replay_arm(trace, Arm::Plain).await
+}
+
+async fn replay_arm(trace: &Trace, arm: Arm) -> Replayed {
     let scratch = ScratchDatabase::new();
+    let service = service(&scratch, arm);
+    let origin = DateTime::from_timestamp(trace.origin, 0).unwrap();
+    let seed = (arm != Arm::Plain).then(|| {
+        let started = service
+            .manager
+            .start(
+                StartWorkBlock {
+                    intention: None,
+                    planned_duration_seconds: 1_500,
+                    purpose: Some(WorkBlockPurpose::DeepWork),
+                    intensity: WorkBlockIntensity::Medium,
+                    invitation_id: None,
+                },
+                origin + Duration::seconds(PERIOD_SEED_OFFSET),
+            )
+            .unwrap();
+        let seed = started.block_id.unwrap();
+        service
+            .manager
+            .end(seed, origin + Duration::seconds(PERIOD_SEED_OFFSET + 1_200))
+            .unwrap();
+        seed
+    });
+    if let Some(rating) = &service.rating {
+        let turned_on = rating
+            .set_enabled(true, origin + Duration::seconds(TURNED_ON_OFFSET))
+            .unwrap();
+        assert!(turned_on.enabled, "the seeded period is over by then");
+    }
     let mut replayer = Replayer {
         trace,
-        service: service(&scratch),
+        service,
         block: None,
         pending: Vec::new(),
         pushes: Vec::new(),
+        ended: 0,
+        asked: 0,
     };
     replayer.run().await;
+    if replayer.service.rating.is_some() {
+        // The Settings toggle's off, through the router, after the last
+        // block: it changes no decision either.
+        let off = replayer
+            .service
+            .router
+            .route(ClientMessage::SetRatingPromptEnabled(
+                SetRatingPromptEnabled { enabled: false },
+            ))
+            .await
+            .unwrap();
+        assert!(
+            matches!(off, Some(ServerMessage::RatingPromptSettings(settings)) if !settings.enabled)
+        );
+    }
     let connection = Connection::open(&scratch.path).unwrap();
+    if let Some(seed) = seed {
+        // The seed only places the period. It has no row in any compared
+        // table, and it is removed so the dump numbers the trace's blocks
+        // as the golden does.
+        let seed = seed.to_string();
+        for table in TABLES {
+            let rows: i64 = connection
+                .query_row(
+                    &format!("SELECT COUNT(*) FROM \"{table}\" WHERE block_id = ?1"),
+                    [&seed],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(rows, 0, "the seeded block has a row in {table}");
+        }
+        assert_eq!(
+            connection
+                .execute("DELETE FROM work_block WHERE block_id = ?1", [&seed])
+                .unwrap(),
+            1
+        );
+    }
+    let ids = canonical_ids(&connection);
     Replayed {
         decisions: decisions_dump(&connection, &replayer.pushes),
         provenance: provenance_dump(&connection),
+        ratings: table_lines(
+            &connection,
+            "work_block_self_rating",
+            &column_names(&connection, "work_block_self_rating"),
+            &ids,
+        ),
+        asked: replayer.asked,
     }
 }
 
@@ -1145,4 +1420,127 @@ async fn no_decision_counts_synced_rule_evidence() {
             .all(|row| row["synced_rule_evidence"] == "0"),
         "{decisions:?}"
     );
+}
+
+/// Fails with the first lines that differ, rather than two whole dumps.
+fn assert_same_dump(what: &str, expected: &str, actual: &str) {
+    if expected == actual {
+        return;
+    }
+    let expected_lines: Vec<&str> = expected.lines().collect();
+    let actual_lines: Vec<&str> = actual.lines().collect();
+    let differences: Vec<String> = (0..expected_lines.len().max(actual_lines.len()))
+        .filter(|&index| expected_lines.get(index) != actual_lines.get(index))
+        .take(12)
+        .map(|index| {
+            format!(
+                "line {}:\n  golden:   {}\n  replayed: {}",
+                index + 1,
+                expected_lines.get(index).unwrap_or(&"<none>"),
+                actual_lines.get(index).unwrap_or(&"<none>")
+            )
+        })
+        .collect();
+    panic!("{what} differs:\n{}", differences.join("\n"));
+}
+
+/// Attention plan § 3.3 and § 4.3: the question after a block moves no
+/// decision. The trace replayed after the Mac's first 14 days, with no
+/// question and then with the question on and every kind of row recorded,
+/// reproduces `decisions.golden` and `provenance.golden` byte for byte: the
+/// pushes, every offer, every logged decision and every observation, with
+/// their sources.
+#[tokio::test]
+async fn the_question_after_a_block_moves_no_decision() {
+    let trace = load_trace();
+    let plain = replay(&trace).await;
+    let without = replay_arm(&trace, Arm::PastDay14).await;
+    let with = replay_arm(&trace, Arm::PastDay14WithQuestion).await;
+    if std::env::var_os(RECORD_ENV).is_none() {
+        let golden = |name: &str| std::fs::read_to_string(fixtures_dir().join(name)).unwrap();
+        assert_same_dump(
+            DECISIONS_GOLDEN,
+            &golden(DECISIONS_GOLDEN),
+            &plain.decisions,
+        );
+        assert_same_dump(
+            PROVENANCE_GOLDEN,
+            &golden(PROVENANCE_GOLDEN),
+            &plain.provenance,
+        );
+    }
+    for (arm, replayed) in [("after day 14", &without), ("with the question", &with)] {
+        assert_same_dump(
+            &format!("{DECISIONS_GOLDEN}, replayed {arm}"),
+            &plain.decisions,
+            &replayed.decisions,
+        );
+        assert_same_dump(
+            &format!("{PROVENANCE_GOLDEN}, replayed {arm}"),
+            &plain.provenance,
+            &replayed.provenance,
+        );
+    }
+    assert!(without.ratings.is_empty() && without.asked == 0);
+}
+
+/// The comparison above would also hold for a question that never asked.
+/// It asks: every one of the six blocks is eligible, and the question's arm
+/// holds every kind of row, each expiry at its deadline (the next block's
+/// start), not when the service noticed.
+#[tokio::test]
+async fn the_question_s_arm_records_every_kind_of_row() {
+    let trace = load_trace();
+    let with = replay_arm(&trace, Arm::PastDay14WithQuestion).await;
+    assert!(
+        with.asked >= 5,
+        "{} snapshots carried the question",
+        with.asked
+    );
+    let rows: Vec<BTreeMap<&str, &str>> = with
+        .ratings
+        .iter()
+        .map(|line| {
+            line.split(" | ")
+                .map(|field| field.split_once('=').unwrap())
+                .collect()
+        })
+        .collect();
+    let starts: Vec<i64> = trace
+        .steps
+        .iter()
+        .filter_map(|step| match step {
+            Step::Start { at, .. } => Some(*at),
+            _ => None,
+        })
+        .collect();
+    let stored = |offset: i64| (trace.origin + offset).to_string();
+    let field = |block: usize, column: &str| -> String {
+        let id = format!("'block-{block}'");
+        let row = rows
+            .iter()
+            .find(|row| row["block_id"] == id)
+            .unwrap_or_else(|| panic!("no row for block {block}: {rows:?}"));
+        row[column].to_owned()
+    };
+    assert_eq!(rows.len(), 6, "{rows:?}");
+    // Block 1: answered straight away.
+    assert_eq!(field(1, "answer"), "'most'");
+    assert_eq!(field(1, "card_seen_before_answer"), "0");
+    // Block 2: Not now, then answered through the link.
+    assert_eq!(field(2, "answer"), "'half'");
+    assert_eq!(field(2, "card_seen_before_answer"), "1");
+    assert_ne!(field(2, "not_now_at"), "NULL");
+    // Block 3: seen, never answered, expired by block 4's start.
+    assert_ne!(field(3, "shown_at"), "NULL");
+    assert_eq!(field(3, "expired_at"), stored(starts[3]));
+    // Block 4: never shown, expired by block 5's start.
+    assert_eq!(field(4, "shown_at"), "NULL");
+    assert_eq!(field(4, "expired_at"), stored(starts[4]));
+    // Block 5: hidden by off and on again, never shown, expired by block 6.
+    assert_eq!(field(5, "shown_at"), "NULL");
+    assert_eq!(field(5, "answer"), "NULL");
+    assert_eq!(field(5, "expired_at"), stored(starts[5]));
+    // Block 6: answered.
+    assert_eq!(field(6, "answer"), "'little'");
 }

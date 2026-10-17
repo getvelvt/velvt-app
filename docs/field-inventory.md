@@ -1,11 +1,13 @@
 # Field and retention inventory
 
-This file covers the tables that hold a person's own answers about their
-blocks. For each one it lists every column, the class of value the column may
-hold, how long a row is kept, and what each in-app destructive action does to
-it. `PRIVACY.md` is still the reference for what every table in the database
-holds. This file adds field classes, and it is checked rather than only
-written down.
+This file covers the tables added for the optional question after a block,
+and any later table that holds a person's own answers. Tables that existed
+before it, such as `work_block` and `work_block_category_correction`, are
+described in `PRIVACY.md` and are not listed here. For each covered table this
+file lists every column, the class of value the column may hold, how long a
+row is kept, and what each in-app destructive action does to it. `PRIVACY.md`
+is still the reference for what every table in the database holds. This file
+adds field classes, and it is checked rather than only written down.
 
 `rust-service/tests/field_inventory.rs` reads this file and holds it to the
 schema and to the app:
@@ -25,7 +27,9 @@ schema and to the app:
 
 The same test pins what the four actions do to every other table (`REACH`). So
 a new table of any kind fails it until someone records what each action does
-to that table.
+to that table. Where an action removes or rewrites only some rows, `REACH` also
+names which of the test's seeded rows change, and every other row must stay
+exactly as it was.
 
 ## Field classes
 

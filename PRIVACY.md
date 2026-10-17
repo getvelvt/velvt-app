@@ -376,7 +376,7 @@ three empty ones are — you will see them if you open the file.
 | `weekly_digest` | one row per completed local week: bounded counts — blocks declared and completed, recoveries, wrong interventions, invitations accepted, withheld — and when the digest was shown and closed. No categories, copy, or per-day breakdown is representable | 12 completed weeks, pruned when the next digest is generated; removed by Clear Local Work Blocks |
 | `explain_probe_week` | one tap counter per local week, for the explain-tap metric. Which nudge was explained is not representable | pruned on the same 12-week rule; removed by Clear Local Work Blocks |
 | `schema_migration` | one row per applied migration: its version, its file name, a checksum of the migration's SQL (since migration 0039, the first build after 1.0.11; computed from the public source file, so nothing in it comes from your Mac), and when it ran. Created by the migration runner rather than by a migration file | no sweep; one row is added per migration and none is removed |
-| `persistence_migration_probe` | nothing. Migration 0002 created it to prove that a new migration file is embedded and applied, and no code path, shipped or test, inserts a row | empty on every install; no sweep |
+| `persistence_migration_probe` | nothing. Migration 0002 created it to prove that a new migration file is embedded and applied, and no shipped code path inserts a row. `rust-service/tests/field_inventory.rs` writes one into a scratch database, only to show that no destructive action reaches it | empty on every install; no sweep |
 
 ### What the app's destructive actions actually remove
 
@@ -397,8 +397,9 @@ this is the whole of what it reaches:
   applied to until they expire.
 - **Clear Local Work Blocks** deletes `work_block` and everything that cascades
   from it — `work_block_observation`, `work_block_result`,
-  `work_block_intervention`, `work_block_category_correction`,
-  `block_antecedent`, and that block's `intervention_decision_log` rows — plus
+  `work_block_intervention`, `work_block_category_correction`, and
+  `block_antecedent` — and every `intervention_decision_log` row (a block's
+  rows by cascade, and any logged without a block), plus
   `intervention_demotion_state`, `focus_state_evidence`, `focus_observer_state`,
   `quiet_hours_offer_state`, `initiation_invitation`, `weekly_digest`, and
   `explain_probe_week`. It does not reach the classification and correction
@@ -407,10 +408,8 @@ this is the whole of what it reaches:
 - **Delete Account** is a request to the cloud. The Rust service first marks
   an open invitation expired (`initiation_invitation`), then relays the
   deletion to the account-deletion endpoint (`ClientMessage::DeleteAccount`,
-  `rust-service/src/ipc/router.rs`). An account deleted from another Mac is
-  treated the same way here, once the server tells this Mac that the account
-  was deleted. Once the cloud accepts the deletion, the service does three
-  things, and deletes nothing else from this database:
+  `rust-service/src/ipc/router.rs`). Once the cloud accepts the deletion, the
+  service does three things, and deletes nothing else from this database:
   - It clears the session it holds in memory.
   - It deletes the upload batches still waiting to be sent: the pending and
     failed `upload_batch` rows, and their `batch_event` rows. Batches already
@@ -420,6 +419,12 @@ this is the whole of what it reaches:
     `raw_event_buffer.upload_eligible` to 0 and clears
     `upload_owner_user_id`, so none of it is sent under the next account to
     sign in.
+
+  An account deleted from another Mac gets the same three steps here, once the
+  server tells this Mac that the account was deleted
+  (`end_deleted_account_session`). No invitation is marked expired then. An
+  open one is marked expired at the next Sign In on this Mac, if it has not
+  lapsed first.
 - **Signing out** deletes nothing from this database. It marks an open
   invitation expired (`initiation_invitation`), as Delete Account does.
   - **What is waiting to upload stays, under the account it was recorded
@@ -618,6 +623,10 @@ said that list was the whole of what each action reaches, and it was not:
 - It named no table for Delete Account.
 - It said Delete Account makes only the events not yet in a batch local-only.
   The events in the batches it deletes become local-only too.
+- It said Clear Local Work Blocks removes a block's `intervention_decision_log`
+  rows. It removes every row, including any logged without a block.
+- It said an account deleted from another Mac is treated the same way as
+  Delete Account. That path does not mark an open invitation expired.
 
 Each entry now names every table its action changes, and a build test holds
 the list to the service. Corrected here on 2026-10-17.

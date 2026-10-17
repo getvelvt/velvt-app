@@ -5,8 +5,9 @@
 //! destructive action.
 //!
 //! **The field inventory.** `docs/field-inventory.md` lists, for the tables
-//! that hold a person's own answers about their blocks, every column and the
-//! class of value it may hold. Its classes have no free-text class.
+//! added for the question after a block (and any later table that holds a
+//! person's own answers), every column and the class of value it may hold. Its
+//! classes have no free-text class.
 //!
 //! - A table it marks `planned` must not exist yet.
 //! - A table it marks `migrated` must have exactly its columns, types and
@@ -18,12 +19,18 @@
 //!
 //! **The reach of each destructive action.** Reset Corrections, Clear Local
 //! Work Blocks, Log Out and Delete Account are each sent through the real
-//! router, wired as `main.rs` wires it, against a database that holds at least
-//! one row in every table. Every table is then compared before and after.
+//! router against a database that holds at least one row in every table, and a
+//! value in every nullable column on at least one row. The router is wired as
+//! `main.rs` wires it for every component these actions touch; the network
+//! client is a fake (see below). Every table is then compared before and
+//! after, row by row.
 //!
 //! - `REACH` says what each action does to each table. It has to name every
 //!   table in the migrated schema, so a new table fails here until someone
 //!   decides what each of the four actions does to it.
+//! - A partial reach names its rows. A table an action deletes from, or
+//!   rewrites, lists the seeded rows that change, and every other row must be
+//!   exactly as it was.
 //! - An action that changes a table in any other way fails, whether it reaches
 //!   further or falls short.
 //! - `PRIVACY.md` gives each action a bullet, and that bullet has to name every
@@ -39,6 +46,13 @@
 //!   already in the database. Log Out also writes to the queue whatever the
 //!   departing account still held in memory, which `account_switch.rs` covers.
 //!   Here nothing is held in memory, so that write is empty.
+//! - **The egress ledger's own row.** The network client here is a fake. The
+//!   shipped client appends an `egress_ledger` row for every request it sends:
+//!   the account-deletion request, and the session revocation Log Out sends
+//!   when it holds a token. Those added rows are not exercised here.
+//! - **An account deleted from another Mac.** That path
+//!   (`end_deleted_account_session`, run by `SessionWatch`) does not go through
+//!   the router's `DeleteAccount`, and `account_switch.rs` covers it.
 //! - **No in-app delete-all.** There is no in-app action that deletes
 //!   everything. `PRIVACY.md`, "How to delete all local data", is the complete
 //!   path.
@@ -163,13 +177,31 @@ enum Reach {
     Kept,
     /// No row is left.
     Removed,
-    /// Some rows are gone. Every row that is left is exactly as it was.
-    RemovedInPart,
-    /// The same rows, with exactly these columns changed.
-    Rewritten(&'static [&'static str]),
+    /// Exactly these seeded rows are gone. Every other row is exactly as it
+    /// was.
+    RemovedInPart(Rows),
+    /// No row is gone. Exactly these columns change, on exactly these seeded
+    /// rows, and every other row is exactly as it was.
+    Rewritten(&'static [&'static str], Rows),
 }
 
+/// Seeded rows, named by the values they hold in one column: `Rows("batch_id",
+/// &["batch-seed-waiting"])`. Every value must name at least one seeded row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Rows(&'static str, &'static [&'static str]);
+
 use Reach::{Kept, Removed, RemovedInPart, Rewritten};
+
+/// The two invitations in the seed: one already answered, one still open.
+const ANSWERED_INVITATION: &str = "7f3c2a10-5b6e-4c1d-9a8f-0e2d4c6b8aa1";
+const OPEN_INVITATION: &str = "7f3c2a10-5b6e-4c1d-9a8f-0e2d4c6b8aa2";
+
+/// What Log Out and Delete Account do to invitations: only the open one is
+/// marked expired. The answered one keeps its outcome.
+const EXPIRES_THE_OPEN_INVITATION: Reach = Rewritten(
+    &["outcome", "outcome_at"],
+    Rows("invitation_id", &[OPEN_INVITATION]),
+);
 
 /// What each action does to each table, in `Action::ALL` order: Reset
 /// Corrections, Clear Local Work Blocks, Log Out, Delete Account.
@@ -180,10 +212,30 @@ use Reach::{Kept, Removed, RemovedInPart, Rewritten};
 const REACH: &[(&str, [Reach; 4])] = &[
     (
         "abstraction_map",
-        [Rewritten(&["display_name"]), Kept, Kept, Kept],
+        [
+            Rewritten(
+                &["display_name"],
+                Rows("stable_id", &["abs_seed_window", "abs_seed_site"]),
+            ),
+            Kept,
+            Kept,
+            Kept,
+        ],
     ),
     ("antecedent_finding", [Kept; 4]),
-    ("batch_event", [Kept, Kept, Kept, RemovedInPart]),
+    (
+        "batch_event",
+        [
+            Kept,
+            Kept,
+            Kept,
+            // The events of the two batches waiting to be sent.
+            RemovedInPart(Rows(
+                "event_id",
+                &["event-seed-waiting", "event-seed-pending"],
+            )),
+        ],
+    ),
     ("block_antecedent", [Kept, Removed, Kept, Kept]),
     ("category_prompt_card_entry", [Kept; 4]),
     ("category_prompt_entry", [Kept; 4]),
@@ -202,8 +254,8 @@ const REACH: &[(&str, [Reach; 4])] = &[
         [
             Kept,
             Removed,
-            Rewritten(&["outcome", "outcome_at"]),
-            Rewritten(&["outcome", "outcome_at"]),
+            EXPIRES_THE_OPEN_INVITATION,
+            EXPIRES_THE_OPEN_INVITATION,
         ],
     ),
     ("initiation_settings", [Kept; 4]),
@@ -224,13 +276,39 @@ const REACH: &[(&str, [Reach; 4])] = &[
             Kept,
             Kept,
             Kept,
-            Rewritten(&["upload_eligible", "upload_owner_user_id"]),
+            // The events in the two batches waiting to be sent, and the event
+            // not yet in a batch. The events of the sent and the rejected
+            // batch, and the local-only event, are untouched.
+            Rewritten(
+                &["upload_eligible", "upload_owner_user_id"],
+                Rows(
+                    "event_id",
+                    &[
+                        "event-seed-waiting",
+                        "event-seed-pending",
+                        "event-seed-unbatched",
+                    ],
+                ),
+            ),
         ],
     ),
     ("schema_migration", [Kept; 4]),
     ("semantic_embedding_cache", [Kept; 4]),
     ("stable_key_salt", [Kept; 4]),
-    ("upload_batch", [Kept, Kept, Kept, RemovedInPart]),
+    (
+        "upload_batch",
+        [
+            Kept,
+            Kept,
+            Kept,
+            // The failed and the pending batch. The sent and the rejected
+            // batch stay.
+            RemovedInPart(Rows(
+                "batch_id",
+                &["batch-seed-waiting", "batch-seed-pending"],
+            )),
+        ],
+    ),
     ("upload_host_backoff", [Kept; 4]),
     ("velvt_quiet_hours", [Kept; 4]),
     ("weekly_digest", [Kept, Removed, Kept, Kept]),
@@ -244,28 +322,30 @@ const REACH: &[(&str, [Reach; 4])] = &[
     ("work_block_result", [Kept, Removed, Kept, Kept]),
 ];
 
-/// A reach as observed or as written in the inventory: owned, and able to say
-/// what happened when it matches nothing in `Reach`.
+/// A reach as `docs/field-inventory.md` writes it: which kind, and for a
+/// rewrite which columns. Which seeded rows a partial reach touches is
+/// `REACH`'s detail, not the inventory's.
 #[derive(Debug, Clone, PartialEq, Eq)]
-enum Effect {
+enum Documented {
     Kept,
     Removed,
     RemovedInPart,
     Rewritten(BTreeSet<String>),
-    Unexpected(String),
 }
 
-impl From<Reach> for Effect {
+impl From<Reach> for Documented {
     fn from(reach: Reach) -> Self {
         match reach {
             Reach::Kept => Self::Kept,
             Reach::Removed => Self::Removed,
-            Reach::RemovedInPart => Self::RemovedInPart,
-            Reach::Rewritten(columns) => {
-                Self::Rewritten(columns.iter().map(|column| (*column).to_owned()).collect())
-            }
+            Reach::RemovedInPart(_) => Self::RemovedInPart,
+            Reach::Rewritten(columns, _) => Self::Rewritten(column_set(columns)),
         }
     }
+}
+
+fn column_set(columns: &[&str]) -> BTreeSet<String> {
+    columns.iter().map(|column| (*column).to_owned()).collect()
 }
 
 fn reach_of(table: &str) -> Option<[Reach; 4]> {
@@ -325,7 +405,7 @@ fn the_inventory_states_the_tested_reach() {
                 for action in Action::ALL {
                     assert_eq!(
                         table.reach[action.index()],
-                        Effect::from(reach[action.index()]),
+                        Documented::from(reach[action.index()]),
                         "docs/field-inventory.md and REACH disagree on what {} does to `{}`",
                         action.name(),
                         table.name
@@ -381,12 +461,8 @@ async fn assert_action_reaches_exactly_its_allow_list(action: Action) {
             mismatches.push(format!("`{table}` has no REACH row"));
             continue;
         };
-        let expected = Effect::from(reach[action.index()]);
-        let observed = observe(before_rows, &after[table]);
-        if observed != expected {
-            mismatches.push(format!(
-                "`{table}`: REACH says {expected:?}, the action did {observed:?}"
-            ));
+        if let Some(departure) = departure(reach[action.index()], before_rows, &after[table]) {
+            mismatches.push(format!("`{table}`: {departure}"));
         }
     }
     assert!(
@@ -436,37 +512,124 @@ fn snapshot(connection: &Connection) -> BTreeMap<String, TableRows> {
         .collect()
 }
 
-fn observe(before: &TableRows, after: &TableRows) -> Effect {
+impl TableRows {
+    /// The rowids of the seeded rows `rows` names, or why it names none.
+    fn select(&self, Rows(column, values): Rows) -> Result<BTreeSet<i64>, String> {
+        let index = self
+            .columns
+            .iter()
+            .position(|name| name == column)
+            .ok_or_else(|| format!("REACH names rows by `{column}`, which is not a column"))?;
+        let mut selected = BTreeSet::new();
+        for value in values {
+            let matching: Vec<i64> = self
+                .rows
+                .iter()
+                .filter(|(_, row)| row[index] == Value::Text((*value).to_owned()))
+                .map(|(rowid, _)| *rowid)
+                .collect();
+            if matching.is_empty() {
+                return Err(format!(
+                    "REACH names the row whose `{column}` is `{value}`, and the seed holds none"
+                ));
+            }
+            selected.extend(matching);
+        }
+        Ok(selected)
+    }
+
+    /// A row as a failure message names it: by the column `REACH` names its
+    /// rows by, when there is one, else by rowid.
+    fn label(&self, rowid: i64, column: Option<&str>) -> String {
+        let value = column
+            .and_then(|column| self.columns.iter().position(|name| name == column))
+            .map(|index| &self.rows[&rowid][index]);
+        match (column, value) {
+            (Some(column), Some(Value::Text(value))) => format!("{column} = {value}"),
+            _ => format!("rowid {rowid}"),
+        }
+    }
+}
+
+/// Why the change from `before` to `after` is not what `reach` says, or
+/// `None` when it is exactly that.
+///
+/// Rows are matched by rowid, so a row deleted and written again counts as
+/// one removed and one added.
+fn departure(reach: Reach, before: &TableRows, after: &TableRows) -> Option<String> {
     let added = after
         .rows
         .keys()
         .filter(|rowid| !before.rows.contains_key(rowid))
         .count();
-    if added > 0 {
-        return Effect::Unexpected(format!("{added} row(s) added"));
-    }
-    let removed = before
+    let removed: BTreeSet<i64> = before
         .rows
         .keys()
         .filter(|rowid| !after.rows.contains_key(rowid))
-        .count();
-    let mut changed = BTreeSet::new();
+        .copied()
+        .collect();
+    let mut changed: BTreeMap<i64, BTreeSet<String>> = BTreeMap::new();
     for (rowid, after_values) in &after.rows {
-        for (index, (was, is)) in before.rows[rowid].iter().zip(after_values).enumerate() {
+        let Some(before_values) = before.rows.get(rowid) else {
+            continue;
+        };
+        for (index, (was, is)) in before_values.iter().zip(after_values).enumerate() {
             if was != is {
-                changed.insert(before.columns[index].clone());
+                changed
+                    .entry(*rowid)
+                    .or_default()
+                    .insert(before.columns[index].clone());
             }
         }
     }
-    match (removed, changed.is_empty()) {
-        (0, true) => Effect::Kept,
-        (_, true) if after.rows.is_empty() => Effect::Removed,
-        (_, true) => Effect::RemovedInPart,
-        (0, false) => Effect::Rewritten(changed),
-        (removed, false) => Effect::Unexpected(format!(
-            "{removed} row(s) removed and {changed:?} rewritten on the rest"
-        )),
+
+    let (expected_removed, expected_changed, named_by) = match reach {
+        Kept => (BTreeSet::new(), BTreeMap::new(), None),
+        Removed => (before.rows.keys().copied().collect(), BTreeMap::new(), None),
+        RemovedInPart(rows) => match before.select(rows) {
+            Ok(selected) => (selected, BTreeMap::new(), Some(rows.0)),
+            Err(problem) => return Some(problem),
+        },
+        Rewritten(columns, rows) => match before.select(rows) {
+            Ok(selected) => (
+                BTreeSet::new(),
+                selected
+                    .into_iter()
+                    .map(|rowid| (rowid, column_set(columns)))
+                    .collect(),
+                Some(rows.0),
+            ),
+            Err(problem) => return Some(problem),
+        },
+    };
+    if added == 0 && removed == expected_removed && changed == expected_changed {
+        return None;
     }
+
+    let mut did = Vec::new();
+    if added > 0 {
+        did.push(format!("added {added} row(s)"));
+    }
+    if !removed.is_empty() {
+        let labels: Vec<String> = removed
+            .iter()
+            .map(|rowid| before.label(*rowid, named_by))
+            .collect();
+        did.push(format!("removed {labels:?}"));
+    }
+    for (rowid, columns) in &changed {
+        did.push(format!(
+            "rewrote {columns:?} on {}",
+            before.label(*rowid, named_by)
+        ));
+    }
+    if did.is_empty() {
+        did.push("changed nothing".to_owned());
+    }
+    Some(format!(
+        "REACH says {reach:?}, and the action {}",
+        did.join("; ")
+    ))
 }
 
 // ---------------------------------------------------------------------------
@@ -893,7 +1056,7 @@ enum Status {
 struct InventoryTable {
     name: String,
     status: Status,
-    reach: Vec<Effect>,
+    reach: Vec<Documented>,
 }
 
 struct InventoryColumn {
@@ -935,15 +1098,15 @@ fn inventory_tables() -> Vec<InventoryTable> {
         .collect()
 }
 
-fn parse_reach(table: &str, cell: &str) -> Effect {
+fn parse_reach(table: &str, cell: &str) -> Documented {
     match cell {
-        "kept" => Effect::Kept,
-        "removed" => Effect::Removed,
-        "removed in part" => Effect::RemovedInPart,
+        "kept" => Documented::Kept,
+        "removed" => Documented::Removed,
+        "removed in part" => Documented::RemovedInPart,
         _ if cell.starts_with("rewritten:") => {
             let columns: BTreeSet<String> = backticked(cell).into_iter().collect();
             assert!(!columns.is_empty(), "`{table}`: `{cell}` names no column");
-            Effect::Rewritten(columns)
+            Documented::Rewritten(columns)
         }
         _ => panic!(
             "`{table}`: `{cell}` is not kept, removed, removed in part, or rewritten: `column`"
@@ -1062,24 +1225,60 @@ fn seeded_connection(scratch: &ScratchDatabase) -> Connection {
         empty.is_empty(),
         "seed_sql leaves {empty:?} empty, so no action could be seen to reach them"
     );
+    // A column that is NULL on every row would read the same after an action
+    // cleared it, so the seed gives each nullable column a value somewhere.
+    let always_null: Vec<String> = table_names(&connection)
+        .into_iter()
+        .flat_map(|table| {
+            table_info(&connection, &table)
+                .into_iter()
+                .filter(|column| !column.not_null && !column.primary_key)
+                .filter(|column| {
+                    connection
+                        .query_row(
+                            &format!(
+                                "SELECT COUNT(*) FROM \"{table}\" WHERE \"{}\" IS NOT NULL",
+                                column.name
+                            ),
+                            [],
+                            |row| row.get::<_, i64>(0),
+                        )
+                        .unwrap()
+                        == 0
+                })
+                .map(|column| format!("{table}.{}", column.name))
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    assert!(
+        always_null.is_empty(),
+        "seed_sql leaves {always_null:?} NULL on every row, so an action that cleared \
+         them would go unseen. Give each a value on at least one seeded row"
+    );
     connection
 }
 
-/// One row in every table the migrations leave empty, and more than one where
-/// an action treats rows differently:
+/// One row in every table the migrations leave empty, a value in every
+/// nullable column on at least one row, and more than one row where an action
+/// treats rows differently:
 ///
-/// - **Upload batches and their events.** There is a batch waiting to be sent
-///   and a sent one, each with an event. There is also an event waiting for a
-///   batch, and an event that is local-only.
+/// - **Upload batches and their events.** There are two batches waiting to be
+///   sent (one failed, one pending), a sent one and a rejected one, each with
+///   an event. There is also an event waiting for a batch, and an event that
+///   is local-only.
 /// - **Invitations.** There is an open invitation and an answered one.
 /// - **Decisions.** There is a decision logged in a block and one logged
 ///   without a block.
-/// - **Display names.** The `abstraction_map` row carries a `display_name`.
+/// - **Display names.** Both `abstraction_map` rows carry a `display_name`, and
+///   two events carry the `local_display_label` a name was applied to.
+/// - **Blocks.** A second block is the recovery of the first.
 ///
+/// `REACH` names the rows a partial reach touches by the ids given here.
 /// `embedding_salt`, `stable_key_salt` and `schema_migration` are written by
 /// the migrations and are not seeded. Nothing here is drawn from a real Mac.
 fn seed_sql() -> String {
     let window = "a".repeat(64);
+    let site_window = "9".repeat(64);
     let app = "b".repeat(64);
     let bundle = "c".repeat(64);
     let site = "d".repeat(64);
@@ -1089,47 +1288,76 @@ fn seed_sql() -> String {
     let second_entry = "2".repeat(64);
     let body = "f".repeat(64);
     let block = "7f3c2a10-5b6e-4c1d-9a8f-0e2d4c6b8a01";
+    let recovered_block = "7f3c2a10-5b6e-4c1d-9a8f-0e2d4c6b8a02";
     format!(
         "
 INSERT INTO abstraction_map(key_hash, stable_id, label, category, taxonomy_version,
                             classification_tier, display_name, classification_status,
                             classification_confidence, classification_source)
     VALUES ('{window}', 'abs_seed_window', 'document:code', 'FOCUS_WORK', 'mvp-2',
-            'seed', 'Seed editor', 'classified', 'high', 'seed');
+            'seed', 'Seed editor', 'classified', 'high', 'seed'),
+           ('{site_window}', 'abs_seed_site', 'web:unknown', 'UNLOGGED', 'mvp-2',
+            'fallback', 'Seed forum', 'unclassified', 'none', 'fallback');
 INSERT INTO antecedent_finding(finding_id, candidate_id, candidate_registry_version,
                                discovered_at, discovery_window_start, discovery_window_end,
-                               support_episodes, effect_size, q_value, state)
+                               support_episodes, effect_size, q_value, confirmed_at,
+                               confirm_support_episodes, confirm_effect_size, state,
+                               surfaced_at, retracted_at, retraction_reason,
+                               user_disputed_at)
     VALUES ('finding-seed', 'hour_bin:morning', 1, 1760000000, '2026-09-01', '2026-09-28',
-            3, 0.2, 0.5, 'candidate');
+            3, 0.2, 0.5, NULL, NULL, NULL, 'candidate', NULL, NULL, NULL, NULL),
+           ('finding-seed-retracted', 'hour_bin:evening', 1, 1757000000, '2025-08-01',
+            '2025-08-28', 4, 0.3, 0.04, 1758000000, 3, 0.25, 'retracted', 1758000100,
+            1759000000, 'user_disputed', 1758999000);
 INSERT INTO upload_batch(batch_id, status, sent_at, attempt_count, next_attempt_at,
                          last_error_code, owner_user_id)
     VALUES ('batch-seed-waiting', 'failed', NULL, 2, 1760000600, 'host_unreachable', 'user-seed'),
-           ('batch-seed-sent', 'sent', 1760000100, 1, 0, NULL, 'user-seed');
+           ('batch-seed-pending', 'pending', NULL, 0, 0, NULL, 'user-seed'),
+           ('batch-seed-sent', 'sent', 1760000100, 1, 0, NULL, 'user-seed'),
+           ('batch-seed-rejected', 'rejected', NULL, 1, 0, 'raw_field_rejected', 'user-seed');
 INSERT INTO batch_event(batch_id, event_id, stable_id, label, category, taxonomy_version,
                         classification_tier, occurred_at, duration_seconds)
     VALUES ('batch-seed-waiting', 'event-seed-waiting', 'abs_seed_window', 'document:code',
             'FOCUS_WORK', 'mvp-2', 'seed', 1760000000, 60),
+           ('batch-seed-pending', 'event-seed-pending', 'abs_seed_window', 'document:code',
+            'FOCUS_WORK', 'mvp-2', 'seed', 1760000030, 30),
            ('batch-seed-sent', 'event-seed-sent', 'abs_seed_window', 'document:code',
-            'FOCUS_WORK', 'mvp-2', 'seed', 1759999000, 60);
-INSERT INTO raw_event_buffer(event_id, stable_id, label, category, taxonomy_version,
-                             occurred_at, duration_seconds, classification_tier,
-                             classification_status, classification_confidence,
-                             classification_source, upload_eligible, app_stable_id,
+            'FOCUS_WORK', 'mvp-2', 'seed', 1759999000, 60),
+           ('batch-seed-rejected', 'event-seed-rejected', 'abs_seed_window', 'document:code',
+            'FOCUS_WORK', 'mvp-2', 'seed', 1759998000, 60);
+INSERT INTO raw_event_buffer(event_id, stable_id, label, local_display_label, category,
+                             taxonomy_version, occurred_at, duration_seconds,
+                             classification_tier, classification_status,
+                             classification_confidence, classification_source,
+                             local_name_suggestion, upload_eligible, app_stable_id,
+                             app_bundle_stable_id, declared_app_category, document_type_ids,
                              site_stable_id, upload_owner_user_id)
-    VALUES ('event-seed-waiting', 'abs_seed_window', 'document:code', 'FOCUS_WORK', 'mvp-2',
-            1760000000, 60, 'seed', 'classified', 'high', 'seed', 1, '{app}', NULL, 'user-seed'),
-           ('event-seed-sent', 'abs_seed_window', 'document:code', 'FOCUS_WORK', 'mvp-2',
-            1759999000, 60, 'seed', 'classified', 'high', 'seed', 1, '{app}', NULL, 'user-seed'),
-           ('event-seed-unbatched', 'abs_seed_window', 'document:code', 'FOCUS_WORK', 'mvp-2',
-            1760000060, 60, 'seed', 'classified', 'high', 'seed', 1, '{app}', NULL, 'user-seed'),
-           ('event-seed-local', 'abs_seed_site', 'web:unknown', 'UNLOGGED', 'mvp-2',
-            1760000120, 60, 'fallback', 'unclassified', 'none', 'fallback', 0, NULL, '{site}',
-            NULL);
+    VALUES ('event-seed-waiting', 'abs_seed_window', 'document:code', 'Seed editor',
+            'FOCUS_WORK', 'mvp-2', 1760000000, 60, 'seed', 'classified', 'high', 'seed',
+            'Seed suggestion', 1, '{app}', '{bundle}', 'public.app-category.developer-tools',
+            'public.source-code public.plain-text', NULL, 'user-seed'),
+           ('event-seed-pending', 'abs_seed_window', 'document:code', NULL, 'FOCUS_WORK',
+            'mvp-2', 1760000030, 30, 'seed', 'classified', 'high', 'seed', NULL, 1, '{app}',
+            NULL, NULL, NULL, NULL, 'user-seed'),
+           ('event-seed-sent', 'abs_seed_window', 'document:code', NULL, 'FOCUS_WORK',
+            'mvp-2', 1759999000, 60, 'seed', 'classified', 'high', 'seed', NULL, 1, '{app}',
+            NULL, NULL, NULL, NULL, 'user-seed'),
+           ('event-seed-rejected', 'abs_seed_window', 'document:code', NULL, 'FOCUS_WORK',
+            'mvp-2', 1759998000, 60, 'seed', 'classified', 'high', 'seed', NULL, 1, '{app}',
+            NULL, NULL, NULL, NULL, 'user-seed'),
+           ('event-seed-unbatched', 'abs_seed_window', 'document:code', NULL, 'FOCUS_WORK',
+            'mvp-2', 1760000060, 60, 'seed', 'classified', 'high', 'seed', NULL, 1, '{app}',
+            NULL, NULL, NULL, NULL, 'user-seed'),
+           ('event-seed-local', 'abs_seed_site', 'web:unknown', 'Seed forum', 'UNLOGGED',
+            'mvp-2', 1760000120, 60, 'fallback', 'unclassified', 'none', 'fallback', NULL, 0,
+            NULL, NULL, NULL, NULL, '{site}', NULL);
 INSERT INTO work_block(block_id, phase, intention, purpose, intensity,
-                       planned_duration_seconds, started_at, ended_at, intention_expires_at,
-                       origin)
+                       planned_duration_seconds, started_at, paused_at, ended_at,
+                       recovered_after_restart, recovery_of, intention_expires_at, origin)
     VALUES ('{block}', 'completed', 'Seed intention', 'deep_work', 'medium', 1500,
-            1760000000, 1760001500, 1760086400, 'invitation');
+            1760000000, NULL, 1760001500, 0, NULL, 1760086400, 'invitation'),
+           ('{recovered_block}', 'abandoned', NULL, NULL, 'light', 600, 1760002000,
+            1760002300, 1760002400, 1, '{block}', 1760088400, 'manual');
 INSERT INTO work_block_observation(block_id, occurred_at, ended_at, category,
                                    classification_status, classification_confidence)
     VALUES ('{block}', 1760000000, 1760000600, 'FOCUS_WORK', 'classified', 'high');
@@ -1158,15 +1386,16 @@ INSERT INTO intervention_decision_log(decision_id, occurred_at, block_id, policy
 INSERT INTO intervention_demotion_state(id, state, demoted_at, manual_reset_at,
                                         threshold_policy_version,
                                         repromotion_policy_version, updated_at)
-    VALUES (1, 'active', NULL, NULL, 1, 1, 1760000000);
+    VALUES (1, 'active', 1759900000, 1759950000, 1, 1, 1760000000);
 INSERT INTO category_prompt_entry(entry_key, first_listed_at, last_listed_at,
                                   acknowledged_at, notified_at)
-    VALUES ('application:{app}', 1760000000, 1760090000, NULL, 1760000300);
+    VALUES ('application:{app}', 1760000000, 1760090000, NULL, 1760000300),
+           ('site:{site}', 1759900000, 1759990000, 1759995000, NULL);
 INSERT INTO category_prompt_card_entry(prompt_id, entry_key, counted)
     VALUES ('{prompt}', 'application:{app}', 1);
 INSERT INTO category_prompt_notification(local_date, posted_at, entry_count, policy_version,
                                          opened_at)
-    VALUES ('2026-10-09', 1760000300, 1, 1, NULL);
+    VALUES ('2026-10-09', 1760000300, 1, 1, 1760000400);
 INSERT INTO classification_telemetry(taxonomy_version, classification_tier, event_count)
     VALUES ('mvp-2', 'seed', 4);
 INSERT INTO classifier_artifact_telemetry(artifact_version, classification_count)
@@ -1192,10 +1421,10 @@ INSERT INTO insight_cache(date, payload, ttl, not_found)
 INSERT INTO initiation_invitation(invitation_id, offered_at, local_date, action_id,
                                   policy_version, backoff_policy_version, outcome,
                                   outcome_at)
-    VALUES ('7f3c2a10-5b6e-4c1d-9a8f-0e2d4c6b8aa1', 1759990000, '2026-10-09',
-            'soft_start_25', 1, 1, 'accepted', 1759990060),
-           ('7f3c2a10-5b6e-4c1d-9a8f-0e2d4c6b8aa2', 1760090000, '2026-10-10',
-            'soft_start_25', 1, 1, 'offered', NULL);
+    VALUES ('{ANSWERED_INVITATION}', 1759990000, '2026-10-09', 'soft_start_25', 1, 1,
+            'accepted', 1759990060),
+           ('{OPEN_INVITATION}', 1760090000, '2026-10-10', 'soft_start_25', 1, 1, 'offered',
+            NULL);
 INSERT INTO initiation_settings(id, invitations_enabled, updated_at)
     VALUES (1, 1, 1760000000);
 INSERT INTO local_site_name(site_key_hash, host, last_seen_at)

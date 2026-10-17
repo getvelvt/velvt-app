@@ -57,7 +57,10 @@ singleton, 1.5 into a timestamp, and 0 and 1.5 into a version.
 
 Migration 0048 creates both tables. Neither table is uploaded, and no upload
 path reads them. `SelfRatingRepo` (`rust-service/src/persistence/self_rating.rs`)
-writes them and no other table, which the same test checks.
+writes them and no other table, which the same test checks. Its one caller,
+`RatingPromptManager` (`rust-service/src/self_rating/`, protocol 38), writes
+nothing else either: the same test runs every rule it has against a database
+holding a row in every table.
 
 | Table | Status | Retention | Reset Corrections | Clear Local Work Blocks | Log Out | Delete Account |
 |---|---|---|---|---|---|---|
@@ -94,15 +97,15 @@ Blocks removes both.
 |---|---|---|---|---|---|
 | `work_block_self_rating` | `block_id` | TEXT | no | key | The block the answer is about. It is the primary key and references `work_block`, so the row goes when the block goes. It needs `NOT NULL` like every other text primary key, because SQLite allows NULL in a text primary key without it. |
 | `work_block_self_rating` | `prompt_version` | INTEGER | no | version | The version of the question's wording the block was offered under. |
-| `work_block_self_rating` | `eligible_at` | INTEGER | no | timestamp | When the block ended and the question became available. The row is written then, so a question that was never shown is still recorded as missing. |
+| `work_block_self_rating` | `eligible_at` | INTEGER | no | timestamp | When the block ended and the question became available. The row is written when the service first sees the ended block, normally that moment, so a question that was never shown is still recorded as missing. |
 | `work_block_self_rating` | `shown_at` | INTEGER | yes | timestamp | When the question was first on screen, or NULL if it never was. An answer or a Not now is given on screen, so one that arrives before any reported sighting records its own time as the sighting. It is never NULL beside an answer or a Not now. |
 | `work_block_self_rating` | `answer` | TEXT | yes | choice | One of `all`, `most`, `half`, `less_than_half` or `little`, or NULL if there is no answer. Not now, closing and silence are never stored as an answer. |
 | `work_block_self_rating` | `answered_at` | INTEGER | yes | timestamp | When the answer was given. It is NULL exactly when `answer` is. |
 | `work_block_self_rating` | `not_now_at` | INTEGER | yes | timestamp | When Not now was tapped. |
-| `work_block_self_rating` | `expired_at` | INTEGER | yes | timestamp | When the question stopped being available. |
+| `work_block_self_rating` | `expired_at` | INTEGER | yes | timestamp | When the question stopped being available: two hours after the block ended, or when the next block started, whichever came first. It is that instant, not when the service noticed. |
 | `work_block_self_rating` | `card_seen_before_answer` | INTEGER | no | flag | 1 if the answer was given after the block's result card had been on screen. The card appears after Not now, so it is 1 for every answer after a Not now. It is 0 while there is no answer. |
 | `rating_prompt_settings` | `id` | INTEGER | no | singleton | Always 1. |
 | `rating_prompt_settings` | `enabled` | INTEGER | no | flag | Whether the question is asked. It is 0 until the person turns it on. |
 | `rating_prompt_settings` | `first_opted_in_at` | INTEGER | yes | timestamp | When the question was first turned on. Turning it off and on again never changes it. It is set whenever `opted_in_at` is, and an export reports it as `rating_prompt_enabled_at`. |
 | `rating_prompt_settings` | `opted_in_at` | INTEGER | yes | timestamp | When the question was last turned on. |
-| `rating_prompt_settings` | `opted_out_at` | INTEGER | yes | timestamp | When the question was last turned off. |
+| `rating_prompt_settings` | `opted_out_at` | INTEGER | yes | timestamp | When the question was last turned off, or, on an install that never turned it on, when the person answered the one-time invitation to turn it on with Not now. |

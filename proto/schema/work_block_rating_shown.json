@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$comment": "Direction: Swift to Rust. Protocol 38. Local IPC only. The question after a block (work_block_state.rating_prompt) was drawn on screen. A fact, never an answer: the payload has one field and no place an answer could be carried. The service stamps it on arrival and keeps the first sighting; a second report, or one for a question that has expired or was answered, changes nothing. Answered with nothing, so a re-render cannot provoke another report.",
+  "type": "object",
+  "required": ["type", "payload"],
+  "properties": {
+    "type": { "const": "work_block_rating_shown" },
+    "payload": {
+      "type": "object",
+      "required": ["block_id"],
+      "properties": {
+        "block_id": { "type": "string", "format": "uuid" }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

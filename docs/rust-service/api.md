@@ -98,6 +98,14 @@ Rust accepts these `ClientMessage` cases:
 | `request_menu_status` | Request cloud/local queue status for settings UI |
 | `flush_upload_queue` | Force pending upload flush |
 | `error_response` | Typed client error envelope |
+| `work_block_rating_shown` | The question after a block was drawn (protocol 38); answered with nothing |
+| `rate_work_block` | One of the five answers to the question after a block (protocol 38); answered with `work_block_state` |
+| `work_block_rating_not_now` | Not now on the question after a block, never an answer (protocol 38); answered with `work_block_state` |
+| `set_rating_prompt_enabled` | Turn the question after a block on or off, or answer its invitation (protocol 38); answered with `rating_prompt_settings` |
+| `request_rating_prompt_settings` | Read the question's setting and the Settings pane's words (protocol 38) |
+
+The table lists the account, status and protocol messages; `docs/architecture/ipc-contract.md`
+§ 2 lists every `ClientMessage`, and § 3 describes each.
 
 ### Raw Event Example
 

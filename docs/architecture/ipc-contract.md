@@ -1,10 +1,11 @@
 # Velvt IPC Contract
 
-> **Reconciled with `proto/` at protocol 37 on 2026-10-15** (protocol 33 on
+> **Reconciled with `proto/` at protocol 38 on 2026-10-17** (protocol 33 on
 > 2026-09-27; 34 adds `auth_session.user_id`, two `menu_status.upload_status`
 > values and the `account_deleted` reason; 35 adds `intervention_delivery`; 36
 > adds `focus_status_availability`; 37 adds the `rate_limited` code to
-> `auth_failure`).
+> `auth_failure`; 38 adds the question after a block, and its number is
+> provisional until it or vault A4 merges first).
 > This page
 > summarizes the contract; `proto/schema/*.json` is authoritative for every
 > field, and `proto/CHANGELOG.md` records why each version exists. Before this
@@ -137,7 +138,10 @@ Direction is enforced by the workspace message envelopes:
     `request_initiation_settings`;
   - demotion, digest and explanation: `request_demotion_state`,
     `reset_intervention_demotion`, `request_weekly_digest`,
-    `acknowledge_weekly_digest`, `request_intervention_explanation`.
+    `acknowledge_weekly_digest`, `request_intervention_explanation`;
+  - the question after a block: `work_block_rating_shown`,
+    `rate_work_block`, `work_block_rating_not_now`,
+    `set_rating_prompt_enabled`, `request_rating_prompt_settings`.
 - Rust emits only (`ServerMessage`):
   - handshake and errors: `server_hello`, `acknowledged`, `version_mismatch`,
     `malformed_message`, `error_response`, `shutting_down`;
@@ -151,7 +155,8 @@ Direction is enforced by the workspace message envelopes:
   - the needs-a-category card and reminder: `category_prompt`;
   - work blocks and local surfaces: `work_block_state`, `local_dashboard`,
     `quiet_hours_offer`, `initiation_invitation`, `initiation_settings`,
-    `demotion_state`, `weekly_digest`, `intervention_explanation`.
+    `demotion_state`, `weekly_digest`, `intervention_explanation`;
+  - the question after a block: `rating_prompt_settings`.
 - Swift sends only the Rust inbound set and accepts only the Rust outbound set.
   A test-only `dummy_extension` client variant exists under
   `cfg(test)` / the `extensibility-proof` feature and is never on the wire.
@@ -755,6 +760,50 @@ the full account.
   unopened reminders. Answered with `category_prompt` as it now stands, never
   with a notification; a malformed id is refused with
   `invalid_category_prompt_id`.
+
+### Messages added in protocol 38
+
+The optional question after a block, "How much of this block was on what you
+meant to do?" (workspace `plan/attention-labels-and-model.md` § 3; founder
+decision 2026-10-17). All local IPC only; nothing is uploaded. Rust decides
+when it is asked and writes every word (`rust-service/src/self_rating/`,
+`RATING_PROMPT_VERSION` 1); Swift renders it and reports facts.
+`proto/CHANGELOG.md` "Version 38" has the full account, including why the
+number is provisional.
+
+- `work_block_state.rating_prompt` [38]: present only on the snapshot of an
+  ended block, only while the question about it can be answered, and only
+  while the question is on; omitted on every live block. It holds the block
+  id, `prompt_version`, `presentation`, the question, five `options`
+  (`answer` and `label`, most of the block first), `not_now`, `footnote`,
+  `acknowledgement`, `link` and `expires_at`. With `presentation`
+  `question` the question sits above the result card and the card's
+  observation and numbers stay hidden; with `link` (after Not now) the card
+  shows, with the link under it. It expires two hours after the block ended
+  or when the next block starts, whichever is first. Never a notification.
+- `work_block_state.rating_opt_in` [38]: the one-time invitation to turn the
+  question on (`body`, `turn_on`, `not_now`), after a block the question
+  would have covered, while the question has never been on and the
+  invitation has never been answered.
+- `work_block_rating_shown` [38]: Swift to Rust, `block_id` only. The question
+  was drawn. Answered with nothing; the first sighting is kept.
+- `rate_work_block` [38]: Swift to Rust. `block_id`, `answer` (`all`, `most`,
+  `half`, `less_than_half` or `little`) and `via_link`. Only an open question
+  takes an answer, and it is final. Answered with `work_block_state`.
+- `work_block_rating_not_now` [38]: Swift to Rust, `block_id` only. Never an
+  answer; the question stays open through the link until it expires.
+  Answered with `work_block_state`.
+- `set_rating_prompt_enabled` / `request_rating_prompt_settings` /
+  `rating_prompt_settings` [38]: the setting. The reply carries `available`,
+  `enabled`, `title` and `subtitle`. On is refused, and `available` is false,
+  until the Mac's first 14 days of blocks are over. Off from the invitation is
+  its Not now, which Rust records so the invitation never returns.
+
+Which blocks are asked about: a block that ran at least five minutes, started
+after the Mac's drift policy v6 primary period ended (14 days from its first
+block after the upgrade cut), and ran wholly while the question was on. No
+rule reads an answer, a category or coverage, and no drift decision reads
+anything the question records (`rust-service/tests/rating_isolation.rs`).
 
 ## 4. Version Negotiation
 

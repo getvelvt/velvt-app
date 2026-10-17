@@ -78,6 +78,7 @@ use velvt_service::initiation::{InitiationManager, InvitationGates, RuntimeInvit
 use velvt_service::ipc::{MessageRouter, R7Router};
 use velvt_service::persistence::{SelfRatingAnswer, SqlitePersistence};
 use velvt_service::receipts::ReceiptsManager;
+use velvt_service::self_rating::RatingPromptManager;
 use velvt_service::upload::{
     BatchAssembler, EventIngestor, FakeBatchUploader, FakePrivacyAlertSink, SharedUploadBatcher,
     UploadBatcher, UploadCoordinator,
@@ -1101,6 +1102,150 @@ fn the_rating_store_writes_only_its_own_two_tables() {
         "the store for the question after a block changed {reached:?}. It writes \
          {RATING_TABLES:?} and nothing else"
     );
+}
+
+/// The rules of the question after a block (`self_rating`), run against a
+/// database holding a row in every table: the invitation's Not now, the
+/// setting both ways, eligibility, a sighting, Not now, an answer through the
+/// link, and an expiry found late. The question's two tables change; every
+/// other table stays exactly as it was. Plan § 3.3's tripwire: the question
+/// never writes an offer, a decision, demotion, backoff, an invitation,
+/// receipts, a correction or an observation.
+#[test]
+fn the_question_s_rules_write_only_its_own_two_tables() {
+    use velvt_service::work_block::{EndedBlock, RatingPromptSource};
+    use velvt_shared_types::{WorkBlockPhase, WorkBlockRatingAnswer};
+
+    const RATED: &str = "7f3c2a10-5b6e-4c1d-9a8f-0e2d4c6b8a05";
+    const FOUND_LATE: &str = "7f3c2a10-5b6e-4c1d-9a8f-0e2d4c6b8a06";
+    // The seed's first block starts the period at 1760000000, so it ends at
+    // 1761209600.
+    const RATED_START: i64 = 1_761_300_000;
+    const LATE_START: i64 = 1_761_400_000;
+    let scratch = ScratchDatabase::new();
+    let persistence = SqlitePersistence::open(&scratch.path).unwrap();
+    let connection = seeded_connection(&scratch);
+    for (block, start) in [(RATED, RATED_START), (FOUND_LATE, LATE_START)] {
+        connection
+            .execute(
+                "INSERT INTO work_block(block_id, phase, intensity, planned_duration_seconds,
+                                        started_at, ended_at, total_paused_seconds,
+                                        recovered_after_restart, intention_expires_at)
+                 VALUES (?1, 'completed', 'medium', 1800, ?2, ?2 + 1800, 0, 0, ?2 + 86400)",
+                rusqlite::params![block, start],
+            )
+            .unwrap();
+    }
+    // The rated block holds an offer and a decision of its own, so a rule
+    // that touched its block's drift record would change a row here.
+    connection
+        .execute_batch(&format!(
+            "INSERT INTO work_block_intervention(block_id, offered_at, action_id,
+                 anchor_category, switch_count, window_seconds, outcome, outcome_at,
+                 salience)
+             VALUES ('{RATED}', {offered}, 'protect_next_10', 'FOCUS_WORK', 3, 600,
+                     'returned', {returned}, 'normal');
+             INSERT INTO intervention_decision_log(decision_id, occurred_at, block_id,
+                 policy_version, anchor_category, switch_count, elapsed_seconds,
+                 remaining_seconds, gate_verdict, propensity, focus_state)
+             VALUES ('decision-rated-block', {offered}, '{RATED}', 6, 'FOCUS_WORK', 3,
+                     600, 1200, 'offered', 1.0, 'off');",
+            offered = RATED_START + 600,
+            returned = RATED_START + 700,
+        ))
+        .unwrap();
+    // Start from an install that never answered the invitation.
+    connection
+        .execute("DELETE FROM rating_prompt_settings", [])
+        .unwrap();
+    let rating = RatingPromptManager::new(persistence.self_rating_repo());
+    let at = |seconds: i64| DateTime::<Utc>::from_timestamp(seconds, 0).unwrap();
+    let ended = |block: &str, start: i64| EndedBlock {
+        block_id: block.to_owned(),
+        phase: WorkBlockPhase::Completed,
+        started_at: at(start),
+        ended_at: at(start + 1_800),
+        elapsed_seconds: 1_800,
+    };
+    let rated = Uuid::parse_str(RATED).unwrap();
+
+    let before = snapshot(&connection);
+    let declined = rating.set_enabled(false, at(RATED_START - 3_000)).unwrap();
+    let turned_on = rating.set_enabled(true, at(RATED_START - 2_000)).unwrap();
+    let asked = rating.surfaces_for(&ended(RATED, RATED_START), at(RATED_START + 1_810));
+    let writes = [
+        (
+            "the invitation's Not now",
+            !declined.enabled && declined.available,
+        ),
+        ("turning it on", turned_on.enabled),
+        ("eligibility", asked.prompt.is_some()),
+        (
+            "a sighting",
+            rating.record_shown(rated, at(RATED_START + 1_815)).unwrap(),
+        ),
+        (
+            "Not now",
+            rating
+                .record_not_now(rated, at(RATED_START + 1_820))
+                .unwrap(),
+        ),
+        (
+            "an answer through the link",
+            rating
+                .record_answer(
+                    rated,
+                    WorkBlockRatingAnswer::LessThanHalf,
+                    true,
+                    at(RATED_START + 1_900),
+                )
+                .unwrap(),
+        ),
+        (
+            "an expiry found late",
+            rating
+                .surfaces_for(&ended(FOUND_LATE, LATE_START), at(LATE_START + 20_000))
+                .prompt
+                .is_none(),
+        ),
+        (
+            "turning it off",
+            !rating
+                .set_enabled(false, at(LATE_START + 20_100))
+                .unwrap()
+                .enabled,
+        ),
+    ];
+    for (write, happened) in writes {
+        assert!(
+            happened,
+            "{write} did not happen, so nothing below would mean anything"
+        );
+    }
+    let after = snapshot(&connection);
+
+    let mut reached = Vec::new();
+    for (table, before_rows) in &before {
+        let changed = departure(Kept, before_rows, &after[table]).is_some();
+        if RATING_TABLES.contains(&table.as_str()) {
+            assert!(changed, "the question's rules left `{table}` unchanged");
+        } else if changed {
+            reached.push(table.clone());
+        }
+    }
+    assert!(
+        reached.is_empty(),
+        "the rules of the question after a block changed {reached:?}. They write \
+         {RATING_TABLES:?} and nothing else"
+    );
+    let expired: Option<i64> = connection
+        .query_row(
+            "SELECT expired_at FROM work_block_self_rating WHERE block_id = ?1",
+            [FOUND_LATE],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(expired, Some(LATE_START + 1_800 + 7_200));
 }
 
 // ---------------------------------------------------------------------------

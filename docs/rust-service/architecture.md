@@ -17,6 +17,7 @@ The Rust service is organized around narrow modules that own one runtime concern
 | `src/delivery/` | Fetching history/insight, cache management, payload shaping, IPC push adapter |
 | `src/retention/` | Scheduled cleanup for raw events, sent/rejected batches, caches, and the egress ledger |
 | `src/work_block/` | Versioned work-block state machine, safe observation aggregation, deterministic copy, restart recovery, and one-shot deadline |
+| `src/self_rating/` | The optional question after a block (protocol 38): which ended blocks it covers, its frozen copy, its expiry, and what a sighting, Not now or answer records. Consulted by the work-block snapshot of an ended block only |
 | `src/lifecycle/` | Cancellation token used by long-running tasks |
 | `shared-types/` | IPC DTOs and protocol constants shared by service tests and Swift-equivalent schemas |
 
@@ -116,8 +117,28 @@ none was reported before it, an answer after Not now was given with the card
 seen, and the first time the question was turned on is kept. The schema's
 CHECKs refuse every row the pre-registered analysis would discard as
 malformed. Each row cascades with its block, so Clear Local Work Blocks
-removes every answer and keeps the on/off setting. It has no caller
-in the shipped path yet. `docs/field-inventory.md` lists every column.
+removes every answer and keeps the on/off setting. `docs/field-inventory.md`
+lists every column. The store also reads, and never writes, the two facts
+that place a block in time: when it ended and when the next block started,
+and when the Mac's drift policy v6 primary period started.
+
+`self_rating::RatingPromptManager` (protocol 38, `RATING_PROMPT_VERSION` 1)
+is the store's only caller. It decides, by fixed rules over timestamps and
+the person's setting, whether an ended block is asked about: the block ran
+at least five minutes, started after the Mac's v6 primary period ended (14
+days from its first block after the upgrade cut, as `analyze_ratings.py`
+computes it), and ran wholly while the question was on. Its row is written
+then, with `eligible_at` the block's end. The question expires two hours
+after the block ended or when the next block starts, whichever is first, and
+`expired_at` is that instant. The question cannot be turned on before the
+period ends. `WorkBlockManager` reaches it through the `RatingPromptSource`
+trait from one function, `rating_surfaces`, while it builds the snapshot of
+an ended block, and passes the time the end was observed, so a Mac asleep
+through a deadline is not shown a question that already expired.
+`tests/rating_isolation.rs` replays a nineteen-day trace with and without
+the question and requires every other table byte-identical, checks the
+manager never consults it for a live block, and checks no other module names
+the question's record. The router handles its five messages.
 
 ## Meaningful-Work Aggregation
 

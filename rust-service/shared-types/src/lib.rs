@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 /// Current breaking-change version of the local IPC contract.
-pub const PROTOCOL_VERSION: u32 = 37;
+pub const PROTOCOL_VERSION: u32 = 38;
 
 /// Client-to-server messages accepted by the Rust service.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -122,6 +122,20 @@ pub enum ClientMessage {
     /// The one-tap "explain this nudge" request. Accepts no user text; there
     /// is no reply, follow-up, or thread anywhere on this surface (D7).
     RequestInterventionExplanation(RequestInterventionExplanation),
+    /// The question after a block was on screen (protocol 38). A fact, never
+    /// an answer: Rust stamps it on arrival, and the first sighting is kept.
+    WorkBlockRatingShown(WorkBlockRatingShown),
+    /// One of the five answers to the question after a block (protocol 38).
+    RateWorkBlock(RateWorkBlock),
+    /// Not now, on the question after a block (protocol 38). Never an
+    /// answer: the question stays open until it expires.
+    WorkBlockRatingNotNow(WorkBlockRatingNotNow),
+    /// Turns the question after a block on or off (protocol 38). Off from
+    /// the one-time invitation records its Not now. Rust refuses on before
+    /// the Mac's first 14 days are over.
+    SetRatingPromptEnabled(SetRatingPromptEnabled),
+    /// Reads the question's setting for the Settings pane (protocol 38).
+    RequestRatingPromptSettings(RequestRatingPromptSettings),
     /// Test-only proof that adding a client DTO does not change existing handlers.
     #[cfg(any(test, feature = "extensibility-proof"))]
     DummyExtension(DummyExtension),
@@ -206,6 +220,8 @@ pub enum ServerMessage {
     /// The needs-a-category card and, at most once a local day, a reminder
     /// to post, worded in Rust (protocol 33). Counts only, never names.
     CategoryPrompt(CategoryPrompt),
+    /// The question after a block's setting, worded in Rust (protocol 38).
+    RatingPromptSettings(RatingPromptSettings),
 }
 
 /// Server's first message on every connection.
@@ -1878,6 +1894,154 @@ pub struct WorkBlockSnapshot {
     /// Set only while a drift offer is awaiting a response.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub active_intervention: Option<ActiveIntervention>,
+    /// The question after a block (protocol 38). Only on the snapshot of an
+    /// ended block, and only while the question about that block can still
+    /// be answered. Omitted otherwise, and on every live block.
+    /// Boxed so a snapshot without it stays small.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rating_prompt: Option<Box<RatingPrompt>>,
+    /// The one-time invitation to turn the question on (protocol 38). Only on
+    /// the snapshot of an ended block the question would have covered, until
+    /// the person answers the invitation either way. Omitted otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rating_opt_in: Option<Box<RatingOptIn>>,
+}
+
+/// One answer to the question after a block (protocol 38), from most of the
+/// block to least. The wire values are migration 0048's stored values.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkBlockRatingAnswer {
+    /// "All or nearly all"
+    All,
+    /// "Most"
+    Most,
+    /// "About half"
+    Half,
+    /// "Less than half"
+    LessThanHalf,
+    /// "Little or none"
+    Little,
+}
+
+impl WorkBlockRatingAnswer {
+    /// Every answer, from most of the block to least.
+    pub const ALL: [Self; 5] = [
+        Self::All,
+        Self::Most,
+        Self::Half,
+        Self::LessThanHalf,
+        Self::Little,
+    ];
+}
+
+/// Where the question after a block sits on the result view (protocol 38).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RatingPromptPresentation {
+    /// Before an answer or a Not now. The question sits above the result
+    /// card, and the card's observation sentence and numbers stay hidden, so
+    /// they cannot shape the answer.
+    Question,
+    /// After Not now. The result card shows, and under it a quiet link
+    /// reopens the question until it expires. An answer given through the
+    /// link was given with the card seen.
+    Link,
+}
+
+/// One tap on the question after a block: the answer it records and its
+/// Rust-authored label.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RatingPromptOption {
+    pub answer: WorkBlockRatingAnswer,
+    pub label: String,
+}
+
+/// The question after a block (protocol 38): "How much of this block was on
+/// what you meant to do?". Rust decides when it is asked and writes every
+/// word; Swift renders it verbatim and reports what happened. It never
+/// appears while a block runs and is never a notification.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RatingPrompt {
+    /// The ended block the question is about.
+    pub block_id: Uuid,
+    /// The version of the question's wording.
+    pub prompt_version: u32,
+    pub presentation: RatingPromptPresentation,
+    pub question: String,
+    /// The five answers, most of the block first.
+    pub options: Vec<RatingPromptOption>,
+    pub not_now: String,
+    pub footnote: String,
+    /// Shown after an answer, before the result card.
+    pub acknowledgement: String,
+    /// The quiet link under the result card after Not now.
+    pub link: String,
+    /// The question cannot be answered from this instant: two hours after
+    /// the block ended, or when the next block started, whichever came first.
+    pub expires_at: DateTime<Utc>,
+}
+
+/// The one-time invitation to turn the question after a block on (protocol
+/// 38). Turn on sends `set_rating_prompt_enabled` with true, and Not now
+/// sends it with false.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RatingOptIn {
+    pub body: String,
+    pub turn_on: String,
+    pub not_now: String,
+}
+
+/// The question after a block was on screen. Rust stamps the time.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WorkBlockRatingShown {
+    pub block_id: Uuid,
+}
+
+/// An answer to the question after a block. `via_link` is true when it was
+/// given through the link under the result card, after the card was seen.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RateWorkBlock {
+    pub block_id: Uuid,
+    pub answer: WorkBlockRatingAnswer,
+    pub via_link: bool,
+}
+
+/// Not now on the question after a block. Never an answer.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WorkBlockRatingNotNow {
+    pub block_id: Uuid,
+}
+
+/// Turns the question after a block on or off.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SetRatingPromptEnabled {
+    pub enabled: bool,
+}
+
+/// Reads the question after a block's setting.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RequestRatingPromptSettings {}
+
+/// The question after a block's setting, with the Settings pane's words.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RatingPromptSettings {
+    /// Whether the Settings pane offers the toggle. False until this Mac's
+    /// first 14 days of blocks are over, unless the question is already on,
+    /// so the question cannot be turned on inside that period.
+    pub available: bool,
+    pub enabled: bool,
+    pub title: String,
+    pub subtitle: String,
 }
 
 /// Coverage state for the local live dashboard window.
@@ -2114,6 +2278,14 @@ impl std::fmt::Debug for WorkBlockSnapshot {
             .field("confidence", &self.confidence)
             .field("status_line", &"[reviewed_copy]")
             .field("result", &self.result)
+            .field(
+                "rating_prompt",
+                &self
+                    .rating_prompt
+                    .as_ref()
+                    .map(|prompt| (prompt.block_id, prompt.presentation)),
+            )
+            .field("rating_opt_in", &self.rating_opt_in.is_some())
             .finish()
     }
 }
@@ -2484,7 +2656,7 @@ mod v28_demotion_receipts_probe_contract {
 
     #[test]
     fn protocol_version_is_current() {
-        assert_eq!(PROTOCOL_VERSION, 37);
+        assert_eq!(PROTOCOL_VERSION, 38);
     }
 
     #[test]
@@ -3106,7 +3278,7 @@ mod v30_classification_contract {
 
     #[test]
     fn protocol_version_is_current() {
-        assert_eq!(PROTOCOL_VERSION, 37);
+        assert_eq!(PROTOCOL_VERSION, 38);
     }
 
     /// A v29 raw event — no declared metadata at all — must decode, and must
@@ -3366,6 +3538,8 @@ mod v31_anchor_category_contract {
             status_line: "Current category: Focus work.".into(),
             result: None,
             active_intervention: None,
+            rating_prompt: None,
+            rating_opt_in: None,
         }
     }
 
@@ -3429,7 +3603,7 @@ mod v32_in_progress_contract {
 
     #[test]
     fn protocol_version_is_current() {
-        assert_eq!(PROTOCOL_VERSION, 37);
+        assert_eq!(PROTOCOL_VERSION, 38);
     }
 
     /// A closed dwell is the only thing a pre-32 client ever sent, and it has
@@ -3475,7 +3649,7 @@ mod v33_needs_a_category_contract {
 
     #[test]
     fn protocol_version_is_current() {
-        assert_eq!(PROTOCOL_VERSION, 37);
+        assert_eq!(PROTOCOL_VERSION, 38);
     }
 
     /// Both kinds on one list, in the exact wire shape: `kind` and
@@ -3690,7 +3864,7 @@ mod v35_intervention_delivery_contract {
 
     #[test]
     fn protocol_version_is_current() {
-        assert_eq!(PROTOCOL_VERSION, 37);
+        assert_eq!(PROTOCOL_VERSION, 38);
     }
 
     /// The exact frame Swift sends, for every channel, both ways.
@@ -3779,7 +3953,7 @@ mod v36_focus_status_availability_contract {
 
     #[test]
     fn protocol_version_is_current() {
-        assert_eq!(PROTOCOL_VERSION, 37);
+        assert_eq!(PROTOCOL_VERSION, 38);
     }
 
     /// The exact frame Swift sends, for every value, both ways.
@@ -3833,7 +4007,7 @@ mod v37_rate_limited_sign_in_contract {
 
     #[test]
     fn protocol_version_is_current() {
-        assert_eq!(PROTOCOL_VERSION, 37);
+        assert_eq!(PROTOCOL_VERSION, 38);
     }
 
     /// The exact frame Rust sends when the cloud refuses a sign-in for too
@@ -3851,6 +4025,191 @@ mod v37_rate_limited_sign_in_contract {
         );
         assert_eq!(
             serde_json::from_str::<ServerMessage>(&encoded).unwrap(),
+            message
+        );
+    }
+}
+
+#[cfg(test)]
+mod v38_question_after_a_block_contract {
+    use super::*;
+
+    #[test]
+    fn protocol_version_is_current() {
+        assert_eq!(PROTOCOL_VERSION, 38);
+    }
+
+    fn block() -> Uuid {
+        Uuid::parse_str("7f3c2a10-5b6e-4c1d-9a8f-0e2d4c6b8a03").unwrap()
+    }
+
+    /// The four facts Swift reports and the settings read, in the exact shape
+    /// Swift sends them, both ways.
+    #[test]
+    fn every_client_message_round_trips_in_the_wire_shape() {
+        let cases = [
+            (
+                ClientMessage::WorkBlockRatingShown(WorkBlockRatingShown { block_id: block() }),
+                r#"{"type":"work_block_rating_shown","payload":{"block_id":"7f3c2a10-5b6e-4c1d-9a8f-0e2d4c6b8a03"}}"#,
+            ),
+            (
+                ClientMessage::RateWorkBlock(RateWorkBlock {
+                    block_id: block(),
+                    answer: WorkBlockRatingAnswer::LessThanHalf,
+                    via_link: true,
+                }),
+                r#"{"type":"rate_work_block","payload":{"block_id":"7f3c2a10-5b6e-4c1d-9a8f-0e2d4c6b8a03","answer":"less_than_half","via_link":true}}"#,
+            ),
+            (
+                ClientMessage::WorkBlockRatingNotNow(WorkBlockRatingNotNow { block_id: block() }),
+                r#"{"type":"work_block_rating_not_now","payload":{"block_id":"7f3c2a10-5b6e-4c1d-9a8f-0e2d4c6b8a03"}}"#,
+            ),
+            (
+                ClientMessage::SetRatingPromptEnabled(SetRatingPromptEnabled { enabled: false }),
+                r#"{"type":"set_rating_prompt_enabled","payload":{"enabled":false}}"#,
+            ),
+            (
+                ClientMessage::RequestRatingPromptSettings(RequestRatingPromptSettings {}),
+                r#"{"type":"request_rating_prompt_settings","payload":{}}"#,
+            ),
+        ];
+        for (message, wire) in cases {
+            assert_eq!(serde_json::to_string(&message).unwrap(), wire);
+            assert_eq!(
+                serde_json::from_str::<ClientMessage>(wire).unwrap(),
+                message
+            );
+        }
+    }
+
+    /// Every answer's wire value is the value migration 0048 stores.
+    #[test]
+    fn every_answer_has_its_stored_value_on_the_wire() {
+        let wire: Vec<String> = WorkBlockRatingAnswer::ALL
+            .iter()
+            .map(|answer| {
+                serde_json::to_value(answer)
+                    .unwrap()
+                    .as_str()
+                    .unwrap()
+                    .to_owned()
+            })
+            .collect();
+        assert_eq!(wire, ["all", "most", "half", "less_than_half", "little"]);
+    }
+
+    /// An answer carries one of five values and nothing else: no free text,
+    /// no score, no sixth answer, and no answer for Not now.
+    #[test]
+    fn an_answer_refuses_anything_but_the_five_values() {
+        for payload in [
+            r#"{"block_id":"7f3c2a10-5b6e-4c1d-9a8f-0e2d4c6b8a03","answer":"not_now","via_link":false}"#,
+            r#"{"block_id":"7f3c2a10-5b6e-4c1d-9a8f-0e2d4c6b8a03","answer":"some","via_link":false}"#,
+            r#"{"block_id":"7f3c2a10-5b6e-4c1d-9a8f-0e2d4c6b8a03","answer":3,"via_link":false}"#,
+            r#"{"block_id":"7f3c2a10-5b6e-4c1d-9a8f-0e2d4c6b8a03","answer":"most","via_link":false,"note":"x"}"#,
+            r#"{"block_id":"7f3c2a10-5b6e-4c1d-9a8f-0e2d4c6b8a03","answer":"most"}"#,
+        ] {
+            assert!(
+                serde_json::from_str::<RateWorkBlock>(payload).is_err(),
+                "{payload} decoded"
+            );
+        }
+    }
+
+    /// The snapshot omits both fields when there is nothing to ask, so a
+    /// protocol 37 payload and a live block's payload are unchanged.
+    #[test]
+    fn the_snapshot_omits_the_question_when_there_is_none() {
+        let snapshot = v31_anchor_category_contract_snapshot();
+        let value = serde_json::to_value(ServerMessage::WorkBlockState(snapshot)).unwrap();
+        let payload = value["payload"].as_object().unwrap();
+        assert!(!payload.contains_key("rating_prompt"));
+        assert!(!payload.contains_key("rating_opt_in"));
+    }
+
+    fn v31_anchor_category_contract_snapshot() -> WorkBlockSnapshot {
+        WorkBlockSnapshot {
+            state_version: WORK_BLOCK_STATE_VERSION,
+            phase: WorkBlockPhase::Completed,
+            block_id: Some(block()),
+            intention: None,
+            purpose: None,
+            intensity: Some(WorkBlockIntensity::Medium),
+            planned_duration_seconds: 1_500,
+            elapsed_duration_seconds: 1_500,
+            remaining_duration_seconds: 0,
+            started_at: None,
+            analysis_ended_at: None,
+            ends_at: None,
+            paused_at: None,
+            recovered_after_restart: false,
+            current_category: None,
+            anchor_category: None,
+            classification_status: ClassificationStatus::Classified,
+            confidence: ClassificationConfidence::High,
+            status_line: "Block complete.".into(),
+            result: None,
+            active_intervention: None,
+            rating_prompt: None,
+            rating_opt_in: None,
+        }
+    }
+
+    #[test]
+    fn the_question_and_the_invitation_round_trip_on_the_snapshot() {
+        let mut snapshot = v31_anchor_category_contract_snapshot();
+        snapshot.rating_prompt = Some(Box::new(RatingPrompt {
+            block_id: block(),
+            prompt_version: 1,
+            presentation: RatingPromptPresentation::Link,
+            question: "Q".into(),
+            options: WorkBlockRatingAnswer::ALL
+                .iter()
+                .map(|answer| RatingPromptOption {
+                    answer: *answer,
+                    label: "L".into(),
+                })
+                .collect(),
+            not_now: "N".into(),
+            footnote: "F".into(),
+            acknowledgement: "A".into(),
+            link: "K".into(),
+            expires_at: DateTime::from_timestamp(1_800_007_200, 0).unwrap(),
+        }));
+        snapshot.rating_opt_in = Some(Box::new(RatingOptIn {
+            body: "B".into(),
+            turn_on: "T".into(),
+            not_now: "N".into(),
+        }));
+        let message = ServerMessage::WorkBlockState(snapshot);
+        let value = serde_json::to_value(&message).unwrap();
+        assert_eq!(value["payload"]["rating_prompt"]["presentation"], "link");
+        assert_eq!(
+            value["payload"]["rating_prompt"]["options"][3]["answer"],
+            "less_than_half"
+        );
+        assert_eq!(
+            value["payload"]["rating_prompt"]["expires_at"],
+            "2027-01-15T10:00:00Z"
+        );
+        assert_eq!(
+            serde_json::from_value::<ServerMessage>(value).unwrap(),
+            message
+        );
+    }
+
+    #[test]
+    fn the_settings_round_trip_in_the_wire_shape() {
+        let message = ServerMessage::RatingPromptSettings(RatingPromptSettings {
+            available: true,
+            enabled: false,
+            title: "T".into(),
+            subtitle: "S".into(),
+        });
+        let wire = r#"{"type":"rating_prompt_settings","payload":{"available":true,"enabled":false,"title":"T","subtitle":"S"}}"#;
+        assert_eq!(serde_json::to_string(&message).unwrap(), wire);
+        assert_eq!(
+            serde_json::from_str::<ServerMessage>(wire).unwrap(),
             message
         );
     }

@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$comment": "Direction: Swift to Rust. Protocol 38. Turns the question after a block on or off, from the Settings toggle or the one-time invitation (work_block_state.rating_opt_in): Turn on sends true, Not now sends false, which records that the invitation was answered so it is never shown again. The service refuses true until this Mac's first 14 days of blocks are over (rating_prompt_settings.available). Answered with rating_prompt_settings. Turning it off hides any open question; it expires on its own schedule.",
+  "type": "object",
+  "required": ["type", "payload"],
+  "properties": {
+    "type": { "const": "set_rating_prompt_enabled" },
+    "payload": {
+      "type": "object",
+      "required": ["enabled"],
+      "properties": {
+        "enabled": { "type": "boolean" }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

@@ -1,5 +1,73 @@
 # IPC Protocol Changelog
 
+## Version 38 - 2026-10-17 (provisional number)
+
+**The number is provisional.** Vault A4 (#91's plan) also intends to take 38.
+Whichever of the two merges first keeps 38, and the other takes the next free
+number at merge, as attention plan decision 9 records. If A4 merges first,
+this entry becomes 39 and every pin of 38 in this change moves with it.
+
+The optional question after a block (workspace
+`plan/attention-labels-and-model.md` § 3.1, § 3.2 and § 3.4; founder
+decision 2026-10-17): "How much of this block was on what you meant to do?",
+asked in the app after a block ends, never during one and never as a
+notification, and only after the person turns it on. Rust decides when it is
+asked and writes every word; Swift renders and reports facts. Storage is
+migration 0048 (#95).
+
+- Added `rating_prompt` to `work_block_state` (Rust to Swift). Present only on
+  the snapshot of an ended block (completed, abandoned or expired), only while
+  the question about it can be answered, and only while the question is on;
+  omitted otherwise and on every active or paused block, so a protocol 37
+  payload decodes unchanged. It carries the block id, `prompt_version` (1),
+  `presentation`, the question, five options (answer and label, most of the
+  block first), Not now, the footnote, the acknowledgement shown after an
+  answer ("Noted."), the link under the card after Not now, and `expires_at`.
+  `presentation` is `question` before an answer or a Not now (the question
+  sits above the result card, and the card's observation and numbers stay
+  hidden) and `link` after Not now (the card shows, with the link under it).
+- Added `rating_opt_in` to `work_block_state`: the one-time invitation to turn
+  the question on, with its body, Turn on and Not now. Present only after a
+  block the question would have covered, while the question has never been on
+  and the invitation has never been answered.
+- Added `work_block_rating_shown {block_id}` (Swift to Rust): the question was
+  drawn. Answered with nothing. The first sighting is kept.
+- Added `rate_work_block {block_id, answer, via_link}`: one of `all`, `most`,
+  `half`, `less_than_half` or `little`; `via_link` when given through the link
+  after the card was seen. Answered with `work_block_state`. Only an open
+  question takes an answer, and an answer is final.
+- Added `work_block_rating_not_now {block_id}`. Never an answer: the question
+  stays open through the link until it expires. Answered with
+  `work_block_state`.
+- Added `set_rating_prompt_enabled {enabled}` and
+  `request_rating_prompt_settings {}`, both answered with the new
+  `rating_prompt_settings {available, enabled, title, subtitle}` (Rust to
+  Swift). False from the invitation is its Not now, recorded so it is never
+  shown again. The plan listed four client messages; the settings read is a
+  fifth, so the Settings pane renders Rust's state as it does for initiation
+  invitations.
+- The rules (`rust-service/src/self_rating/`, `RATING_PROMPT_VERSION` 1). A
+  block is asked about when it ran at least five minutes, the question was on
+  for the whole of it, and it started after its Mac's drift policy v6 primary
+  period ended: 14 days from the start of the Mac's first block after the
+  upgrade cut, as the draft period note's item 1 and
+  `scripts/analyze_ratings.py` define it. Its row is written then, with
+  `eligible_at` the block's end, so a question never seen stays a recorded
+  missing answer. It expires two hours after the block ended or when the next
+  block starts, whichever is first, and `expired_at` records that instant.
+  `set_rating_prompt_enabled` true is refused, and `available` is false,
+  until the Mac's period is over, so the question can never be turned on
+  inside it. Nothing depends on an answer, a category or coverage.
+- No drift decision changes and `DRIFT_POLICY_VERSION` stays 6. The work-block
+  manager consults the question only while building the snapshot of an ended
+  block; `rust-service/tests/rating_isolation.rs` replays the same blocks with
+  and without the question and requires every other table byte-identical.
+- Rust's `ClientMessage` denies unknown variants, so a 37 helper would answer
+  the new messages `malformed_message`, and Swift decodes `rating_prompt_settings`
+  only from 38: hence the version. Swift decodes the new fields and messages in
+  this change; drawing the question, the invitation and the Settings toggle is
+  the next change (attention plan PR-4).
+
 ## Version 37 - 2026-10-15
 
 A sign-up or login the cloud refused for too many attempts was reported as

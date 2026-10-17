@@ -20,8 +20,12 @@
 //!   now was given with the card seen.
 //! - The first time the question was turned on is kept. Turning it off and on
 //!   again never changes it.
+//! - Not now on the one-time invitation is recorded once, on an install that
+//!   never turned the question on, as the off row with its time.
 //!
-//! Nothing in the shipped path calls it yet.
+//! It also reads, and never writes, the two facts `crate::self_rating`
+//! places a block in time by: when a block ended and when the block after it
+//! started, and when the Mac's drift policy v6 primary period started.
 
 use super::sqlite::{optional_timestamp_from_row, timestamp_from_row};
 use super::{PersistenceError, SqlitePersistence};
@@ -117,6 +121,18 @@ pub struct RatingPromptSettings {
     pub opted_out_at: Option<DateTime<Utc>>,
 }
 
+/// When a block ended and when the block after it started, read from
+/// `work_block`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RatedBlockBounds {
+    /// `None` while the block has not ended.
+    pub ended_at: Option<DateTime<Utc>>,
+    /// The start of the block created next, in the order blocks were created,
+    /// which is the order `WorkBlockRepo::latest` reads. `None` while no block
+    /// has followed it.
+    pub next_block_started_at: Option<DateTime<Utc>>,
+}
+
 /// Storage for the question after a block. Writes `work_block_self_rating`
 /// and `rating_prompt_settings`, and nothing else.
 ///
@@ -179,6 +195,28 @@ pub trait SelfRatingRepo: Send + Sync {
     /// off stamps `opted_out_at`. Setting the state it already has changes
     /// nothing, so the stamps say when the state changed.
     fn set_enabled(&self, enabled: bool, at: DateTime<Utc>) -> Result<bool, PersistenceError>;
+
+    /// Records Not now on the one-time invitation to turn the question on, at
+    /// `at`: the off row, with `opted_out_at` as its time and no opt-in. Only
+    /// an install with no row is changed. One that ever turned the question
+    /// on, or answered the invitation before, keeps its record.
+    fn decline_opt_in(&self, at: DateTime<Utc>) -> Result<bool, PersistenceError>;
+
+    /// Reads, never writes: when `block_id` ended and when the next block
+    /// started. `None` for a block not on record.
+    fn block_bounds(&self, block_id: &str) -> Result<Option<RatedBlockBounds>, PersistenceError>;
+
+    /// Reads, never writes: the start of the Mac's primary period for drift
+    /// policy `policy_version`. That is the `started_at` of its first block
+    /// that started after its last decision row with an older policy version
+    /// (the upgrade cut), or of its first block if it has no such row, as item
+    /// 1 of the draft v6 primary-period note and `scripts/analyze_ratings.py`'s
+    /// `v6_period_start` define it. `None` when no block started after the
+    /// cut.
+    fn primary_period_start(
+        &self,
+        policy_version: u32,
+    ) -> Result<Option<DateTime<Utc>>, PersistenceError>;
 }
 
 pub(super) struct SqliteSelfRatingRepo(pub(super) SqlitePersistence);
@@ -315,6 +353,59 @@ impl SelfRatingRepo for SqliteSelfRatingRepo {
         }
         transaction.commit()?;
         Ok(true)
+    }
+
+    fn decline_opt_in(&self, at: DateTime<Utc>) -> Result<bool, PersistenceError> {
+        let connection = self.0.connection()?;
+        let inserted = connection.execute(
+            "INSERT INTO rating_prompt_settings(id, enabled, opted_out_at)
+             VALUES (1, 0, ?1)
+             ON CONFLICT(id) DO NOTHING",
+            [at.timestamp()],
+        )?;
+        Ok(inserted == 1)
+    }
+
+    fn block_bounds(&self, block_id: &str) -> Result<Option<RatedBlockBounds>, PersistenceError> {
+        let connection = self.0.connection()?;
+        connection
+            .query_row(
+                "SELECT block.ended_at,
+                        (SELECT next.started_at FROM work_block AS next
+                         WHERE next.rowid > block.rowid
+                         ORDER BY next.rowid LIMIT 1)
+                 FROM work_block AS block WHERE block.block_id = ?1",
+                [block_id],
+                |row| {
+                    Ok(RatedBlockBounds {
+                        ended_at: optional_timestamp_from_row(row, 0)?,
+                        next_block_started_at: optional_timestamp_from_row(row, 1)?,
+                    })
+                },
+            )
+            .optional()
+            .map_err(Into::into)
+    }
+
+    fn primary_period_start(
+        &self,
+        policy_version: u32,
+    ) -> Result<Option<DateTime<Utc>>, PersistenceError> {
+        let connection = self.0.connection()?;
+        // Not a hot path: it runs only while the snapshot of an ended block is
+        // built and the block has no row yet, or the setting is read.
+        connection
+            .query_row(
+                "SELECT MIN(started_at) FROM work_block
+                 WHERE started_at > COALESCE(
+                     (SELECT MAX(occurred_at) FROM intervention_decision_log
+                      WHERE policy_version < ?1),
+                     -9223372036854775808
+                 )",
+                [i64::from(policy_version)],
+                |row| optional_timestamp_from_row(row, 0),
+            )
+            .map_err(Into::into)
     }
 }
 
@@ -873,5 +964,145 @@ mod tests {
                 "first_opted_in_at {first} with opted_in_at {last} was stored"
             );
         }
+    }
+
+    fn insert_block(
+        database: &SqlitePersistence,
+        block: &str,
+        started_at: i64,
+        ended_at: Option<i64>,
+    ) {
+        database
+            .connection()
+            .unwrap()
+            .execute(
+                "INSERT INTO work_block(
+                    block_id, phase, intensity, planned_duration_seconds, started_at, ended_at,
+                    total_paused_seconds, recovered_after_restart, intention_expires_at,
+                    updated_at
+                 ) VALUES (?1, 'completed', 'medium', 1800, ?2, ?3, 0, 0, 0, 0)",
+                rusqlite::params![block, started_at, ended_at],
+            )
+            .unwrap();
+    }
+
+    fn insert_decision(
+        database: &SqlitePersistence,
+        decision: &str,
+        occurred_at: i64,
+        block: Option<&str>,
+        policy_version: u32,
+    ) {
+        database
+            .connection()
+            .unwrap()
+            .execute(
+                "INSERT INTO intervention_decision_log(
+                    decision_id, occurred_at, block_id, policy_version, switch_count,
+                    elapsed_seconds, remaining_seconds, gate_verdict
+                 ) VALUES (?1, ?2, ?3, ?4, 0, 0, 0, 'abstained_warmup')",
+                rusqlite::params![decision, occurred_at, block, policy_version],
+            )
+            .unwrap();
+    }
+
+    /// Not now on the invitation is recorded once, as the off row, and only
+    /// on an install that has no row: it never overwrites a setting.
+    #[test]
+    fn not_now_on_the_invitation_is_recorded_once_and_never_over_a_setting() {
+        let (database, ratings) = store(&[]);
+        assert!(ratings.decline_opt_in(at(10)).unwrap());
+        assert!(!ratings.decline_opt_in(at(20)).unwrap());
+        assert_eq!(
+            ratings.settings().unwrap(),
+            RatingPromptSettings {
+                enabled: false,
+                first_opted_in_at: None,
+                opted_in_at: None,
+                opted_out_at: Some(at(10)),
+            }
+        );
+        assert_eq!(row_count(&database, "rating_prompt_settings"), 1);
+
+        // Turning it on afterwards works as from the default.
+        assert!(ratings.set_enabled(true, at(30)).unwrap());
+        assert_eq!(ratings.settings().unwrap().first_opted_in_at, Some(at(30)));
+        assert!(!ratings.decline_opt_in(at(40)).unwrap());
+        assert!(ratings.settings().unwrap().enabled);
+
+        let (_, ratings) = store(&[]);
+        ratings.set_enabled(true, at(0)).unwrap();
+        ratings.set_enabled(false, at(5)).unwrap();
+        assert!(!ratings.decline_opt_in(at(10)).unwrap());
+        assert_eq!(ratings.settings().unwrap().opted_out_at, Some(at(5)));
+    }
+
+    /// The next block is the next one created, which is the order the manager
+    /// reads its latest block in, whatever the clock said at its start.
+    #[test]
+    fn a_block_is_bounded_by_its_end_and_the_next_block_created() {
+        let (database, ratings) = store(&[]);
+        insert_block(&database, "first", 1_000, Some(2_500));
+        insert_block(&database, "second", 3_000, Some(4_500));
+        // The clock moved back before the third block started.
+        insert_block(&database, "third", 2_000, None);
+
+        assert_eq!(
+            ratings.block_bounds("first").unwrap(),
+            Some(super::RatedBlockBounds {
+                ended_at: Some(DateTime::from_timestamp(2_500, 0).unwrap()),
+                next_block_started_at: Some(DateTime::from_timestamp(3_000, 0).unwrap()),
+            })
+        );
+        assert_eq!(
+            ratings
+                .block_bounds("second")
+                .unwrap()
+                .unwrap()
+                .next_block_started_at,
+            Some(DateTime::from_timestamp(2_000, 0).unwrap())
+        );
+        assert_eq!(
+            ratings.block_bounds("third").unwrap(),
+            Some(super::RatedBlockBounds {
+                ended_at: None,
+                next_block_started_at: None,
+            })
+        );
+        assert_eq!(ratings.block_bounds("missing").unwrap(), None);
+    }
+
+    /// The period starts at the first block after the last decision row with
+    /// an older policy version, or at the first block when there is none. It
+    /// never waits for a decision row of the current version.
+    #[test]
+    fn the_primary_period_starts_at_the_first_block_after_the_upgrade_cut() {
+        let (database, ratings) = store(&[]);
+        assert_eq!(ratings.primary_period_start(6).unwrap(), None);
+
+        insert_block(&database, "a", 5_000, Some(6_000));
+        insert_block(&database, "b", 1_000, Some(2_000));
+        assert_eq!(
+            ratings.primary_period_start(6).unwrap(),
+            Some(DateTime::from_timestamp(1_000, 0).unwrap()),
+            "no older decision row: the first block by start"
+        );
+
+        insert_decision(&database, "v5-in-b", 1_500, Some("b"), 5);
+        insert_decision(&database, "v6-in-b", 1_600, Some("b"), 6);
+        assert_eq!(
+            ratings.primary_period_start(6).unwrap(),
+            Some(DateTime::from_timestamp(5_000, 0).unwrap()),
+            "the block holding the last v5 row is before the cut"
+        );
+
+        // A v5 row with no block still moves the cut.
+        insert_decision(&database, "v5-no-block", 5_000, None, 5);
+        assert_eq!(ratings.primary_period_start(6).unwrap(), None);
+        insert_block(&database, "c", 7_000, None);
+        assert_eq!(
+            ratings.primary_period_start(6).unwrap(),
+            Some(DateTime::from_timestamp(7_000, 0).unwrap())
+        );
     }
 }

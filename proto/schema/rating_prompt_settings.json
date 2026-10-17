@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$comment": "Direction: Rust to Swift. Protocol 38. The question after a block's setting and the Settings pane's words, which Swift renders verbatim. `available` is false until this Mac's first 14 days of blocks are over, unless the question is already on: the pane offers no toggle until then, so the question cannot be turned on inside the Mac's drift policy v6 primary period.",
+  "type": "object",
+  "required": ["type", "payload"],
+  "properties": {
+    "type": { "const": "rating_prompt_settings" },
+    "payload": {
+      "type": "object",
+      "required": ["available", "enabled", "title", "subtitle"],
+      "properties": {
+        "available": { "type": "boolean" },
+        "enabled": { "type": "boolean" },
+        "title": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "subtitle": { "type": "string", "minLength": 1, "maxLength": 200 }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

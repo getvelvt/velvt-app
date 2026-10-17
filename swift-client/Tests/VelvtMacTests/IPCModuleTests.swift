@@ -1246,3 +1246,141 @@ final class AuthIPCContractTests: XCTestCase {
         }
     }
 }
+
+/// Protocol 38: the question after a block, in the exact shapes Rust sends
+/// and accepts (`rust-service/shared-types` `v38_question_after_a_block_contract`
+/// pins the same frames on the Rust side).
+final class QuestionAfterABlockWireTests: XCTestCase {
+    private let encoder = IPCMessageCodec.makeEncoder()
+    private let decoder = IPCMessageCodec.makeDecoder()
+    private let block = UUID(uuidString: "7F3C2A10-5B6E-4C1D-9A8F-0E2D4C6B8A03")!
+
+    private func endedBlock(extraFields: String) -> Data {
+        Data(
+            """
+            {
+              "type": "work_block_state",
+              "payload": {
+                "state_version": 1,
+                "phase": "completed",
+                "block_id": "7f3c2a10-5b6e-4c1d-9a8f-0e2d4c6b8a03",
+                "intention": null,
+                "purpose": null,
+                "intensity": "medium",
+                "planned_duration_seconds": 1800,
+                "elapsed_duration_seconds": 1800,
+                "remaining_duration_seconds": 0,
+                "started_at": "2027-01-15T07:30:00Z",
+                "analysis_ended_at": "2027-01-15T08:00:00Z",
+                "ends_at": null,
+                "paused_at": null,
+                "recovered_after_restart": false,
+                "current_category": null,
+                "anchor_category": null,
+                "classification_status": "classified",
+                "confidence": "high",
+                "status_line": "Block complete.",
+                "result": null\(extraFields)
+              }
+            }
+            """.utf8)
+    }
+
+    func testTheQuestionAndTheInvitationDecodeFromTheSnapshot() throws {
+        let frame = endedBlock(
+            extraFields: """
+                ,
+                "rating_prompt": {
+                  "block_id": "7f3c2a10-5b6e-4c1d-9a8f-0e2d4c6b8a03",
+                  "prompt_version": 1,
+                  "presentation": "link",
+                  "question": "How much of this block was on what you meant to do?",
+                  "options": [
+                    {"answer": "all", "label": "All or nearly all"},
+                    {"answer": "most", "label": "Most"},
+                    {"answer": "half", "label": "About half"},
+                    {"answer": "less_than_half", "label": "Less than half"},
+                    {"answer": "little", "label": "Little or none"}
+                  ],
+                  "not_now": "Not now",
+                  "footnote": "Optional. Your answer stays on this Mac unless you send it in an export.",
+                  "acknowledgement": "Noted.",
+                  "link": "Answer the question about this block",
+                  "expires_at": "2027-01-15T10:00:00Z"
+                },
+                "rating_opt_in": {"body": "B", "turn_on": "Turn on", "not_now": "Not now"}
+                """)
+        guard case .workBlockState(let snapshot) = try decoder.decode(ServerMessage.self, from: frame)
+        else { return XCTFail("not a work_block_state") }
+        let prompt = try XCTUnwrap(snapshot.ratingPrompt)
+        XCTAssertEqual(prompt.blockID, block)
+        XCTAssertEqual(prompt.presentation, .link)
+        XCTAssertEqual(prompt.options.map(\.answer), WorkBlockRatingAnswer.allCases)
+        XCTAssertEqual(prompt.options[3].label, "Less than half")
+        XCTAssertEqual(prompt.expiresAt, Date(timeIntervalSince1970: 1_800_007_200))
+        XCTAssertEqual(snapshot.ratingOptIn?.turnOn, "Turn on")
+        let reencoded = try encoder.encode(ServerMessage.workBlockState(snapshot))
+        XCTAssertEqual(try decoder.decode(ServerMessage.self, from: reencoded), .workBlockState(snapshot))
+    }
+
+    /// A snapshot with neither field, as every live block and every pre-38
+    /// payload has, decodes with both nil and re-encodes without them.
+    func testASnapshotWithoutTheQuestionDecodesAsBefore() throws {
+        guard
+            case .workBlockState(let snapshot) = try decoder.decode(
+                ServerMessage.self, from: endedBlock(extraFields: ""))
+        else { return XCTFail("not a work_block_state") }
+        XCTAssertNil(snapshot.ratingPrompt)
+        XCTAssertNil(snapshot.ratingOptIn)
+        let object = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: encoder.encode(ServerMessage.workBlockState(snapshot)))
+                as? [String: Any])
+        let payload = try XCTUnwrap(object["payload"] as? [String: Any])
+        XCTAssertNil(payload["rating_prompt"])
+        XCTAssertNil(payload["rating_opt_in"])
+    }
+
+    /// Each report encodes to the frame Rust's `ClientMessage` accepts.
+    func testEveryReportEncodesInTheShapeRustAccepts() throws {
+        let cases: [(ClientMessage, String)] = [
+            (
+                .workBlockRatingShown(WorkBlockIdentifier(blockID: block)),
+                #"{"type":"work_block_rating_shown","payload":{"block_id":"7F3C2A10-5B6E-4C1D-9A8F-0E2D4C6B8A03"}}"#
+            ),
+            (
+                .rateWorkBlock(RateWorkBlock(blockID: block, answer: .lessThanHalf, viaLink: true)),
+                #"{"type":"rate_work_block","payload":{"block_id":"7F3C2A10-5B6E-4C1D-9A8F-0E2D4C6B8A03","answer":"less_than_half","via_link":true}}"#
+            ),
+            (
+                .workBlockRatingNotNow(WorkBlockIdentifier(blockID: block)),
+                #"{"type":"work_block_rating_not_now","payload":{"block_id":"7F3C2A10-5B6E-4C1D-9A8F-0E2D4C6B8A03"}}"#
+            ),
+            (
+                .setRatingPromptEnabled(SetRatingPromptEnabled(enabled: false)),
+                #"{"type":"set_rating_prompt_enabled","payload":{"enabled":false}}"#
+            ),
+            (.requestRatingPromptSettings, #"{"type":"request_rating_prompt_settings","payload":{}}"#),
+        ]
+        for (message, wire) in cases {
+            let encoded = try JSONSerialization.jsonObject(with: encoder.encode(message)) as? NSDictionary
+            let expected = try JSONSerialization.jsonObject(with: Data(wire.utf8)) as? NSDictionary
+            XCTAssertEqual(encoded, expected, "\(message)")
+            XCTAssertEqual(try decoder.decode(ClientMessage.self, from: Data(wire.utf8)), message)
+        }
+    }
+
+    func testTheSettingsReplyDecodes() throws {
+        let frame = Data(
+            #"{"type":"rating_prompt_settings","payload":{"available":true,"enabled":false,"title":"Ask one question after each block","subtitle":"Never during a block. Answers stay on this Mac unless you send an export."}}"#
+                .utf8)
+        let message = try decoder.decode(ServerMessage.self, from: frame)
+        XCTAssertEqual(
+            message,
+            .ratingPromptSettings(
+                RatingPromptSettings(
+                    available: true, enabled: false, title: "Ask one question after each block",
+                    subtitle: "Never during a block. Answers stay on this Mac unless you send an export."))
+        )
+        XCTAssertEqual(message.safeLogDescription, "rating_prompt_settings")
+    }
+}

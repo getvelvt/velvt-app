@@ -83,7 +83,24 @@ second of switching to the other app.
 
 notification_delivered with no banner on screen means macOS held it: check
 that Do Not Disturb or another Focus is off in Control Center. A delivered
-notification under a Focus goes straight to Notification Center.
+notification under a Focus goes straight to Notification Center, unless Velvt
+is in that Focus's Allowed Apps.
+
+Whether this build can see Focus at all is one line at launch (category
+FocusStatus, protocol 36):
+
+  availability=available                     Velvt can read Focus status, and
+                                             holds an offer while a Focus is on
+  availability=unavailable, denied or not_determined
+                                             it cannot: an offer made during a
+                                             Focus is posted, and macOS holds it
+                                             unless Velvt is in Allowed Apps
+  communication_notifications_entitlement=absent
+                                             this build cannot read Focus
+                                             status whatever you allow
+  is_focused=value or nil                    with the entitlement: whether
+                                             macOS gave a value (the value
+                                             itself is never logged)
 
 Nothing at all means the drift gate abstained and no offer was ever made — a
 different problem, one layer earlier. Check that with:
@@ -113,3 +130,9 @@ echo "--- delivery attempts only ---"
 log show --predicate "$PREDICATE" --last "$WINDOW" --style compact --info 2>/dev/null \
     | grep -E 'notification_delivered|notification_skipped_stale|notification_suppressed_by_salience|notification_withdrawn_before_delivery|notification_presented_while_active|notification_permission_blocked|notification_centre_rejected|notification_add_rejected' \
     || echo "(no delivery attempts recorded in this window)"
+
+echo
+echo "--- Focus status at launch ---"
+log show --predicate "$PREDICATE" --last "$WINDOW" --style compact --info 2>/dev/null \
+    | grep -F 'focus_status_self_check' \
+    || echo "(no launch in this window)"

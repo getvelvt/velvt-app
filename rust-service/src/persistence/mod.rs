@@ -10,8 +10,8 @@ pub use models::{out_of_block_run_bucket, OUT_OF_BLOCK_RUN_BUCKET_SECONDS};
 pub use models::{
     AbstractionMapping, AntecedentFinding, AntecedentFindingState, AntecedentRetractionReason,
     AppScopeOverride, BatchEvent, BlockAntecedent, CategoryPromptEntry,
-    CategoryPromptNotificationRecord, CompletedBlockDwellSpan, DayType, DeclaredAppMetadata,
-    DemotionStateRecord, FocusTransition, GateVerdict, HistoryCacheEntry,
+    CategoryPromptNotificationRecord, CompletedBlockDwellSpan, DayType, DecisionFocusState,
+    DeclaredAppMetadata, DemotionStateRecord, FocusTransition, GateVerdict, HistoryCacheEntry,
     InitiationInvitationOutcome, InitiationInvitationRecord, InsightCacheEntry,
     InterventionDecision, InterventionDemotionState, LocalDisplayAggregate, LocalEventMetadata,
     NewUploadBatch, OutOfBlockRun, PersonalOverrideRecord, QuietHoursOfferResponse,

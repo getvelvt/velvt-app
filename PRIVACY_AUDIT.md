@@ -519,6 +519,24 @@ title. The app reads its own notification alert style
 (`UNNotificationSettings.alertStyle`) to tell a banner from alert style None.
 No upload path reads the table, and no request was added.
 
+*Changed after this audit, 2026-10-15 (protocol 36):* the app reports to the
+local service whether it can read Focus status at all
+(`focus_status_availability {availability}`: available, unavailable, denied or
+not_determined), and the service records on each drift decision whether it knew
+a Focus was on (`intervention_decision_log.focus_state`: on, off or unknown,
+migration 0044). Both are closed values about the app and the decision: no
+Focus mode name, configuration or schedule. The app reads its own code
+signature for the Communication Notifications entitlement
+(`SecTaskCopyValueForEntitlement`), and logs one line at launch with the
+authorization status, whether the system gave an `isFocused` value, whether the
+entitlement is present and the availability, all fixed tokens. On a build with
+the entitlement the line says `value` or `nil`, never the boolean, which there
+is the person's Focus; without it the line carries the raw boolean, which is
+not the person's Focus because `donotdisturbd` refuses that read. The
+availability is held in the service's memory only. No upload path reads either,
+and no request was added; the cohort export carries `focus_state` in its
+decisions file.
+
 `PRIVACY.md`'s list of what leaves the device was wrong in both directions: it
 named `/v1/auth/account/delete`, which nothing sends, and omitted
 `DELETE /v1/account`, `GET /v1/auth/session`, `GET /v1/insights/poll`,

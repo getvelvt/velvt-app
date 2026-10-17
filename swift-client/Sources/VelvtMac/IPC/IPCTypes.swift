@@ -51,6 +51,9 @@ public enum ClientMessage: Codable, Equatable, Sendable {
     case workBlockLifecycle(WorkBlockLifecycle)
     case clearWorkBlockData
     case focusStateChanged(FocusStateChanged)
+    /// Whether this copy of the app can read Focus status at all (proto v36).
+    /// A fact about the app, never about the person's Focus.
+    case focusStatusAvailability(FocusStatusAvailabilityReport)
     case respondQuietHoursOffer(RespondQuietHoursOffer)
     case requestInitiationInvitation(RequestInitiationInvitation)
     case dismissInitiationInvitation(DismissInitiationInvitation)
@@ -137,6 +140,8 @@ public enum ClientMessage: Codable, Equatable, Sendable {
             self = .clearWorkBlockData
         case "focus_state_changed":
             self = .focusStateChanged(try FocusStateChanged(from: payload))
+        case "focus_status_availability":
+            self = .focusStatusAvailability(try FocusStatusAvailabilityReport(from: payload))
         case "respond_quiet_hours_offer":
             self = .respondQuietHoursOffer(try RespondQuietHoursOffer(from: payload))
         case "request_initiation_invitation":
@@ -270,6 +275,9 @@ public enum ClientMessage: Codable, Equatable, Sendable {
             try EmptyPayload().encode(to: envelope.superEncoder(forKey: .payload))
         case .focusStateChanged(let value):
             try envelope.encode("focus_state_changed", forKey: .type)
+            try value.encode(to: envelope.superEncoder(forKey: .payload))
+        case .focusStatusAvailability(let value):
+            try envelope.encode("focus_status_availability", forKey: .type)
             try value.encode(to: envelope.superEncoder(forKey: .payload))
         case .respondQuietHoursOffer(let value):
             try envelope.encode("respond_quiet_hours_offer", forKey: .type)
@@ -2484,6 +2492,35 @@ public struct FocusStateChanged: Codable, Equatable, Sendable {
         case active
         case occurredAt = "occurred_at"
         case utcOffsetSeconds = "utc_offset_seconds"
+    }
+}
+
+/// Whether this copy of the app can read the coarse Focus status (proto v36).
+///
+/// Apple gives Focus status only to an app signed with the Communication
+/// Notifications entitlement. Without it the person can still allow Focus
+/// status, and `INFocusStatusCenter` still answers, with a value the system
+/// never read. The service records `unknown` instead of `off` on each drift
+/// decision while this is anything but `available`.
+public enum FocusStatusAvailability: String, Codable, Equatable, Sendable, CaseIterable {
+    /// Entitled, and the person allowed Focus status.
+    case available
+    /// Unreadable whatever the person answers: the entitlement is missing, a
+    /// restriction applies, or the system gives no value.
+    case unavailable
+    /// The person turned Focus status off for Velvt.
+    case denied
+    /// Never asked, or never answered.
+    case notDetermined = "not_determined"
+}
+
+/// PRIVACY: one closed value about the app. No Focus mode name,
+/// configuration, schedule, or on/off value is representable here.
+public struct FocusStatusAvailabilityReport: Codable, Equatable, Sendable {
+    public let availability: FocusStatusAvailability
+
+    public init(availability: FocusStatusAvailability) {
+        self.availability = availability
     }
 }
 

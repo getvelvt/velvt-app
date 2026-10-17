@@ -1,5 +1,46 @@
 # IPC Protocol Changelog
 
+## Version 36 - 2026-10-15
+
+A decision made during a Focus the service could not see was stored exactly
+like one made with no Focus (1.0.14 simulation, B5). Apple gives Focus status
+only to an app signed with the Communication Notifications entitlement
+(`com.apple.developer.usernotifications.communication`, which a Developer ID
+build can carry only with an embedded provisioning profile). Release builds
+through 1.0.13 have neither, so the person can allow Focus status, and
+`INFocusStatusCenter` still answers `isFocused = false`, but the system never
+read it: the app reported Focus as off on every reconnect, the gate never held
+an offer for Focus, and macOS silenced offers recorded as delivered.
+
+- Added `focus_status_availability {availability}` (Swift to Rust).
+  `availability` is one of `available` (entitled, and the person allowed Focus
+  status), `unavailable` (unreadable whatever the person answers: no
+  entitlement, a restriction, or no value from the system), `denied` or
+  `not_determined`. The entitlement decides first, so an authorized but
+  unentitled app is `unavailable`. Swift sends it on every connection, ahead
+  of any `focus_state_changed`, and whenever it changes at an activation or
+  wake, and sends `focus_state_changed` only while it is `available`: an
+  unentitled build no longer reports a Focus state it cannot read. A fact
+  about the app, never about the person's Focus.
+- The service keeps the latest value in memory (none until the first report)
+  and answers nothing. It records on every drift decision
+  `intervention_decision_log.focus_state` (migration 0044): `on` or `off` from
+  the transition record while the app reports `available` and the record has
+  an edge, `unknown` otherwise. NULL means the row predates 0044.
+- Not an input to any decision. The Focus hold reads `focus_state_changed`
+  edges exactly as before, and an unentitled build sent only `active: false`
+  edges, which never held an offer; sending none holds none either, so no
+  offer changes. The cohort export (format 6) carries `focus_state` in the
+  decisions file, and `analyze_cohort.py` adds a descriptive breakdown of
+  offers by it; no pre-registered denominator changes.
+- The app logs one line at launch (`focus_status_self_check`, subsystem
+  `com.velvt.mac`, category `FocusStatus`): authorization status, whether the
+  system gave an `isFocused` value (the raw value only on a build without the
+  entitlement, where it is not the person's Focus), whether the entitlement is
+  present, and the availability sent to the service. Values only.
+- Rust's `ClientMessage` denies unknown variants, so a 35 helper would answer
+  the new message `malformed_message`: hence the version.
+
 ## The drift gate's anchor is a work category - 2026-10-15 (no wire change; the protocol stays 35)
 
 - The anchor the drift gate counts departures from, and that

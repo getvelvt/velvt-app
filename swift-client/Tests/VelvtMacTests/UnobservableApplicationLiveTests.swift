@@ -28,7 +28,7 @@ final class UnobservableApplicationLiveHelperTests: XCTestCase {
         guard let socket = ProcessInfo.processInfo.environment["VELVT_LIVE_HELPER_SOCKET"] else {
             throw XCTSkip("set VELVT_LIVE_HELPER_SOCKET to the socket of a helper started for this test")
         }
-        let client = UnixSocketIPCClient(socketPath: socket, protocolVersion: 35, clientVersion: "live-trace")
+        let client = UnixSocketIPCClient(socketPath: socket, protocolVersion: 36, clientVersion: "live-trace")
         let received = ReceivedSnapshots()
         let reader = Task {
             for await message in client.incomingMessages {

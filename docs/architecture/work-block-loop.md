@@ -228,6 +228,16 @@ buckets, reduced to local hour/date buckets, pruned after 14 days, and the
 schema has no column that could hold a Focus mode's name, configuration, or
 schedule.
 
+The boolean is real only in a build signed with the Communication
+Notifications entitlement, which release builds through 1.0.13 lack (see
+`s7-menu-bar-and-notifications.md`, "Focus status: what a build can read").
+Since protocol 36 Swift reports `focus_status_availability` beside the edges,
+and sends edges only while it is `available`. Every drift decision records
+`intervention_decision_log.focus_state`: `on` or `off` from the evidence while
+the app can read Focus status, `unknown` otherwise (migration 0044). The record
+is not an input: the decisions below read the evidence exactly as before, so
+in a build that cannot read Focus none of them ever applies.
+
 Decisions derived from that record, all in Rust:
 
 - A drift offer whose gate clears while DND is active is recorded as

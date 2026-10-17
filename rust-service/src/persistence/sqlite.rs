@@ -2,15 +2,15 @@ use super::{
     AbstractionMapRepo, AbstractionMapping, AntecedentFinding, AntecedentFindingRepo,
     AntecedentFindingState, AntecedentRetractionReason, AppScopeOverride, BatchEvent, BehaviorRepo,
     BlockAntecedent, CategoryPromptEntry, CategoryPromptNotificationRecord, CategoryPromptRepo,
-    CompletedBlockDwellSpan, DayType, DeclaredAppMetadata, DemotionStateRecord, FocusRepo,
-    FocusTransition, GateVerdict, HistoryCacheEntry, HistoryCacheRepo, InitiationInvitationOutcome,
-    InitiationInvitationRecord, InitiationRepo, InsightCacheEntry, InsightCacheRepo,
-    InterventionDecision, InterventionDemotionState, LocalDisplayAggregate, LocalEventMetadata,
-    NewUploadBatch, OutOfBlockRun, PersonalOverrideRecord, QuietHoursOfferResponse,
-    QuietHoursOfferState, RawEventEntry, RawEventRepo, ReceiptsRepo, ReportedDwell,
-    SiteScopeOverride, UnclassifiedAppEntry, UnclassifiedSiteEntry, UploadBatch, UploadBatchRepo,
-    UploadBatchStatus, UploadQueueDiagnostics, VelvtQuietHours, WeeklyDigestRecord,
-    WorkBlockCategoryCorrection, WorkBlockCompletion, WorkBlockIntervention,
+    CompletedBlockDwellSpan, DayType, DecisionFocusState, DeclaredAppMetadata, DemotionStateRecord,
+    FocusRepo, FocusTransition, GateVerdict, HistoryCacheEntry, HistoryCacheRepo,
+    InitiationInvitationOutcome, InitiationInvitationRecord, InitiationRepo, InsightCacheEntry,
+    InsightCacheRepo, InterventionDecision, InterventionDemotionState, LocalDisplayAggregate,
+    LocalEventMetadata, NewUploadBatch, OutOfBlockRun, PersonalOverrideRecord,
+    QuietHoursOfferResponse, QuietHoursOfferState, RawEventEntry, RawEventRepo, ReceiptsRepo,
+    ReportedDwell, SiteScopeOverride, UnclassifiedAppEntry, UnclassifiedSiteEntry, UploadBatch,
+    UploadBatchRepo, UploadBatchStatus, UploadQueueDiagnostics, VelvtQuietHours,
+    WeeklyDigestRecord, WorkBlockCategoryCorrection, WorkBlockCompletion, WorkBlockIntervention,
     WorkBlockInterventionOutcome, WorkBlockObservation, WorkBlockOrigin, WorkBlockRecord,
     WorkBlockRepo, WrongInterventionCounts, MAX_REPORTED_DWELL_SECONDS,
 };
@@ -3887,8 +3887,8 @@ impl WorkBlockRepo for SqliteWorkBlockRepo {
             "INSERT INTO intervention_decision_log(
                 decision_id, occurred_at, block_id, policy_version, anchor_category,
                 switch_count, elapsed_seconds, remaining_seconds, gate_verdict,
-                propensity, anchor_seen_within_600s, outcome_at
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+                propensity, anchor_seen_within_600s, outcome_at, focus_state
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
              ON CONFLICT(decision_id) DO NOTHING",
             params![
                 decision.decision_id,
@@ -3903,6 +3903,7 @@ impl WorkBlockRepo for SqliteWorkBlockRepo {
                 decision.propensity,
                 decision.anchor_seen_within_600s.map(i64::from),
                 decision.outcome_at.map(|at| at.timestamp()),
+                decision.focus_state.map(DecisionFocusState::as_str),
             ],
         )?;
         Ok(())
@@ -3913,7 +3914,7 @@ impl WorkBlockRepo for SqliteWorkBlockRepo {
         let mut statement = connection.prepare(
             "SELECT decision_id, occurred_at, block_id, policy_version, anchor_category,
                     switch_count, elapsed_seconds, remaining_seconds, gate_verdict,
-                    propensity, anchor_seen_within_600s, outcome_at
+                    propensity, anchor_seen_within_600s, outcome_at, focus_state
              FROM intervention_decision_log
              WHERE block_id = ?1
              ORDER BY occurred_at ASC, decision_id ASC",
@@ -3934,7 +3935,7 @@ impl WorkBlockRepo for SqliteWorkBlockRepo {
         let mut statement = connection.prepare(
             "SELECT decision_id, occurred_at, block_id, policy_version, anchor_category,
                     switch_count, elapsed_seconds, remaining_seconds, gate_verdict,
-                    propensity, anchor_seen_within_600s, outcome_at
+                    propensity, anchor_seen_within_600s, outcome_at, focus_state
              FROM intervention_decision_log
              ORDER BY occurred_at DESC, decision_id DESC
              LIMIT ?1",
@@ -3956,7 +3957,7 @@ impl WorkBlockRepo for SqliteWorkBlockRepo {
         let mut statement = connection.prepare(
             "SELECT decision_id, occurred_at, block_id, policy_version, anchor_category,
                     switch_count, elapsed_seconds, remaining_seconds, gate_verdict,
-                    propensity, anchor_seen_within_600s, outcome_at
+                    propensity, anchor_seen_within_600s, outcome_at, focus_state
              FROM intervention_decision_log
              WHERE anchor_seen_within_600s IS NULL
                AND anchor_category IS NOT NULL
@@ -4054,6 +4055,19 @@ fn decision_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<InterventionDe
         propensity: row.get(9)?,
         anchor_seen_within_600s: row.get::<_, Option<i64>>(10)?.map(|value| value != 0),
         outcome_at: optional_timestamp_from_row(row, 11)?,
+        focus_state: match row.get::<_, Option<String>>(12)? {
+            None => None,
+            Some(stored) => Some(DecisionFocusState::from_stored(&stored).ok_or_else(|| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    12,
+                    rusqlite::types::Type::Text,
+                    Box::new(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "unrecognised decision focus state",
+                    )),
+                )
+            })?),
+        },
     })
 }
 
@@ -5804,8 +5818,8 @@ mod tests {
     use super::SqlitePersistence;
     use crate::abstraction::EmbeddingSalt;
     use crate::persistence::{
-        AbstractionMapping, BlockAntecedent, DayType, GateVerdict, InterventionDecision,
-        OutOfBlockRun,
+        AbstractionMapping, BlockAntecedent, DayType, DecisionFocusState, GateVerdict,
+        InterventionDecision, OutOfBlockRun,
     };
     use chrono::Utc;
     use rusqlite::Connection;
@@ -6504,6 +6518,7 @@ mod tests {
             propensity: 1.0,
             anchor_seen_within_600s: None,
             outcome_at: None,
+            focus_state: Some(DecisionFocusState::Unknown),
         })
         .unwrap();
         assert_eq!(repo.decisions("cascading-block").unwrap().len(), 1);
@@ -6545,6 +6560,7 @@ mod tests {
             propensity,
             anchor_seen_within_600s: None,
             outcome_at: None,
+            focus_state: Some(DecisionFocusState::Off),
         };
         assert!(repo.record_decision(&decision("zero", 0.0)).is_err());
         assert!(repo.record_decision(&decision("over", 1.5)).is_err());
@@ -6552,6 +6568,97 @@ mod tests {
             .unwrap();
         repo.record_decision(&decision("randomized", 0.5)).unwrap();
         assert_eq!(repo.decisions("propensity-block").unwrap().len(), 2);
+    }
+
+    /// Migration 0044: each decision row carries what the service knew about
+    /// Focus when the gate decided. Every state round-trips, a row written
+    /// before the migration (NULL) reads back as not recorded rather than as
+    /// `off`, and the CHECK refuses anything outside the three tokens.
+    #[test]
+    fn a_decision_keeps_the_focus_state_it_was_made_under() {
+        let database = SqlitePersistence::open_in_memory().unwrap();
+        let connection = database.connection().unwrap();
+        connection
+            .execute(
+                "INSERT INTO work_block(
+                    block_id, phase, intensity, planned_duration_seconds, started_at,
+                    total_paused_seconds, recovered_after_restart,
+                    intention_expires_at, updated_at
+                 ) VALUES ('focus-block', 'active', 'medium', 1800, 0, 0, 0, 0, 0)",
+                [],
+            )
+            .unwrap();
+        drop(connection);
+
+        let repo = database.work_block_repo();
+        let decision = |id: &str, seconds: i64, focus_state: Option<DecisionFocusState>| {
+            InterventionDecision {
+                decision_id: id.into(),
+                occurred_at: chrono::DateTime::from_timestamp(1_800_000_000 + seconds, 0).unwrap(),
+                block_id: Some("focus-block".into()),
+                policy_version: 6,
+                anchor_category: Some("FOCUS_WORK".into()),
+                switch_count: 3,
+                elapsed_seconds: 600,
+                remaining_seconds: 1_200,
+                gate_verdict: GateVerdict::Offered,
+                propensity: 1.0,
+                anchor_seen_within_600s: None,
+                outcome_at: None,
+                focus_state,
+            }
+        };
+        repo.record_decision(&decision("a-on", 1, Some(DecisionFocusState::On)))
+            .unwrap();
+        repo.record_decision(&decision("b-off", 2, Some(DecisionFocusState::Off)))
+            .unwrap();
+        repo.record_decision(&decision("c-unknown", 3, Some(DecisionFocusState::Unknown)))
+            .unwrap();
+        repo.record_decision(&decision("d-before-0044", 4, None))
+            .unwrap();
+        let stored: Vec<_> = repo
+            .decisions("focus-block")
+            .unwrap()
+            .into_iter()
+            .map(|decision| (decision.decision_id, decision.focus_state))
+            .collect();
+        assert_eq!(
+            stored,
+            vec![
+                ("a-on".to_owned(), Some(DecisionFocusState::On)),
+                ("b-off".to_owned(), Some(DecisionFocusState::Off)),
+                ("c-unknown".to_owned(), Some(DecisionFocusState::Unknown)),
+                ("d-before-0044".to_owned(), None),
+            ]
+        );
+
+        let connection = database.connection().unwrap();
+        let stored_tokens: Vec<Option<String>> = connection
+            .prepare("SELECT focus_state FROM intervention_decision_log ORDER BY occurred_at")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(
+            stored_tokens,
+            vec![
+                Some("on".to_owned()),
+                Some("off".to_owned()),
+                Some("unknown".to_owned()),
+                None
+            ]
+        );
+        assert!(connection
+            .execute(
+                "UPDATE intervention_decision_log SET focus_state = 'dnd' WHERE decision_id = 'a-on'",
+                [],
+            )
+            .is_err());
+        for state in DecisionFocusState::ALL {
+            assert_eq!(DecisionFocusState::from_stored(state.as_str()), Some(state));
+        }
+        assert_eq!(DecisionFocusState::from_stored("dnd"), None);
     }
 
     /// Migration 0030 widens a CHECK, which SQLite can only do by rebuilding.

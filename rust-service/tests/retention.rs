@@ -609,6 +609,7 @@ fn log_decision(
             propensity: 1.0,
             anchor_seen_within_600s: None,
             outcome_at: None,
+            focus_state: None,
         })
         .unwrap();
 }

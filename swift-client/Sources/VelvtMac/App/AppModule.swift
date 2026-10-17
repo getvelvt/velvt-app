@@ -151,7 +151,12 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         workBlockCoordinator = workBlocks
         // Swift observes system Focus/DND coarsely and reports transitions;
         // the Rust service owns the evidence record and every decision.
-        let focusObserver = FocusStateObserver(ipcClient: client)
+        // One line at launch says whether this build can read Focus status
+        // at all: without the Communication Notifications entitlement it
+        // cannot, whatever the person allowed (1.0.14 simulation, B5).
+        let focusProvider = INFocusStatusProvider()
+        focusProvider.selfCheck().log()
+        let focusObserver = FocusStateObserver(ipcClient: client, provider: focusProvider)
         focusObserver.start(connectionStatus: client.connectionStatus)
         focusStateObserver = focusObserver
         let localDashboard = LocalDashboardCoordinator(ipcClient: client)

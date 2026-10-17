@@ -1097,6 +1097,47 @@ pub struct InterventionDecision {
     /// unresolved, never "did not return".
     pub anchor_seen_within_600s: Option<bool>,
     pub outcome_at: Option<DateTime<Utc>>,
+    /// Whether the service knew if a Focus was on when the gate decided
+    /// (migration 0044). `None` on a row written before that migration, which
+    /// is not the same as `Off`.
+    pub focus_state: Option<DecisionFocusState>,
+}
+
+/// What the service knew about system Focus at the instant of a drift
+/// decision. A record beside the verdict, never an input to it: the gate's
+/// Focus hold reads the evidence record as it always has.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum DecisionFocusState {
+    /// The app can read Focus status, and the record says a Focus was on.
+    On,
+    /// The app can read Focus status, and the record says none was on.
+    Off,
+    /// The app cannot read Focus status, has not said whether it can since
+    /// the service started, or no Focus state has been recorded yet.
+    Unknown,
+}
+
+impl DecisionFocusState {
+    pub const ALL: [DecisionFocusState; 3] = [
+        DecisionFocusState::On,
+        DecisionFocusState::Off,
+        DecisionFocusState::Unknown,
+    ];
+
+    /// The stored token. Must match migration 0044's CHECK vocabulary.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::On => "on",
+            Self::Off => "off",
+            Self::Unknown => "unknown",
+        }
+    }
+
+    /// Total by construction, like [`GateVerdict::from_stored`]: an
+    /// unrecognised token is `None`, never a defaulted state.
+    pub fn from_stored(value: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|state| state.as_str() == value)
+    }
 }
 
 /// The bucket granularity for `out_of_block_run.started_at_bucket`, matching the

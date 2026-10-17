@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$comment": "Direction: Swift to Rust (protocol 36). Local IPC only. Whether this copy of the app can read the coarse Focus status at all, so the service can record, on each drift decision, whether it knew if a Focus was on (decision row focus_state on, off or unknown). available: the app holds the Communication Notifications entitlement Apple requires for Focus status, and the person allowed Focus status. unavailable: it cannot be read whatever the person answers (the entitlement is missing, a restriction applies, or the system gives no value). denied: the person turned Focus status off for Velvt. not_determined: never asked, or never answered. A fact about the app, never about the person's Focus: no Focus mode name, configuration, schedule or on/off value is representable here. Sent on every connection and whenever it changes at an activation or wake; the service keeps the latest in memory and answers nothing. It changes no drift decision: the gate reads the focus_state_changed record exactly as before.",
+  "type": "object",
+  "required": ["type", "payload"],
+  "properties": {
+    "type": { "const": "focus_status_availability" },
+    "payload": {
+      "type": "object",
+      "required": ["availability"],
+      "properties": {
+        "availability": {
+          "type": "string",
+          "enum": ["available", "unavailable", "denied", "not_determined"]
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

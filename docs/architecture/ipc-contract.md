@@ -1,8 +1,9 @@
 # Velvt IPC Contract
 
-> **Reconciled with `proto/` at protocol 35 on 2026-10-14** (protocol 33 on
+> **Reconciled with `proto/` at protocol 36 on 2026-10-15** (protocol 33 on
 > 2026-09-27; 34 adds `auth_session.user_id`, two `menu_status.upload_status`
-> values and the `account_deleted` reason; 35 adds `intervention_delivery`).
+> values and the `account_deleted` reason; 35 adds `intervention_delivery`; 36
+> adds `focus_status_availability`).
 > This page
 > summarizes the contract; `proto/schema/*.json` is authoritative for every
 > field, and `proto/CHANGELOG.md` records why each version exists. Before this
@@ -83,6 +84,7 @@ Swift Client                                      Rust Service
      |<-- category_prompt ------------------------------|
      |--- acknowledge_category_prompt ----------------->|
      |                                                  |
+     |--- focus_status_availability (no reply) -------->|
      |--- focus_state_changed ------------------------->|
      |<-- quiet_hours_offer ----------------------------|
      |--- respond_quiet_hours_offer ------------------->|
@@ -128,7 +130,7 @@ Direction is enforced by the workspace message envelopes:
     `work_block_lifecycle`, `clear_work_block_data`;
   - local dashboard: `request_local_dashboard`;
   - Focus/DND and quiet hours: `focus_state_changed`,
-    `respond_quiet_hours_offer`;
+    `focus_status_availability`, `respond_quiet_hours_offer`;
   - initiation: `request_initiation_invitation`,
     `dismiss_initiation_invitation`, `set_initiation_settings`,
     `request_initiation_settings`;
@@ -641,7 +643,19 @@ version in brackets is where the message or field arrived.
 
 - `focus_state_changed` [26]: Swift to Rust. A coarse Focus/DND transition:
   `active`, the time, and the UTC offset. The Focus mode's name and schedule
-  are unrepresentable.
+  are unrepresentable. Since 36, sent only while the app reports Focus status
+  `available`.
+- `focus_status_availability` [36]: Swift to Rust, `{availability}`. Whether
+  this copy of the app can read Focus status at all: `available` (it holds
+  the Communication Notifications entitlement Apple requires, and the person
+  allowed Focus status), `unavailable` (no entitlement, a restriction, or no
+  value from the system), `denied` or `not_determined`. Sent on every
+  connection ahead of any `focus_state_changed`, and when it changes at an
+  activation or wake; answered with nothing. Rust keeps the latest in memory
+  and records on each drift decision `intervention_decision_log.focus_state`
+  (`on`/`off` only while `available` and an edge is recorded, else `unknown`;
+  migration 0044). It decides nothing: the Focus hold reads the transition
+  record as before.
 - `quiet_hours_offer` / `respond_quiet_hours_offer` [26]: a next-morning offer
   from the late-night DND rule; accepting configures Velvt's own quiet hours.
 

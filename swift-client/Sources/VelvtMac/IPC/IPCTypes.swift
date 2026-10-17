@@ -2942,10 +2942,12 @@ public struct WorkBlockSnapshot: Codable, Equatable, Sendable {
     public let pausedAt: Date?
     public let recoveredAfterRestart: Bool
     public let currentCategory: String?
-    /// The category the drift gate treats as this block's anchor (proto v31).
+    /// The category the drift gate treats as this block's anchor (proto v31):
+    /// since drift policy v6, the work category (FOCUS_WORK, REFERENCE,
+    /// TASK_MANAGEMENT or COMMUNICATION) with the most confident, closed time.
     /// Rust computes it; Swift never derives one. `nil` outside an active or
-    /// paused block, before a confident observation has closed, and on any
-    /// pre-v31 payload, which has no key.
+    /// paused block, before a confident observation of a work category has
+    /// closed, and on any pre-v31 payload, which has no key.
     public let anchorCategory: String?
     public let classificationStatus: ClassificationStatus
     public let confidence: ClassificationConfidence

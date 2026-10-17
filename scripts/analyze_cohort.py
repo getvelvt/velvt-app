@@ -228,7 +228,32 @@ WARMUP_EXCLUSION_SECONDS = 180
 # either was open. Rows from v1 to v6 are never pooled, and every cohort result
 # uses policy_version 6 only. [Pending: the founder appends the v6 note to
 # traction-summary.md before any v6 build reaches a tester.]
+#
+# Note, dated 2026-10-15, part of the same v6 (the founder's anchor rule, made
+# before any v6 build was distributed): the anchor on a decision row is the
+# work category (FOCUS_WORK, REFERENCE, TASK_MANAGEMENT or COMMUNICATION) with
+# the most confident, closed time in the block, never PASSIVE_CONSUMPTION or
+# SOCIAL_FEED. Through v5 it was any category with the most such time, so after
+# a long drift the anchor became the drift: the return to work was the
+# departure, `sustained_anchor_900s` scored time back at work as a failure and
+# time on the drift as a success, and a return to the drift closed the offer
+# as `returned`. A v6 block with no work time yet has no anchor and gets no
+# offer: past the warm-up it records `abstained_no_anchor`, with no anchor and
+# so no outcome row. The labels are computed exactly as before, against the
+# anchor the row records, and an eligible (offered) point always has a work
+# anchor. [Pending: the v6 note in traction-summary.md describes this rule
+# before any v6 build reaches a tester.]
 ANALYSED_POLICY_VERSION = 6
+
+# The anchors that rule allows. A build cut from develop between the YouTube
+# change (#78) and the anchor rule (#83) writes policy_version 6 with the old
+# most-time anchor, and its rows can be told apart only where that anchor was
+# not a work category, on a decision row or on the offer a decision made. No
+# such build may reach a tester; an export holding one is malformed and
+# excluded whole, because its rows with a work anchor are indistinguishable
+# from a later build's.
+WORK_ANCHOR_POLICY_VERSION = 6
+WORK_ANCHOR_CATEGORIES = ("FOCUS_WORK", "REFERENCE", "TASK_MANAGEMENT", "COMMUNICATION")
 
 # A `work_block_intervention` row has no policy column. It takes the
 # policy_version of the decision-log row for the same block_id whose verdict is
@@ -873,11 +898,43 @@ def load(
             else:
                 participant.correction_rows = rows
 
+        non_work = _non_work_anchors(participant)
+        if non_work:
+            shown = ", ".join(non_work[:3]) + (", ..." if len(non_work) > 3 else "")
+            cohort.malformed.append(
+                f"{name}: {len(non_work)} policy_version {WORK_ANCHOR_POLICY_VERSION} "
+                f"row(s) with an anchor that is not a work category: {shown}"
+            )
+            cohort.excluded_whole[name] = (
+                f"policy_version {WORK_ANCHOR_POLICY_VERSION} rows with a non-work anchor: "
+                "a v6 build from before the 2026-10-15 anchor rule"
+            )
+            continue
+
         cohort.analysed.append(participant)
 
     for participant in cohort.analysed:
         _load_participant(cohort, participant)
     return cohort
+
+
+def _non_work_anchors(participant: Participant) -> list[str]:
+    """Policy-6 decision and offer rows whose anchor is not a work category."""
+    found = []
+    blocks = set()
+    for row in participant.decision_rows:
+        if _int(row, "policy_version") != WORK_ANCHOR_POLICY_VERSION:
+            continue
+        if _text(row, "gate_verdict") in ATTRIBUTING_VERDICTS:
+            blocks.add(_text(row, "block_id"))
+        anchor = _text(row, "anchor_category")
+        if anchor and anchor.upper() not in WORK_ANCHOR_CATEGORIES:
+            found.append(f"decision {_text(row, 'decision_id') or '?'} {anchor!r}")
+    for row in participant.offer_rows:
+        anchor = _text(row, "anchor_category")
+        if _text(row, "block_id") in blocks and anchor and anchor.upper() not in WORK_ANCHOR_CATEGORIES:
+            found.append(f"offer {_text(row, 'block_id')} {anchor!r}")
+    return found
 
 
 def _outcome_problem(row: dict) -> str | None:

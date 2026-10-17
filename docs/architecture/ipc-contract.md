@@ -166,12 +166,13 @@ recovery acceptance, lifecycle, and clear; Rust to Swift for
 
 Protocol state version 1 contains the persisted phase and timing, optional
 local intention/purpose/intensity, current safe classification evidence, the
-live block's anchor category (protocol 31; the drift gate's own anchor, null
-until a confident observation has closed and outside an active or paused
-block), Rust-authored status line, and optional terminal result. The result
-contains planned/elapsed duration, longest stretch, neutral transition and return
-counts, confidence/coverage, safe evidence category, Rust-authored observation,
-and exactly one next action from a closed registry: `protect_next_10` or, since
+live block's anchor category (protocol 31; the drift gate's own anchor, the
+work category with the most confident, closed time since drift policy v6, null
+until a confident observation of a work category has closed and outside an
+active or paused block), Rust-authored status line, and optional terminal
+result. The result contains planned/elapsed duration, longest stretch, neutral
+transition and return counts, confidence/coverage, safe evidence category,
+Rust-authored observation, and exactly one next action from a closed registry: `protect_next_10` or, since
 protocol 27, `soft_restart_10`. The in-block drift offer (`active_intervention`,
 protocol 24) only ever carries `protect_next_10`. Since protocol 26 the result
 may also carry `dnd_outcomes` and one Rust-authored `reconciliation` line for
@@ -604,8 +605,11 @@ version in brackets is where the message or field arrived.
   notification.
 - `work_block_state.anchor_category` [31]: the broad category the drift gate
   treats as the live block's anchor, computed by the gate's own function.
-  Required and nullable: null outside an active or paused block and until a
-  confident observation has closed; absent entirely from a pre-31 service.
+  Since drift policy v6 (2026-10-15) it is always a work category
+  (`FOCUS_WORK`, `REFERENCE`, `TASK_MANAGEMENT` or `COMMUNICATION`): the one
+  with the most confident, closed time. Required and nullable: null outside an
+  active or paused block and until a confident observation of a work category
+  has closed; absent entirely from a pre-31 service.
 - `report_intervention_outcome` [24; `was_focused` 25]: Swift to Rust. The
   person's explicit answer to an offer. Silence is not representable; it is
   recorded when the block ends unanswered.

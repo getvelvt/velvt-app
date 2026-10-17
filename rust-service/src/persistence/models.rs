@@ -1001,7 +1001,10 @@ pub enum GateVerdict {
     AbstainedBlockCap,
     /// Inside the re-offer cooldown earned by a negative reply.
     AbstainedBackoff,
-    /// No confident dominant category yet, so there is nothing to drift from.
+    /// No anchor yet, so there is nothing to drift from. Since drift policy
+    /// v6: no confident time in a work category (`ANCHOR_CATEGORIES` in
+    /// `work_block`), however much other time there was. Through v5: no
+    /// confident time in any category.
     AbstainedNoAnchor,
     /// Departures observed, but below the evidence threshold.
     AbstainedMinSwitches,

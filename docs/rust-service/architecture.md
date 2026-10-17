@@ -17,6 +17,7 @@ The Rust service is organized around narrow modules that own one runtime concern
 | `src/delivery/` | Fetching history/insight, cache management, payload shaping, IPC push adapter |
 | `src/retention/` | Scheduled cleanup for raw events, sent/rejected batches, caches, and the egress ledger |
 | `src/work_block/` | Versioned work-block state machine, safe observation aggregation, deterministic copy, restart recovery, and one-shot deadline |
+| `src/self_rating/` | The optional question after a block (protocol 38): which ended blocks it covers, its frozen copy, its expiry, and what a sighting, Not now or answer records. Consulted by the work-block snapshot of an ended block only |
 | `src/lifecycle/` | Cancellation token used by long-running tasks |
 | `shared-types/` | IPC DTOs and protocol constants shared by service tests and Swift-equivalent schemas |
 
@@ -105,6 +106,46 @@ expires after 24 hours, and is absent from every upload/cache DTO. Result
 finalization is atomic and unique per block, making deadline and restart paths
 idempotent.
 
+Migration 0048 adds `work_block_self_rating` and `rating_prompt_settings`, the
+storage for an optional question after a block ends. `SelfRatingRepo`
+(`persistence/self_rating.rs`) is the only code that writes them, and it writes
+no other table (`tests/field_inventory.rs`). It records facts the caller
+reports and keeps the record's own rules: a block is eligible once, an answer
+is final and never follows expiry, Not now is never an answer, the first
+report of each event wins, an answer or a Not now counts as the sighting when
+none was reported before it, an answer after Not now was given with the card
+seen, and the first time the question was turned on is kept. The schema's
+CHECKs refuse every row the pre-registered analysis would discard as
+malformed. Each row cascades with its block, so Clear Local Work Blocks
+removes every answer and keeps the on/off setting. `docs/field-inventory.md`
+lists every column. The store also reads, and never writes, the two facts
+that place a block in time: when it ended and when the next block started,
+and when the Mac's drift policy v6 primary period started.
+
+`self_rating::RatingPromptManager` (protocol 38, `RATING_PROMPT_VERSION` 1)
+is the store's only caller. It decides, by fixed rules over timestamps and
+the person's setting, whether an ended block is asked about: the block ran
+at least five minutes, started at or after the end of the Mac's v6 primary
+period (1,209,600 seconds from the start of its first block after the
+upgrade cut, as `analyze_ratings.py` computes it), and ran wholly while the
+question was on. Its row is written then, with `eligible_at` the block's end.
+The question is shown, and reports about it are taken, only while the
+question has stayed on since before the block started, so turning it off and
+on again never brings back a question whose result card may have been seen.
+The question expires two hours after the block ended or when the next block
+starts, whichever is first, and `expired_at` is that instant, written when
+the service next builds an ended block's snapshot or takes a report. The
+question cannot be turned on before the period ends. `WorkBlockManager` reaches it through the `RatingPromptSource`
+trait from one function, `rating_surfaces`, while it builds the snapshot of
+an ended block, and passes the time the end was observed, so a Mac asleep
+through a deadline is not shown a question that already expired.
+`tests/rating_isolation.rs` replays a nineteen-day trace with and without
+the question and requires every other table byte-identical, checks the
+manager never consults it for a live block, and checks no other module names
+the question's record. The router handles its six messages; the
+invitation's reply reports which button was tapped, and Rust decides what it
+records.
+
 ## Meaningful-Work Aggregation
 
 `WorkBlockManager` receives safe category/status/confidence evidence after the
@@ -125,7 +166,7 @@ The upload path has three layers:
 2. `UploadBatcher` groups events by count, age, and shutdown.
 3. `UploadCoordinator` sends batches through `HttpBatchUploader`, records status, and manages retry/backoff.
 
-Batch IDs are stable for idempotent retry. `raw_field_rejected` is terminal because retrying a privacy-invalid payload would be incorrect.
+Batch IDs are stable for idempotent retry. `raw_field_rejected` is terminal because retrying a privacy-invalid payload would be incorrect. A `429` puts the upload host off for its `Retry-After`, at most an hour (velvt-core's longest rate-limit window; a proxy's far larger value would otherwise park the queue, across restarts), or the coordinator's own backoff without one; `AuthManager` carries the header in `AuthError::RateLimited { retry_after }`, which `HttpBatchUploader` maps to `UploadOutcome::RateLimited` (protocol 37; before, it was mapped to a transport failure and the header was lost).
 
 ## Delivery Pipeline
 

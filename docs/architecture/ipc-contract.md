@@ -1,9 +1,11 @@
 # Velvt IPC Contract
 
-> **Reconciled with `proto/` at protocol 36 on 2026-10-15** (protocol 33 on
+> **Reconciled with `proto/` at protocol 38 on 2026-10-17** (protocol 33 on
 > 2026-09-27; 34 adds `auth_session.user_id`, two `menu_status.upload_status`
 > values and the `account_deleted` reason; 35 adds `intervention_delivery`; 36
-> adds `focus_status_availability`).
+> adds `focus_status_availability`; 37 adds the `rate_limited` code to
+> `auth_failure`; 38 adds the question after a block, and its number is
+> provisional until it or vault A4 merges first).
 > This page
 > summarizes the contract; `proto/schema/*.json` is authoritative for every
 > field, and `proto/CHANGELOG.md` records why each version exists. Before this
@@ -136,7 +138,11 @@ Direction is enforced by the workspace message envelopes:
     `request_initiation_settings`;
   - demotion, digest and explanation: `request_demotion_state`,
     `reset_intervention_demotion`, `request_weekly_digest`,
-    `acknowledge_weekly_digest`, `request_intervention_explanation`.
+    `acknowledge_weekly_digest`, `request_intervention_explanation`;
+  - the question after a block: `work_block_rating_shown`,
+    `rate_work_block`, `work_block_rating_not_now`,
+    `set_rating_prompt_enabled`, `respond_rating_opt_in`,
+    `request_rating_prompt_settings`.
 - Rust emits only (`ServerMessage`):
   - handshake and errors: `server_hello`, `acknowledged`, `version_mismatch`,
     `malformed_message`, `error_response`, `shutting_down`;
@@ -150,7 +156,8 @@ Direction is enforced by the workspace message envelopes:
   - the needs-a-category card and reminder: `category_prompt`;
   - work blocks and local surfaces: `work_block_state`, `local_dashboard`,
     `quiet_hours_offer`, `initiation_invitation`, `initiation_settings`,
-    `demotion_state`, `weekly_digest`, `intervention_explanation`.
+    `demotion_state`, `weekly_digest`, `intervention_explanation`;
+  - the question after a block: `rating_prompt_settings`.
 - Swift sends only the Rust inbound set and accepts only the Rust outbound set.
   A test-only `dummy_extension` client variant exists under
   `cfg(test)` / the `extensibility-proof` feature and is never on the wire.
@@ -316,7 +323,23 @@ Each summary contains:
   aggregate Today-surface counts (protocol 18). The cloud API names the last one
   `focus_seconds`; Rust renames it when it parses the API response
 - `baseline_status`, `baseline_comparison`, `type_proportions` (per-category
-  seconds and proportion)
+  seconds and proportion). Since velvt-core merges two Macs' time (#42), each
+  category's `seconds` is its own merged time and `proportion` its share of
+  the categories' total, which can exceed `active_seconds` on a day two Macs
+  ran different categories at once. `HistoryListView` draws the bar from
+  `proportion` and says "N% of active time" from `seconds / active_seconds`
+  (protocol 37); the app does not mount that view (see below).
+
+How Swift reads the dates (protocol 37, cross-device-10): a `cloud` row is a UTC
+calendar day, and Swift never matches one against the local date. The one
+place the app shows this is the Patterns tab's coaching card: its "Today so
+far" tier describes only a `this_mac` history, so a synced history with one
+ready day reads "This week so far". The "UTC days" labels on the Daily Activity
+rows (`HistoryListView`) and the Today metrics that no longer read a synced row
+(`TodayWorkspaceView`) are in views the app does not mount; only `#if DEBUG`
+previews create them, through `VelvtPopoverContentView`. Local-day cloud
+summaries wait on a disclosure decision (velvt-core
+`docs/local-day-summaries.md`).
 
 ### `service_status`
 
@@ -464,6 +487,27 @@ password.", "Use at most 256 characters for your password."), not velvt-core's
 Only `loc` and `type` are read: a detail may also echo the submitted value in
 `input`. Swift checks the same rule before sending a sign-up (12 to 256
 characters) or a login (at most 256), counted in Unicode scalars.
+
+A sign-up or login the cloud refuses with `429` answers `auth_failure` with
+`rate_limited` (protocol 37) and Rust's words for the wait, from the
+response's `Retry-After` rounded up to the minute: "Too many attempts. Try
+again in 15 minutes.", or "Too many attempts. Try again later." when the server
+sent no usable `Retry-After` (the server deployed before velvt-core #41). A
+sign-in whose credentials were accepted but whose device registration
+(`POST /v1/devices`, limited to 10 an hour per user from #41) or reissue of
+the stored device was refused with `429` answers `rate_limited` too: "This
+Mac could not be registered yet. Too many attempts. Try again in 60 minutes.",
+or after a sign-up "Your account was created, but this Mac could not be
+registered yet. Too many attempts. Log in to try again in 60 minutes." Swift
+shows it as it is.
+
+Once per launch, after a restored session is validated, Rust sends
+`PATCH /v1/devices/{device_id}` with `{"client_version"}` from a task of its
+own, spawned by the validation's background task (velvt-core #41,
+install-release-09). Any answer ends it for the launch, including the 404 or
+405 of a server without the route; no answer (a transport failure, a 429, a
+5xx) leaves it for the next restored session. Nothing waits on it, the next
+session's validation included, and no message reports it.
 
 `auth_success` is sent only once a device exists to upload as: a sign-up or
 login whose device registration fails answers `auth_failure`, and Swift refuses
@@ -717,6 +761,63 @@ the full account.
   unopened reminders. Answered with `category_prompt` as it now stands, never
   with a notification; a malformed id is refused with
   `invalid_category_prompt_id`.
+
+### Messages added in protocol 38
+
+The optional question after a block, "How much of this block was on what you
+meant to do?" (workspace `plan/attention-labels-and-model.md` § 3; founder
+decision 2026-10-17). All local IPC only; nothing is uploaded. Rust decides
+when it is asked and writes every word (`rust-service/src/self_rating/`,
+`RATING_PROMPT_VERSION` 1); Swift renders it and reports facts.
+`proto/CHANGELOG.md` "Version 38" has the full account, including why the
+number is provisional.
+
+- `work_block_state.rating_prompt` [38]: present only on the snapshot of an
+  ended block, only while the question about it can be answered, and only
+  while the question has stayed on since before that block started (off and
+  on again does not bring it back); omitted on every live block. It holds the
+  block
+  id, `prompt_version`, `presentation`, the question, five `options`
+  (`answer` and `label`, most of the block first), `not_now`, `footnote`,
+  `acknowledgement`, `link` and `expires_at`. With `presentation`
+  `question` the question sits above the result card and the card's
+  observation and numbers stay hidden; with `link` (after Not now) the card
+  shows, with the link under it. It expires two hours after the block ended
+  or when the next block starts, whichever is first. Never a notification.
+- `work_block_state.rating_opt_in` [38]: the one-time invitation to turn the
+  question on (`body`, `turn_on`, `not_now`), after a block the question
+  would have covered, while the question has never been on and the
+  invitation has never been answered.
+- `respond_rating_opt_in` [38]: Swift to Rust, `turn_on` only: which button
+  of the invitation was tapped. Rust decides what it records. Turn on turns
+  the question on under the same floor as the Settings toggle; Not now is
+  recorded only while the invitation is still owed, so it never returns, and
+  a Not now on an invitation left on screen after the question was turned on
+  changes nothing. Answered with `work_block_state`, without the invitation
+  once it is answered.
+- `work_block_rating_shown` [38]: Swift to Rust, `block_id` only. The question
+  was drawn. Answered with nothing; the first sighting is kept.
+- `rate_work_block` [38]: Swift to Rust. `block_id`, `answer` (`all`, `most`,
+  `half`, `less_than_half` or `little`) and `via_link`. Only an open question
+  takes an answer, and it is final. Answered with `work_block_state`.
+- `work_block_rating_not_now` [38]: Swift to Rust, `block_id` only. Never an
+  answer; the question stays open through the link until it expires.
+  Answered with `work_block_state`.
+- `set_rating_prompt_enabled` / `request_rating_prompt_settings` /
+  `rating_prompt_settings` [38]: the setting. The reply carries `available`,
+  `enabled`, `title` and `subtitle`. `set_rating_prompt_enabled` is the
+  Settings toggle only and never answers the invitation. On is refused, and
+  `available` is false, until the Mac's first 14 days of blocks are over. The
+  reply does not resend `work_block_state`: while the result view is open,
+  Swift sends `request_work_block_state` after it, so a question or an
+  invitation the change withdrew leaves the screen.
+
+Which blocks are asked about: a block that ran at least five minutes, started
+at or after the end of the Mac's drift policy v6 primary period (1,209,600
+seconds from the start of its first block after the upgrade cut), and ran
+wholly while the question was on. No
+rule reads an answer, a category or coverage, and no drift decision reads
+anything the question records (`rust-service/tests/rating_isolation.rs`).
 
 ## 4. Version Negotiation
 

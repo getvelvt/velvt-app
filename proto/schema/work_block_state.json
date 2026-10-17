@@ -168,6 +168,124 @@
           "minLength": 1,
           "maxLength": 240
         },
+        "rating_prompt": {
+          "$comment": "Protocol 38. The question after a block. Present only on the snapshot of an ended block (completed, abandoned or expired), only while the question about that block can be answered, and only while the question has stayed on since before that block started (turning it off and on again does not bring it back). Omitted otherwise, and on every active or paused block. Rust decides and writes every word; Swift renders it verbatim. `presentation` `question`: before an answer or a Not now, the question sits above the result card and the card's observation and numbers stay hidden. `link`: after Not now, the card shows with `link` under it, which reopens the question. After an answer, Swift shows `acknowledgement`, then the card. `expires_at` is two hours after the block ended or the next block's start, whichever came first. Never a notification.",
+          "type": "object",
+          "required": [
+            "block_id",
+            "prompt_version",
+            "presentation",
+            "question",
+            "options",
+            "not_now",
+            "footnote",
+            "acknowledgement",
+            "link",
+            "expires_at"
+          ],
+          "properties": {
+            "block_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "prompt_version": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "presentation": {
+              "enum": [
+                "question",
+                "link"
+              ]
+            },
+            "question": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 120
+            },
+            "options": {
+              "type": "array",
+              "minItems": 5,
+              "maxItems": 5,
+              "items": {
+                "type": "object",
+                "required": [
+                  "answer",
+                  "label"
+                ],
+                "properties": {
+                  "answer": {
+                    "enum": [
+                      "all",
+                      "most",
+                      "half",
+                      "less_than_half",
+                      "little"
+                    ]
+                  },
+                  "label": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 40
+                  }
+                },
+                "additionalProperties": false
+              }
+            },
+            "not_now": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 40
+            },
+            "footnote": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200
+            },
+            "acknowledgement": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 40
+            },
+            "link": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 80
+            },
+            "expires_at": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          "additionalProperties": false
+        },
+        "rating_opt_in": {
+          "$comment": "Protocol 38. The one-time invitation to turn the question after a block on. Present only on the snapshot of an ended block the question would have covered (five minutes or more, started at or after the end of this Mac's first 14 days of blocks) while the question has never been turned on and the invitation has never been answered. Either button sends respond_rating_opt_in: Turn on with turn_on true, Not now with false, after which it never appears again. Omitted otherwise.",
+          "type": "object",
+          "required": [
+            "body",
+            "turn_on",
+            "not_now"
+          ],
+          "properties": {
+            "body": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 400
+            },
+            "turn_on": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 40
+            },
+            "not_now": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 40
+            }
+          },
+          "additionalProperties": false
+        },
         "active_intervention": {
           "$comment": "Present only while an offer is unanswered. Rust authors the copy; Swift renders it verbatim. `salience` is quiet when the user pushed a recent offer away — the card still renders, the notification is not sent.",
           "oneOf": [

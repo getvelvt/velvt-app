@@ -255,6 +255,8 @@ fn work_block_contract_round_trips_and_redacts_intention_from_debug() {
             salience: velvt_shared_types::InterventionSalience::Quiet,
         }),
         result: None,
+        rating_prompt: None,
+        rating_opt_in: None,
     };
     assert_round_trip(ServerMessage::WorkBlockState(snapshot.clone()));
     assert!(!format!("{snapshot:?}").contains(sentinel));

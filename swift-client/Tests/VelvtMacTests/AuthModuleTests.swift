@@ -975,6 +975,37 @@ final class AuthViewModelTests: XCTestCase {
         XCTAssertFalse(sut.isLoading)
     }
 
+    /// Protocol 37: the service decides the wait from `Retry-After` and
+    /// writes the words; the sign-in form shows them as they are.
+    func testLogInRefusedForTooManyAttemptsShowsTheServicesWait() async {
+        let client = FakeIPCClient()
+        let keychain = FakeKeychain()
+        let manager = AccountStateManager(keychain: keychain)
+        manager.startListening(to: client)
+        let sut = AuthViewModel(accountStateManager: manager, ipcClient: client)
+        sut.email = "user@example.com"
+        sut.password = "correct horse battery"
+
+        let errorSet = expectation(description: "errorMessage")
+        var cancellable: AnyCancellable?
+        cancellable = sut.$errorMessage.compactMap { $0 }.sink { _ in
+            errorSet.fulfill()
+            cancellable?.cancel()
+        }
+
+        await sut.logIn()
+        client.inject(
+            .authFailure(
+                AuthFailure(code: .rateLimited, message: "Too many attempts. Try again in 15 minutes.")))
+
+        await fulfillment(of: [errorSet], timeout: 2)
+
+        XCTAssertEqual(manager.accountState, .loggedOut)
+        XCTAssertEqual(sut.errorMessage, "Too many attempts. Try again in 15 minutes.")
+        XCTAssertFalse(sut.isLoading)
+        XCTAssertTrue(keychain.isEmpty, "nothing is stored for a refused sign-in")
+    }
+
     // MARK: Logout
 
     func testLogOutClearsKeychainAndTransitionsToLoggedOut() throws {

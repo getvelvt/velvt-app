@@ -282,10 +282,19 @@ async fn main() {
         // Rust owns the Focus/DND evidence record and every decision derived
         // from it; Swift only observes and reports coarse transitions.
         let focus = velvt_service::focus::FocusManager::new(persistence.focus_repo());
+        // The optional question after a block (protocol 38). The manager
+        // consults it only while building the snapshot of an ended block;
+        // no decision reads it. Off until the person turns it on.
+        let rating_prompt = Arc::new(velvt_service::self_rating::RatingPromptManager::new(
+            persistence.self_rating_repo(),
+        ));
         let work_blocks = Arc::new(
-            WorkBlockManager::new(Arc::clone(&work_block_repo)).with_focus_source(
-                Arc::clone(&focus) as Arc<dyn velvt_service::work_block::FocusStateSource>,
-            ),
+            WorkBlockManager::new(Arc::clone(&work_block_repo))
+                .with_focus_source(
+                    Arc::clone(&focus) as Arc<dyn velvt_service::work_block::FocusStateSource>
+                )
+                .with_rating_prompt(Arc::clone(&rating_prompt)
+                    as Arc<dyn velvt_service::work_block::RatingPromptSource>),
         );
         // Rust owns the deterministic good-hours policy and every
         // invitation gate; Swift renders the offer and records direct input.
@@ -724,6 +733,7 @@ async fn main() {
             .with_initiation(Arc::clone(&initiation))
             .with_receipts(Arc::clone(&receipts))
             .with_category_prompt(Arc::clone(&category_prompt))
+            .with_rating_prompt(Arc::clone(&rating_prompt))
             .with_auth_state(auth_state.subscribe())
             .with_delivery_push(Arc::clone(&push_adapter))
             .with_menu_status(menu_status),

@@ -23,7 +23,7 @@ Open the relevant file, make your changes, and do not modify files unrelated to 
 | Swift client architecture | `docs/swift-client/architecture.md` | SwiftUI/AppKit structure, composition root, event capture, IPC, and state flow |
 | Swift client settings | `docs/swift-client/settings.md` | Settings UI, persisted local preferences, menu status, and configuration sources |
 | Swift client auth | `docs/swift-client/auth.md` | Auth UI flow, session state, Keychain persistence, and IPC auth messages |
-| IPC contract deep dive | `docs/architecture/ipc-contract.md` | IPC framing, versioning, direction lists, and the message catalog, reconciled through protocol 36 |
+| IPC contract deep dive | `docs/architecture/ipc-contract.md` | IPC framing, versioning, direction lists, and the message catalog, reconciled through protocol 38 |
 | Classification v2 contract | `docs/classification-v2-contract.md` | The design behind bundle-keyed corrections, declared app metadata, triage, and the protocol-30 classifier ladder |
 | Event relay deep dive | `docs/architecture/event-relay.md` | Existing detailed guide for Swift event buffering and reconnect behavior |
 | Collection agent deep dive | `docs/architecture/collection-agent.md` | Existing detailed guide for macOS Accessibility event collection |
@@ -34,4 +34,5 @@ Open the relevant file, make your changes, and do not modify files unrelated to 
 | Owner shipment checklist | `docs/release-readiness/WHAT_YOU_MUST_DO_TO_SHIP.md` | Only the credentials, authority, hardware, consent, and policy actions that require the release owner |
 | Release ledger | `docs/RELEASES.md` | Every notarized release with build, protocol, source commit or tag, DMG sha256 and recipients; how to cut the next one |
 | Secure application updates | `docs/updates.md` | Updater architecture, trust model, activation checklist, publishing order, and N-to-N+1 verification |
+| Field and retention inventory | `docs/field-inventory.md` | Column classes (no free text), retention and destructive-action reach for tables that hold a person's own answers; checked with every action's reach by `rust-service/tests/field_inventory.rs` |
 | Local meaningful-work loop | `docs/architecture/work-block-loop.md` | Work-block ownership, state machine, evidence rules, privacy field table, lifecycle, and failure behavior |

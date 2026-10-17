@@ -322,6 +322,9 @@ fn privacy_document_retention_cells_match_the_shipped_horizons() {
         ("work_block", vec![measured_intention_retention_hours()]),
         ("work_block_observation", vec![]),
         ("work_block_result", vec![]),
+        // Migration 0048's answers to the question after a block: removed
+        // with the block, no horizon of their own.
+        ("work_block_self_rating", vec![]),
         ("intervention_decision_log", vec![]),
         ("out_of_block_run", vec![OUT_OF_BLOCK_RUN_RETENTION_DAYS]),
         ("block_antecedent", vec![]),
@@ -1970,6 +1973,7 @@ const MIGRATED_TABLES: &[&str] = &[
     "personal_semantic_prototype",
     "personal_site_override",
     "quiet_hours_offer_state",
+    "rating_prompt_settings",
     "raw_event_buffer",
     "schema_migration",
     "semantic_embedding_cache",
@@ -1983,6 +1987,7 @@ const MIGRATED_TABLES: &[&str] = &[
     "work_block_intervention",
     "work_block_observation",
     "work_block_result",
+    "work_block_self_rating",
 ];
 
 /// The migrated schema holds exactly the tables listed above, and every table

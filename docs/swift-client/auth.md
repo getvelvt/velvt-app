@@ -92,7 +92,7 @@ Handled server messages:
 |---|---|
 | `auth_success` | Store tokens/session in Keychain, with `userId` on the session, and transition to `.loggedIn`. One with an empty `deviceId` or `userId` is refused: nothing is stored, `serverMessages` carries an `auth_failure` ("This Mac could not be registered. Please try again."), the state returns to `.loggedOut`, and `log_out` is sent so the service drops the session it stored before answering |
 | `auth_session_updated` | Update Keychain tokens after Rust refresh/reissue |
-| `auth_failure` | Return from `.loggingIn` to `.loggedOut` |
+| `auth_failure` | Return from `.loggingIn` to `.loggedOut`; `AuthViewModel` shows `message` as it is. For `rate_limited` (protocol 37) Rust has already written the wait into it ("Too many attempts. Try again in 15 minutes.") |
 | `account_deletion_accepted` | Clear Keychain and transition to `.loggedOut` |
 | `needs_reauth` | Clear Keychain and transition to `.loggedOut`; set `requiresReauthentication` unless the reason is `account_deleted` (the account is gone, so there is nothing to sign in to again) |
 | `device_revoked` | Clear Keychain, transition to `.loggedOut`, set `isDeviceRevoked` |

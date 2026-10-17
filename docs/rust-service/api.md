@@ -98,6 +98,15 @@ Rust accepts these `ClientMessage` cases:
 | `request_menu_status` | Request cloud/local queue status for settings UI |
 | `flush_upload_queue` | Force pending upload flush |
 | `error_response` | Typed client error envelope |
+| `work_block_rating_shown` | The question after a block was drawn (protocol 38); answered with nothing |
+| `rate_work_block` | One of the five answers to the question after a block (protocol 38); answered with `work_block_state` |
+| `work_block_rating_not_now` | Not now on the question after a block, never an answer (protocol 38); answered with `work_block_state` |
+| `set_rating_prompt_enabled` | The Settings toggle for the question after a block (protocol 38); answered with `rating_prompt_settings` |
+| `respond_rating_opt_in` | Which button of the question's one-time invitation was tapped, Turn on or Not now (protocol 38); answered with `work_block_state` |
+| `request_rating_prompt_settings` | Read the question's setting and the Settings pane's words (protocol 38) |
+
+The table lists the account, status and protocol messages; `docs/architecture/ipc-contract.md`
+§ 2 lists every `ClientMessage`, and § 3 describes each.
 
 ### Raw Event Example
 
@@ -254,6 +263,7 @@ Rust uses an internal `HttpClient` trait and `ReqwestHttpClient` implementation.
 | `/v1/auth/signup` | POST | `AccountAuthService` | Create account |
 | `/v1/auth/login` | POST | `AccountAuthService` | Login |
 | `/v1/devices` | POST | `AccountAuthService` | Register current device after first auth |
+| `/v1/devices/{device_id}` | PATCH | `AuthManager` | Report the running `client_version`, once per launch after a restored session is validated; any answer, a 404 or 405 included, ends it for the launch |
 | `/v1/auth/refresh` | POST | `AuthManager` | Refresh expiring device tokens |
 | `/v1/auth/devices/reissue` | POST | `AuthManager` / `AccountAuthService` | Reissue device-bound tokens |
 | `/v1/auth/logout` | POST | `AccountAuthService` | Best-effort logout |
@@ -308,6 +318,7 @@ Response handling is typed:
 |---|---|
 | `200` + JSON | Parse `id` plus the ready-to-display insight fields, push `insight_payload`, then push `notification_payload` over IPC |
 | `204` | Sleep for `VELVT_INSIGHT_POLL_IDLE_SECONDS` and poll again |
+| `429` | Wait its `Retry-After` (capped at `VELVT_INSIGHT_POLL_MAX_BACKOFF_SECONDS`), or the poll timeout plus the idle interval without one. `AuthManager` reports it as `AuthError::RateLimited { retry_after }`; before protocol 37 the header was dropped there and the poll took the exponential backoff |
 | Non-2xx | Log status/error code only, apply exponential backoff, and continue |
 | Transport/timeout | Log a safe error, apply exponential backoff, and continue |
 

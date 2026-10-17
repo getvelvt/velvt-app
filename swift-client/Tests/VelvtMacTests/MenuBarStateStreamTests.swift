@@ -133,6 +133,7 @@ final class MenuBarStateStreamTests: XCTestCase {
     func testAnUnshownOfferSettlesToOfferWaitingAndClearsWithTheOffer() async throws {
         let offerWaiting = CurrentValueSubject<Bool, Never>(false)
         var recorded: [MenuBarState] = []
+        let initial = expectation(description: "initial normal emitted")
         let waiting = expectation(description: "offer waiting emitted")
         let cleared = expectation(description: "normal emitted after the offer")
 
@@ -149,10 +150,15 @@ final class MenuBarStateStreamTests: XCTestCase {
                 waiting.fulfill()
             } else if state == .normal, recorded.contains(.offerWaiting) {
                 cleared.fulfill()
+            } else if state == .normal, recorded.count == 1 {
+                initial.fulfill()
             }
         }
 
-        try await Task.sleep(for: .milliseconds(60))
+        // Wait for the debounced initial state rather than sleeping: on a slow
+        // runner a fixed sleep can end before it is emitted, and the first
+        // `true` then coalesces with it.
+        await fulfillment(of: [initial], timeout: 2)
         offerWaiting.send(true)
         await fulfillment(of: [waiting], timeout: 2)
         offerWaiting.send(false)

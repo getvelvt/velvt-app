@@ -32,6 +32,19 @@ public final class WorkBlockCoordinator: ObservableObject, InterventionDeliveryR
     /// Present only while that intervention's card is showing; there is no
     /// input, reply, or thread anywhere on this surface.
     @Published public private(set) var explanation: InterventionExplanation?
+    /// The Rust-owned setting for the question after a block (proto v38),
+    /// mirrored for the Settings toggle. `nil` until the service reports it,
+    /// and the toggle is drawn only while Rust says it is `available`.
+    @Published public private(set) var ratingPromptSettings: RatingPromptSettings?
+    /// The block whose "Answer the question" link was opened. Opening it is a
+    /// disclosure on this Mac's screen, not a fact the service records: the
+    /// Not now that put the link there already is.
+    @Published private var ratingLinkOpenedFor: UUID?
+    /// An answer sent and not yet confirmed by the service's reply.
+    @Published private var ratingAnswerInFlight: RatingAcknowledgement?
+    /// The acknowledgement for the block just answered, shown above its card
+    /// once the service's reply no longer carries the question.
+    @Published private var ratingAcknowledgement: RatingAcknowledgement?
 
     private let ipcClient: any IPCClientProtocol
     private var cancellables = Set<AnyCancellable>()
@@ -41,6 +54,7 @@ public final class WorkBlockCoordinator: ObservableObject, InterventionDeliveryR
     private let now: () -> Date
     private let sleep: @Sendable (TimeInterval) async throws -> Void
     private var deadlineFlush: (key: DeadlineFlushKey, task: Task<Void, Never>)?
+    private var ratingExpiryRefresh: (key: RatingExpiryKey, task: Task<Void, Never>)?
 
     /// How long before a block's planned end the dwell in progress is closed
     /// for a block that runs out rather than being ended.
@@ -54,6 +68,11 @@ public final class WorkBlockCoordinator: ObservableObject, InterventionDeliveryR
     private struct DeadlineFlushKey: Equatable {
         let blockID: UUID
         let endsAt: Date
+    }
+
+    private struct RatingExpiryKey: Equatable {
+        let blockID: UUID
+        let expiresAt: Date
     }
 
     /// - Parameter flushPendingDwell: Closes the dwell the person is in right
@@ -102,6 +121,9 @@ public final class WorkBlockCoordinator: ObservableObject, InterventionDeliveryR
                     if snapshot.activeIntervention == nil {
                         self?.explanation = nil
                     }
+                    self?.reconcileQuestionAfterABlock(with: snapshot)
+                case .ratingPromptSettings(let settings):
+                    self?.ratingPromptSettings = settings
                 case .quietHoursOffer(let offer):
                     self?.quietHoursOffer = offer
                 case .initiationInvitation(let invitation):
@@ -123,6 +145,12 @@ public final class WorkBlockCoordinator: ObservableObject, InterventionDeliveryR
                 where error.code.hasPrefix("work_block_")
                     || error.code.hasPrefix("invalid_work_block_"):
                     self?.commandError = error.message
+                    // An answer to the question after a block is answered with
+                    // a snapshot or, when the service cannot build one, with
+                    // this error. Either settles it, so the five answers are
+                    // offered again instead of staying disabled until the
+                    // next snapshot. Nothing is acknowledged.
+                    self?.ratingAnswerInFlight = nil
                 default:
                     break
                 }
@@ -136,6 +164,7 @@ public final class WorkBlockCoordinator: ObservableObject, InterventionDeliveryR
                 guard status == .connected else { return }
                 self?.send(.requestWorkBlockState)
                 self?.send(.requestInitiationSettings)
+                self?.refreshRatingPromptSettings()
                 self?.refreshInvitation()
                 self?.refreshDemotionState()
                 self?.refreshWeeklyDigest()
@@ -352,12 +381,206 @@ public final class WorkBlockCoordinator: ObservableObject, InterventionDeliveryR
         send(.setInitiationSettings(.init(invitationsEnabled: enabled)))
     }
 
+    // MARK: The question after a block (proto v38)
+
+    /// What the question after a block puts on a result surface right now.
+    ///
+    /// Read from Rust's snapshot of an ended block and from the taps this
+    /// coordinator has sent, and from nothing else. Every case carries
+    /// Rust's words. `nil` on a live or idle block whatever the snapshot
+    /// carries, because the question is never drawn during a block, and once
+    /// the deadline Rust gave has passed, because an answer then would be
+    /// refused.
+    public var questionAfterABlock: QuestionAfterABlock? {
+        guard let snapshot, snapshot.phase.hasEnded, let blockID = snapshot.blockID else {
+            return nil
+        }
+        if let ratingAcknowledgement, ratingAcknowledgement.blockID == blockID {
+            return .acknowledged(ratingAcknowledgement.text)
+        }
+        if let prompt = snapshot.ratingPrompt, prompt.blockID == blockID, now() < prompt.expiresAt {
+            switch prompt.presentation {
+            case .question:
+                return .question(prompt, viaLink: false)
+            case .link:
+                return ratingLinkOpenedFor == blockID ? .question(prompt, viaLink: true) : .link(prompt)
+            }
+        }
+        if let optIn = snapshot.ratingOptIn {
+            return .invitation(optIn)
+        }
+        return nil
+    }
+
+    /// Whether the ended block's observation and numbers are held back on
+    /// every surface that shows them. True only while the question is up for
+    /// the first time: the card would anchor the answer, and an answer given
+    /// after the card is a separate stratum that Rust records only through
+    /// Not now or the link.
+    public var withholdsBlockSummary: Bool {
+        if case .question(_, viaLink: false) = questionAfterABlock { true } else { false }
+    }
+
+    /// Whether an answer has been sent and the service has not replied yet.
+    /// The answers are disabled meanwhile so one tap is one answer.
+    public var isSendingRatingAnswer: Bool {
+        ratingAnswerInFlight != nil
+    }
+
+    /// Reports that the question was drawn on a surface someone can see. A
+    /// fact, never an answer; the service keeps the first. It clears no
+    /// error and sets none, because nothing the person asked for depends on
+    /// it.
+    public func reportRatingShown() {
+        guard case .question(let prompt, viaLink: false) = questionAfterABlock else { return }
+        enqueue { [ipcClient] in
+            try? await ipcClient.send(.workBlockRatingShown(.init(blockID: prompt.blockID)))
+        }
+    }
+
+    /// One of the five answers. `via_link` is set when the question was
+    /// reopened from the link under the card, so Rust files the answer as
+    /// given after the card was seen.
+    public func answerRating(_ answer: WorkBlockRatingAnswer) {
+        guard ratingAnswerInFlight == nil,
+            case .question(let prompt, let viaLink) = questionAfterABlock
+        else { return }
+        ratingAnswerInFlight = RatingAcknowledgement(
+            blockID: prompt.blockID, text: prompt.acknowledgement, expiresAt: prompt.expiresAt)
+        send(
+            .rateWorkBlock(.init(blockID: prompt.blockID, answer: answer, viaLink: viaLink)),
+            onFailure: { [weak self] in self?.ratingAnswerInFlight = nil })
+    }
+
+    /// Not now on the question. The first time, it is reported, and Rust
+    /// answers with the card and the link. On a question reopened from the
+    /// link it closes what the link opened and reports nothing: that Not now
+    /// is already on record.
+    public func declineRatingForNow() {
+        guard case .question(let prompt, let viaLink) = questionAfterABlock else { return }
+        if viaLink {
+            ratingLinkOpenedFor = nil
+            return
+        }
+        send(.workBlockRatingNotNow(.init(blockID: prompt.blockID)))
+    }
+
+    /// The quiet link under the card after Not now: brings the question back
+    /// above the card, which now stays visible.
+    public func openRatingLink() {
+        guard case .link(let prompt) = questionAfterABlock else { return }
+        ratingLinkOpenedFor = prompt.blockID
+    }
+
+    /// A tap on the one-time invitation: which button, and nothing else.
+    /// Rust decides what it records and answers with the snapshot, which no
+    /// longer carries the invitation; the setting is read again so the
+    /// Settings toggle agrees.
+    public func respondToRatingInvitation(turnOn: Bool) {
+        guard case .invitation = questionAfterABlock else { return }
+        send(.respondRatingOptIn(.init(turnOn: turnOn)))
+        refreshRatingPromptSettings()
+    }
+
+    /// The Settings toggle. The service owns and enforces the setting, and
+    /// refuses on until this Mac's first 14 days of blocks are over; the
+    /// toggle re-renders from its reply. That reply does not resend the
+    /// snapshot, so an ended block's state is asked for again: turning the
+    /// question off withdraws an open question, and the result view must not
+    /// keep drawing it.
+    public func setRatingPromptEnabled(_ enabled: Bool) {
+        send(.setRatingPromptEnabled(.init(enabled: enabled)))
+        if snapshot?.phase.hasEnded == true {
+            send(.requestWorkBlockState)
+        }
+    }
+
+    /// Reads the question's setting for the Settings pane.
+    public func refreshRatingPromptSettings() {
+        send(.requestRatingPromptSettings)
+    }
+
+    /// Settles the question's local state against a new snapshot, then arms
+    /// the one refresh at the question's deadline.
+    ///
+    /// The first snapshot after an answer settles it either way. If it is
+    /// for the answered block, no longer carries the question, and arrived
+    /// before the question's deadline, the answer was taken and its
+    /// acknowledgement shows. A reply at or after the deadline acknowledges
+    /// nothing: the service may have refused the answer as late, and that
+    /// reply omits the question too, so the result shows without "Noted.".
+    /// If the reply still carries the question, the answer was not recorded,
+    /// and the answers are offered again rather than left disabled. State
+    /// about another block is dropped.
+    private func reconcileQuestionAfterABlock(with snapshot: WorkBlockSnapshot) {
+        if let inFlight = ratingAnswerInFlight {
+            if snapshot.blockID == inFlight.blockID, snapshot.ratingPrompt == nil,
+                now() < inFlight.expiresAt
+            {
+                ratingAcknowledgement = inFlight
+            }
+            ratingAnswerInFlight = nil
+        }
+        if let acknowledged = ratingAcknowledgement?.blockID, acknowledged != snapshot.blockID {
+            ratingAcknowledgement = nil
+        }
+        if let opened = ratingLinkOpenedFor,
+            opened != snapshot.blockID || snapshot.ratingPrompt?.presentation != .link
+        {
+            ratingLinkOpenedFor = nil
+        }
+        scheduleRatingExpiryRefresh(for: snapshot)
+    }
+
+    /// Asks for the ended block's state once, at the question's deadline.
+    ///
+    /// The service publishes state on commands and one block deadline, never
+    /// on a timer, so without this a panel left open past the deadline keeps
+    /// drawing a question the service would refuse an answer to. The reply
+    /// is Rust's, without the question. Re-armed only when the block or the
+    /// deadline changes, and disarmed by any snapshot without a question.
+    private func scheduleRatingExpiryRefresh(for snapshot: WorkBlockSnapshot) {
+        guard snapshot.phase.hasEnded,
+            let prompt = snapshot.ratingPrompt,
+            prompt.blockID == snapshot.blockID
+        else {
+            cancelRatingExpiryRefresh()
+            return
+        }
+        let key = RatingExpiryKey(blockID: prompt.blockID, expiresAt: prompt.expiresAt)
+        guard ratingExpiryRefresh?.key != key else { return }
+        cancelRatingExpiryRefresh()
+        let delay = max(0, prompt.expiresAt.timeIntervalSince(now()))
+        let task = Task { [weak self, sleep] in
+            do {
+                try await sleep(delay)
+            } catch {
+                return
+            }
+            guard !Task.isCancelled, let self,
+                self.snapshot?.ratingPrompt?.blockID == prompt.blockID
+            else { return }
+            self.enqueue { [ipcClient = self.ipcClient] in
+                try? await ipcClient.send(.requestWorkBlockState)
+            }
+        }
+        ratingExpiryRefresh = (key, task)
+    }
+
+    private func cancelRatingExpiryRefresh() {
+        ratingExpiryRefresh?.task.cancel()
+        ratingExpiryRefresh = nil
+    }
+
     public func clearLocalData() {
         quietHoursOffer = nil
         invitation = nil
         weeklyDigest = nil
         explanation = nil
         demotionState = nil
+        ratingLinkOpenedFor = nil
+        ratingAnswerInFlight = nil
+        ratingAcknowledgement = nil
         send(.clearWorkBlockData)
         // The cleared record derives a fresh (active) demotion state.
         refreshDemotionState()
@@ -462,7 +685,11 @@ public final class WorkBlockCoordinator: ObservableObject, InterventionDeliveryR
         deadlineFlush = nil
     }
 
-    private func send(_ message: ClientMessage, flushingDwellFirst: Bool = false) {
+    private func send(
+        _ message: ClientMessage,
+        flushingDwellFirst: Bool = false,
+        onFailure: (@MainActor () -> Void)? = nil
+    ) {
         commandError = nil
         let flush = flushingDwellFirst ? flushPendingDwell : nil
         enqueue { [weak self, ipcClient] in
@@ -472,6 +699,7 @@ public final class WorkBlockCoordinator: ObservableObject, InterventionDeliveryR
             } catch {
                 await MainActor.run {
                     self?.commandError = "The local service is offline. Your work block was not changed."
+                    onFailure?()
                 }
             }
         }

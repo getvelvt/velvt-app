@@ -74,11 +74,11 @@ final class UnixSocketIPCClientTests: XCTestCase {
         XCTAssertEqual(latestStatus, .disconnected)
     }
 
-    /// Protocol 36 adds `focus_status_availability`. An app built at 36 that
-    /// meets a helper still running at 35 (the upgrade path) is refused at the
-    /// handshake with the typed error, and never sends a fact the helper would
-    /// answer as malformed.
-    func testAProtocol36AppIsRefusedByAProtocol35Helper() async throws {
+    /// Protocol 38 adds the question after a block. An app built at 38 that
+    /// meets a helper still running at 37 (the upgrade path) is refused at the
+    /// handshake with the typed error, and never sends a report the helper
+    /// would answer as malformed.
+    func testAProtocol38AppIsRefusedByAProtocol37Helper() async throws {
         let protoVersion = try String(
             contentsOf: URL(fileURLWithPath: #filePath)
                 .deletingLastPathComponent()
@@ -88,19 +88,19 @@ final class UnixSocketIPCClientTests: XCTestCase {
                 .appendingPathComponent("proto/version"),
             encoding: .utf8
         ).trimmingCharacters(in: .whitespacesAndNewlines)
-        XCTAssertEqual(protoVersion, "36")
+        XCTAssertEqual(protoVersion, "38")
         let transport = ScriptedIPCTransport(
             receives: [
-                .success(try frame(.serverHello(ServerHello(protocolVersion: 35)))),
+                .success(try frame(.serverHello(ServerHello(protocolVersion: 37)))),
                 .success(
-                    try frame(.versionMismatch(VersionMismatch(serverProtocolVersion: 35, clientProtocolVersion: 36)))
+                    try frame(.versionMismatch(VersionMismatch(serverProtocolVersion: 37, clientProtocolVersion: 38)))
                 ),
             ]
         )
         let client = UnixSocketIPCClient(
             socketPath: "/tmp/velvt-test.sock",
-            protocolVersion: 36,
-            clientVersion: "1.0.15",
+            protocolVersion: 38,
+            clientVersion: "1.0.16",
             transportFactory: { transport }
         )
 
@@ -108,13 +108,13 @@ final class UnixSocketIPCClientTests: XCTestCase {
             try await client.connect()
             XCTFail("Expected version mismatch")
         } catch {
-            XCTAssertEqual(error as? IPCError, .versionMismatch(expected: 35, got: 36))
+            XCTAssertEqual(error as? IPCError, .versionMismatch(expected: 37, got: 38))
         }
         let sent = await transport.sentFrames()
         XCTAssertEqual(sent.count, 1, "the hello, and nothing after it")
         XCTAssertEqual(
             try IPCMessageCodec.makeDecoder().decode(ClientMessage.self, from: sent[0]),
-            .clientHello(ClientHello(expectedProtocolVersion: 36, clientVersion: "1.0.15"))
+            .clientHello(ClientHello(expectedProtocolVersion: 38, clientVersion: "1.0.16"))
         )
     }
 

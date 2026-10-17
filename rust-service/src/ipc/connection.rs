@@ -327,6 +327,7 @@ fn server_message_type_name(msg: &ServerMessage) -> &'static str {
         ServerMessage::InterventionExplanation(_) => "intervention_explanation",
         ServerMessage::UnclassifiedTriage(_) => "unclassified_triage",
         ServerMessage::CategoryPrompt(_) => "category_prompt",
+        ServerMessage::RatingPromptSettings(_) => "rating_prompt_settings",
     }
 }
 

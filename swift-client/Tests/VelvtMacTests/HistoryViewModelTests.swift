@@ -399,7 +399,7 @@ final class HistoryViewModelTests: XCTestCase {
         focusScore: 60, fragmentationScore: 20,
         confidenceLevel: .low, activeSeconds: 3600, focusedSeconds: 1800,
         meaningfulSwitchCount: 3)
-    ]))
+    ], source: .thisMac))
 
     let insight = try XCTUnwrap(sut.progressiveInsight)
     XCTAssertEqual(insight.tier, .todaySoFar)
@@ -435,7 +435,7 @@ final class HistoryViewModelTests: XCTestCase {
         date: "2026-07-26", status: .ready, eventCount: 0,
         focusScore: nil, fragmentationScore: nil,
         confidenceLevel: .none, activeSeconds: 0)
-    ]))
+    ], source: .thisMac))
 
     let insight = try XCTUnwrap(sut.progressiveInsight)
     XCTAssertEqual(insight.tier, .todaySoFar)
@@ -454,7 +454,7 @@ final class HistoryViewModelTests: XCTestCase {
         focusScore: 60, fragmentationScore: 20,
         confidenceLevel: .low, activeSeconds: 3600, focusedSeconds: 1800,
         meaningfulSwitchCount: 3)
-    ]))
+    ], source: .thisMac))
 
     let insight = try XCTUnwrap(sut.progressiveInsight)
     XCTAssertEqual(insight.tier, .thisWeekSoFar)

@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$comment": "Direction: Swift to Rust. Protocol 38. Local IPC only. Not now, on the question after a block. Never an answer and never a negative one: the service stamps it, keeps the first, and the question stays open through the link under the result card until it expires. Closing the popover is not Not now and sends nothing. Answered with work_block_state, whose rating_prompt now has presentation `link`.",
+  "type": "object",
+  "required": ["type", "payload"],
+  "properties": {
+    "type": { "const": "work_block_rating_not_now" },
+    "payload": {
+      "type": "object",
+      "required": ["block_id"],
+      "properties": {
+        "block_id": { "type": "string", "format": "uuid" }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

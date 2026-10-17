@@ -1,0 +1,11 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$comment": "Direction: Swift to Rust. Protocol 38. Reads the question after a block's setting so the Settings pane renders the Rust-owned state and words. Answered with rating_prompt_settings.",
+  "type": "object",
+  "required": ["type", "payload"],
+  "properties": {
+    "type": { "const": "request_rating_prompt_settings" },
+    "payload": { "type": "object", "maxProperties": 0, "additionalProperties": false }
+  },
+  "additionalProperties": false
+}

@@ -11,10 +11,10 @@ use tokio::sync::watch;
 use uuid::Uuid;
 use velvt_shared_types::{
     ActiveIntervention, ClassificationConfidence, ClassificationStatus, ConfidenceLevel,
-    InterventionDeliveryChannel, InterventionResponse, InterventionSalience, StartWorkBlock,
-    WorkBlockCoverage, WorkBlockDndOutcome, WorkBlockIntensity, WorkBlockLifecycleEvent,
-    WorkBlockNextAction, WorkBlockPhase, WorkBlockPurpose, WorkBlockResult, WorkBlockSnapshot,
-    WORK_BLOCK_STATE_VERSION,
+    InterventionDeliveryChannel, InterventionResponse, InterventionSalience, RatingOptIn,
+    RatingPrompt, StartWorkBlock, WorkBlockCoverage, WorkBlockDndOutcome, WorkBlockIntensity,
+    WorkBlockLifecycleEvent, WorkBlockNextAction, WorkBlockPhase, WorkBlockPurpose,
+    WorkBlockResult, WorkBlockSnapshot, WORK_BLOCK_STATE_VERSION,
 };
 
 use velvt_shared_types::{DemotionState, DemotionStateKind};
@@ -313,6 +313,40 @@ pub trait FocusStateSource: Send + Sync {
     fn focus_state_at_decision(&self, at: DateTime<Utc>) -> DecisionFocusState;
 }
 
+/// The facts about an ended block that the question after a block is
+/// decided from (`crate::self_rating`; attention plan § 3.2).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EndedBlock {
+    pub block_id: String,
+    pub phase: WorkBlockPhase,
+    pub started_at: DateTime<Utc>,
+    pub ended_at: DateTime<Utc>,
+    /// The elapsed time the block's result reports.
+    pub elapsed_seconds: u32,
+}
+
+/// What the question after a block adds to the snapshot of an ended block.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RatingSurfaces {
+    pub prompt: Option<RatingPrompt>,
+    pub opt_in: Option<RatingOptIn>,
+}
+
+/// The question after a block, as the snapshot sees it (`crate::self_rating`).
+///
+/// The manager consults it in one place, `WorkBlockManager::rating_surfaces`,
+/// while it builds the snapshot of a block that has ended, after every
+/// decision about that block was made. A live block's snapshot never consults
+/// it. Nothing it returns reaches a gate, an offer, an outcome, demotion,
+/// backoff or a receipt: `tests/rating_isolation.rs` replays the same blocks
+/// with and without it and requires every other table to come out
+/// byte-identical, and checks that this is the only place it is called.
+pub trait RatingPromptSource: Send + Sync {
+    /// What to show about `block` at `now`. Never fails the snapshot: a
+    /// source that cannot answer returns nothing.
+    fn surfaces_for(&self, block: &EndedBlock, now: DateTime<Utc>) -> RatingSurfaces;
+}
+
 /// A single approved, device-local intervention offer. Copy is authored here,
 /// beside the evidence that justifies it; Swift renders it verbatim.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -390,6 +424,7 @@ pub enum WorkBlockError {
 pub struct WorkBlockManager {
     repo: Arc<dyn WorkBlockRepo>,
     focus: Option<Arc<dyn FocusStateSource>>,
+    rating: Option<Arc<dyn RatingPromptSource>>,
     deadline: watch::Sender<Option<DateTime<Utc>>>,
 }
 
@@ -399,8 +434,16 @@ impl WorkBlockManager {
         Self {
             repo,
             focus: None,
+            rating: None,
             deadline,
         }
+    }
+
+    /// Attaches the question after a block. Without it no snapshot carries the
+    /// question or its invitation, and nothing else changes.
+    pub fn with_rating_prompt(mut self, rating: Arc<dyn RatingPromptSource>) -> Self {
+        self.rating = Some(rating);
+        self
     }
 
     /// Attaches the Focus/DND evidence source. Without one the manager
@@ -441,7 +484,12 @@ impl WorkBlockManager {
         match record.phase {
             WorkBlockPhase::Active => {
                 if elapsed_seconds(&record, now) >= record.planned_duration_seconds {
-                    self.finish(&record, WorkBlockPhase::Expired, planned_deadline(&record))
+                    self.finish(
+                        &record,
+                        WorkBlockPhase::Expired,
+                        planned_deadline(&record),
+                        now,
+                    )
                 } else {
                     // The outage is a boundary like a pause: the next report
                     // would otherwise close the open row at the restart
@@ -527,6 +575,7 @@ impl WorkBlockManager {
                 &record,
                 WorkBlockPhase::Completed,
                 planned_deadline(&record),
+                now,
             );
         }
         let effective_now = effective_now(&record, now).min(planned_deadline(&record));
@@ -575,6 +624,7 @@ impl WorkBlockManager {
                 &record,
                 WorkBlockPhase::Completed,
                 planned_deadline(&record),
+                now,
             );
         }
         // A paused block's work logically ended when the pause began, the
@@ -589,7 +639,7 @@ impl WorkBlockManager {
                 .unwrap_or_else(|| effective_now(&record, now)),
             _ => effective_now(&record, now),
         };
-        self.finish(&record, WorkBlockPhase::Abandoned, ended_at)
+        self.finish(&record, WorkBlockPhase::Abandoned, ended_at, now)
     }
 
     pub fn request_state(&self, now: DateTime<Utc>) -> Result<WorkBlockSnapshot, WorkBlockError> {
@@ -604,6 +654,7 @@ impl WorkBlockManager {
                 &record,
                 WorkBlockPhase::Completed,
                 planned_deadline(&record),
+                now,
             );
         }
         self.snapshot_for(record, now)
@@ -634,6 +685,7 @@ impl WorkBlockManager {
                             &record,
                             WorkBlockPhase::Expired,
                             planned_deadline(&record),
+                            now,
                         );
                     }
                 }
@@ -664,6 +716,7 @@ impl WorkBlockManager {
                     &record,
                     WorkBlockPhase::Completed,
                     planned_deadline(&record),
+                    occurred_at,
                 )
                 .map(|snapshot| {
                     Some(ObservationOutcome {
@@ -1380,17 +1433,22 @@ impl WorkBlockManager {
         Ok(record)
     }
 
+    /// `observed_at` is when the end was observed, which for a block finished
+    /// at its planned deadline can be long after `ended_at` (a Mac asleep
+    /// through the deadline). Only the question after a block reads it.
     fn finish(
         &self,
         record: &WorkBlockRecord,
         phase: WorkBlockPhase,
         ended_at: DateTime<Utc>,
+        observed_at: DateTime<Utc>,
     ) -> Result<WorkBlockSnapshot, WorkBlockError> {
         if let Some(result) = self.repo.result(&record.block_id)? {
             self.publish_deadline(None);
-            return self.snapshot_with_result(
+            return self.snapshot_observed(
                 self.repo.get(&record.block_id)?,
                 ended_at,
+                observed_at,
                 Some(result),
             );
         }
@@ -1430,7 +1488,12 @@ impl WorkBlockManager {
             },
         )?;
         self.publish_deadline(None);
-        self.snapshot_with_result(self.repo.get(&record.block_id)?, ended_at, Some(result))
+        self.snapshot_observed(
+            self.repo.get(&record.block_id)?,
+            ended_at,
+            observed_at,
+            Some(result),
+        )
     }
 
     /// Closes the open observation at a block boundary — a pause, a service
@@ -1482,6 +1545,20 @@ impl WorkBlockManager {
         now: DateTime<Utc>,
         result: Option<WorkBlockResult>,
     ) -> Result<WorkBlockSnapshot, WorkBlockError> {
+        self.snapshot_observed(record, now, now, result)
+    }
+
+    /// `now` is the instant the block's own figures are read at; `observed_at`
+    /// is when the snapshot is built, which only the question after a block
+    /// reads. They differ only for a block finished at a past deadline.
+    fn snapshot_observed(
+        &self,
+        record: WorkBlockRecord,
+        now: DateTime<Utc>,
+        observed_at: DateTime<Utc>,
+        result: Option<WorkBlockResult>,
+    ) -> Result<WorkBlockSnapshot, WorkBlockError> {
+        let rating = self.rating_surfaces(&record, result.as_ref(), observed_at);
         let elapsed = elapsed_seconds(&record, now);
         let remaining = record.planned_duration_seconds.saturating_sub(elapsed);
         let latest = self.repo.latest_observation(&record.block_id)?;
@@ -1522,7 +1599,40 @@ impl WorkBlockManager {
             status_line: status_line(record.phase, record.intensity, category.as_deref(), status),
             result,
             active_intervention: self.active_intervention(&record.block_id, now)?,
+            rating_prompt: rating.prompt.map(Box::new),
+            rating_opt_in: rating.opt_in.map(Box::new),
         })
+    }
+
+    /// The question after a block, for the snapshot of an ended block only.
+    /// The one place the manager consults its [`RatingPromptSource`]: a live
+    /// block's snapshot never does, and no decision path calls this.
+    fn rating_surfaces(
+        &self,
+        record: &WorkBlockRecord,
+        result: Option<&WorkBlockResult>,
+        observed_at: DateTime<Utc>,
+    ) -> RatingSurfaces {
+        let (Some(rating), Some(ended_at), Some(result)) = (&self.rating, record.ended_at, result)
+        else {
+            return RatingSurfaces::default();
+        };
+        if !matches!(
+            record.phase,
+            WorkBlockPhase::Completed | WorkBlockPhase::Abandoned | WorkBlockPhase::Expired
+        ) {
+            return RatingSurfaces::default();
+        }
+        rating.surfaces_for(
+            &EndedBlock {
+                block_id: record.block_id.clone(),
+                phase: record.phase,
+                started_at: record.started_at,
+                ended_at,
+                elapsed_seconds: result.elapsed_duration_seconds,
+            },
+            observed_at,
+        )
     }
 
     /// The live offer, if one is still awaiting a response. Answered offers are
@@ -2407,6 +2517,8 @@ fn idle_snapshot() -> WorkBlockSnapshot {
         status_line: "Choose one bounded block to begin.".into(),
         result: None,
         active_intervention: None,
+        rating_prompt: None,
+        rating_opt_in: None,
     }
 }
 

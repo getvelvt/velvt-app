@@ -1,5 +1,135 @@
 # IPC Protocol Changelog
 
+## Version 38 - 2026-10-17 (provisional number)
+
+**The number is provisional.** Vault A4 (#91's plan) also intends to take 38.
+Whichever of the two merges first keeps 38, and the other takes the next free
+number at merge, as attention plan decision 9 records. If A4 merges first,
+this entry becomes 39 and every pin of 38 in this change moves with it.
+
+The optional question after a block (workspace
+`plan/attention-labels-and-model.md` § 3.1, § 3.2 and § 3.4; founder
+decision 2026-10-17): "How much of this block was on what you meant to do?",
+asked in the app after a block ends, never during one and never as a
+notification, and only after the person turns it on. Rust decides when it is
+asked and writes every word; Swift renders and reports facts. Storage is
+migration 0048 (#95).
+
+- Added `rating_prompt` to `work_block_state` (Rust to Swift). Present only on
+  the snapshot of an ended block (completed, abandoned or expired), only while
+  the question about it can be answered, and only while the question has
+  stayed on since before that block started; omitted otherwise and on every
+  active or paused block, so a protocol 37
+  payload decodes unchanged. It carries the block id, `prompt_version` (1),
+  `presentation`, the question, five options (answer and label, most of the
+  block first), Not now, the footnote, the acknowledgement shown after an
+  answer ("Noted."), the link under the card after Not now, and `expires_at`.
+  `presentation` is `question` before an answer or a Not now (the question
+  sits above the result card, and the card's observation and numbers stay
+  hidden) and `link` after Not now (the card shows, with the link under it).
+- Added `rating_opt_in` to `work_block_state`: the one-time invitation to turn
+  the question on, with its body, Turn on and Not now. Present only after a
+  block the question would have covered, while the question has never been on
+  and the invitation has never been answered.
+- Added `respond_rating_opt_in {turn_on}` (Swift to Rust): which button of the
+  invitation was tapped, Turn on (true) or Not now (false), and nothing else.
+  Answered with `work_block_state`, which no longer carries the invitation
+  once it is answered. Rust decides what the tap records: Turn on turns the
+  question on under the same floor as the Settings toggle, and Not now is
+  recorded only while the invitation is still owed, so a Not now on an
+  invitation left on screen after the question was turned on changes nothing.
+- Added `work_block_rating_shown {block_id}` (Swift to Rust): the question was
+  drawn. Answered with nothing. The first sighting is kept.
+- Added `rate_work_block {block_id, answer, via_link}`: one of `all`, `most`,
+  `half`, `less_than_half` or `little`; `via_link` when given through the link
+  after the card was seen. Answered with `work_block_state`. Only an open
+  question takes an answer, and an answer is final.
+- Added `work_block_rating_not_now {block_id}`. Never an answer: the question
+  stays open through the link until it expires. Answered with
+  `work_block_state`.
+- Added `set_rating_prompt_enabled {enabled}` (the Settings toggle) and
+  `request_rating_prompt_settings {}`, both answered with the new
+  `rating_prompt_settings {available, enabled, title, subtitle}` (Rust to
+  Swift). The toggle never answers the invitation. Its reply does not resend
+  the snapshot, so Swift sends `request_work_block_state` after it while the
+  result view is open; a question or invitation the change withdrew then
+  leaves the screen. Turning the question off hides an open question for good:
+  turning it on again does not bring back a question about a block that
+  started before, because that block's result card may have been on screen in
+  between. The plan listed four client messages. The settings read is a fifth,
+  so the Settings pane renders Rust's state as it does for initiation
+  invitations, and the invitation's reply is a sixth, so Swift reports which
+  button was tapped instead of a command Rust would have to interpret.
+- The rules (`rust-service/src/self_rating/`, `RATING_PROMPT_VERSION` 1). A
+  block is asked about when it ran at least five minutes, the question was on
+  for the whole of it, and it started at or after the end of its Mac's drift
+  policy v6 primary period. The period starts at the start of the Mac's first
+  block after the upgrade cut, as the draft period note's item 1 and
+  `scripts/analyze_ratings.py` define it, and ends 1,209,600 seconds later.
+  Its row is written then, with `eligible_at` the block's end, so a question
+  never seen stays a recorded missing answer. It expires two hours after the
+  block ended or when the next block starts, whichever is first, and
+  `expired_at` records that instant. The service writes `expired_at` when it
+  next builds an ended block's snapshot or takes a report, so a row whose
+  deadline has passed can still read as open in a copy of the database taken
+  before then; the value, once written, is always the deadline.
+  `set_rating_prompt_enabled` true is refused, and `available` is false,
+  until the Mac's period is over, so the question can never be turned on
+  inside it. Nothing depends on an answer, a category or coverage.
+- No drift decision changes and `DRIFT_POLICY_VERSION` stays 6. The work-block
+  manager consults the question only while building the snapshot of an ended
+  block; `rust-service/tests/rating_isolation.rs` replays the same blocks with
+  and without the question and requires every other table byte-identical.
+- Rust's `ClientMessage` denies unknown variants, so a 37 helper would answer
+  the new messages `malformed_message`, and Swift decodes `rating_prompt_settings`
+  only from 38: hence the version. Swift decodes the new fields and messages,
+  and (attention plan PR-4, #97) draws them. The question and the invitation
+  sit directly above the result in the focus-session popover, and first on the
+  panel's Now tab, whose fragmentation card summarises the same block; the
+  panel leaves them to the popover while it is open. While the question is up
+  for the first time, both surfaces hold back the block's end-of-block result,
+  and the Now tab also holds back its last-hour early signal. Swift reports
+  `work_block_rating_shown` only while the window drawing the question is on
+  screen. The Settings toggle is in Collection Settings and is drawn only
+  while `rating_prompt_settings.available` is true.
+
+## Version 37 - 2026-10-15
+
+A sign-up or login the cloud refused for too many attempts was reported as
+`server_error` with whatever words the server sent: "Too many requests." from
+the server deployed through 1.0.14, which said neither what happened nor how
+long to wait (1.0.14 simulation, backend-e2e-07 and helper-backend-12).
+velvt-core #41 sends `Retry-After` in whole seconds on every rate-limit 429.
+
+- Added `rate_limited` to `auth_failure.code` (Rust to Swift). Rust sends it
+  for a `429` from `POST /v1/auth/signup` or `POST /v1/auth/login`, with a
+  message it writes from `Retry-After`, rounded up to the minute: "Too many
+  attempts. Try again in 15 minutes." ("in a minute" under one; in hours from
+  120 minutes), or "Too many attempts. Try again later." when the server sent
+  no usable `Retry-After`, as the server deployed before #41 does. The server's
+  own words are not used, so the app says the same thing to either server.
+  Rust sends it too when a sign-in's device registration (`POST /v1/devices`,
+  which #41 limits to 10 an hour per user) or the reissue of the stored
+  device is refused with `429`: "This Mac could not be registered yet. Too
+  many attempts. Try again in 60 minutes." (after a sign-up, "Your account was
+  created, but ... Log in to try again in 60 minutes."). Swift shows the
+  message as it is, as it does for every `auth_failure`.
+- Swift decodes `auth_failure.code` as a closed set, so a 36 app would fail
+  the frame and drop the connection: hence the version.
+- Not on the wire, in the same release: once per launch, after a restored
+  session is validated, Rust sends `PATCH /v1/devices/{device_id}` with
+  `{"client_version"}` (install-release-09; any answer, a 404 or 405 from a
+  server without the route included, ends it for the launch); an ingestion or
+  insight-poll 429's `Retry-After` reaches the upload queue and the poll, which
+  `AuthManager` used to drop; requests refused together as
+  `device_token_revoked` share one reissue. Swift never matches a synced
+  history row (a UTC day) against the local "today": the Patterns coaching
+  card shows "This week so far", not "Today so far", for a synced history
+  with one ready day. The UTC day labels, the history tooltip's percentage
+  (now `seconds / active_seconds`) and the Today metrics changed in
+  `HistoryListView` and `TodayWorkspaceView`, which only `#if DEBUG` previews
+  create; the app does not show them.
+
 ## Version 36 - 2026-10-15
 
 A decision made during a Focus the service could not see was stored exactly

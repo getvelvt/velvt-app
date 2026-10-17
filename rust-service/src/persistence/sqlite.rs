@@ -569,6 +569,12 @@ impl SqlitePersistence {
         Arc::new(SqliteCategoryPromptRepo(self.clone()))
     }
 
+    /// The question after a block (`work_block_self_rating` and
+    /// `rating_prompt_settings`, 0048). Has no caller in the shipped path yet.
+    pub fn self_rating_repo(&self) -> Arc<dyn super::SelfRatingRepo> {
+        Arc::new(super::self_rating::SqliteSelfRatingRepo(self.clone()))
+    }
+
     pub fn behavior_repo(&self) -> Arc<dyn BehaviorRepo> {
         Arc::new(SqliteBehaviorRepo(self.clone()))
     }
@@ -5305,12 +5311,15 @@ fn batch_event_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<BatchEvent>
     })
 }
 
-fn timestamp_from_row(row: &rusqlite::Row<'_>, index: usize) -> rusqlite::Result<DateTime<Utc>> {
+pub(super) fn timestamp_from_row(
+    row: &rusqlite::Row<'_>,
+    index: usize,
+) -> rusqlite::Result<DateTime<Utc>> {
     let timestamp = row.get(index)?;
     timestamp_to_datetime(timestamp, index)
 }
 
-fn optional_timestamp_from_row(
+pub(super) fn optional_timestamp_from_row(
     row: &rusqlite::Row<'_>,
     index: usize,
 ) -> rusqlite::Result<Option<DateTime<Utc>>> {

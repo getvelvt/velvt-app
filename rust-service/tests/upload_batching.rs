@@ -8,7 +8,10 @@ use std::{
     sync::{Arc, Mutex},
 };
 use velvt_service::abstraction::{AbstractionEngine, InMemoryMappingStore};
-use velvt_service::auth::{AuthError, HttpClient, HttpRequest, HttpResponse};
+use velvt_service::auth::{
+    AuthError, AuthManager, AuthState, AuthStateMachine, FakeTokenStore, HttpClient, HttpRequest,
+    HttpResponse, RedactedString, TokenPair, TokenStore,
+};
 use velvt_service::persistence::{
     BatchEvent, NewUploadBatch, PersistenceError, SqlitePersistence, UploadBatch, UploadBatchRepo,
     UploadBatchStatus, UploadQueueDiagnostics,
@@ -569,6 +572,28 @@ fn retry_after_and_exponential_fallback_are_host_scoped() {
     );
 }
 
+/// A `Retry-After` is honoured above the backoff's own cap (15 minutes here),
+/// up to an hour, velvt-core's longest window. One from a proxy or edge in
+/// front of the API asking for days, in seconds or as a far HTTP date, used
+/// to park the whole queue that long, saved across restarts.
+#[test]
+fn a_retry_after_beyond_an_hour_waits_an_hour() {
+    let mut backoff = HostBackoff::new(Duration::from_secs(30), Duration::from_secs(900), || 1.0);
+    let in_a_year = (Utc::now() + chrono::Duration::days(365)).to_rfc2822();
+
+    for retry_after in ["3600", "3601", "86400", "999999999", in_a_year.as_str()] {
+        assert_eq!(
+            backoff.next_delay("dev-api.getvelvt.com", Some(retry_after)),
+            Duration::from_secs(3_600),
+            "{retry_after}"
+        );
+    }
+    assert_eq!(
+        backoff.next_delay("dev-api.getvelvt.com", Some("3599")),
+        Duration::from_secs(3_599)
+    );
+}
+
 #[test]
 fn privacy_payload_is_not_an_untyped_json_value() {
     let payload = BatchPayload::new(
@@ -976,6 +1001,153 @@ async fn rate_limit_retry_after_is_persisted() {
             .len(),
         1
     );
+}
+
+/// What the coordinator saves for the host is the capped wait: the batch is
+/// due again within the hour whatever the 429 asked for.
+#[tokio::test]
+async fn a_saved_rate_limit_wait_is_never_more_than_an_hour() {
+    let database = SqlitePersistence::open_in_memory().unwrap();
+    let repository = database.upload_batch_repo();
+    repository
+        .insert_batch(&NewUploadBatch {
+            batch_id: "batch-rate-limited".into(),
+            owner_user_id: None,
+        })
+        .unwrap();
+    let coordinator = UploadCoordinator::new(
+        repository.clone(),
+        FakeBatchUploader::with_outcomes(vec![UploadOutcome::RateLimited {
+            retry_after: Some("999999999".into()),
+        }]),
+        FakePrivacyAlertSink::default(),
+    )
+    .with_host_and_backoff(
+        "dev-api.getvelvt.com",
+        HostBackoff::new(Duration::from_secs(30), Duration::from_secs(900), || 1.0),
+    );
+    let before = Utc::now();
+
+    coordinator
+        .upload_batch(BatchPayload::new(
+            "batch-rate-limited",
+            "1",
+            "0.1.0",
+            vec!["document:edit".into()],
+            "mvp-1",
+            vec![event("one", 10)],
+        ))
+        .await
+        .unwrap();
+
+    assert!(repository
+        .resumable_batches(before + chrono::Duration::seconds(3_500))
+        .unwrap()
+        .is_empty());
+    assert_eq!(
+        repository
+            .resumable_batches(Utc::now() + chrono::Duration::seconds(3_601))
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
+/// The service uploads through `AuthManager`, which answers a 429 as
+/// `AuthError::RateLimited`. The uploader mapped that to a transport failure,
+/// so an ingestion 429's `Retry-After` never reached the coordinator: the
+/// queue came back on its own backoff (30 seconds here) whatever the cloud
+/// asked. velvt-core sends `Retry-After` on every rate-limit 429 (#41).
+#[tokio::test]
+async fn an_ingestion_429_through_the_auth_manager_waits_its_retry_after() {
+    let database = SqlitePersistence::open_in_memory().unwrap();
+    let repository = database.upload_batch_repo();
+    repository
+        .insert_batch(&NewUploadBatch {
+            batch_id: "batch-rate-limited".into(),
+            owner_user_id: None,
+        })
+        .unwrap();
+    let store = Arc::new(FakeTokenStore::default());
+    store
+        .store_pair(TokenPair::new(
+            RedactedString::new("device-access"),
+            RedactedString::new("device-refresh"),
+            Utc::now() + chrono::Duration::hours(1),
+        ))
+        .unwrap();
+    let cloud = Arc::new(FakeHttp {
+        requests: Arc::default(),
+        responses: Arc::new(Mutex::new(
+            vec![HttpResponse {
+                status: 429,
+                error_code: Some("rate_limit_exceeded".into()),
+                tokens: None,
+                retry_after: Some("600".into()),
+                message: Some("Too many requests.".into()),
+                raw_body: None,
+                user_id: None,
+                device_id: None,
+            }]
+            .into(),
+        )),
+    });
+    let state = Arc::new(AuthStateMachine::new(AuthState::Authenticated {
+        device_id: "device-1".into(),
+    }));
+    let manager = Arc::new(AuthManager::new(
+        store,
+        Arc::clone(&cloud),
+        Arc::clone(&state),
+        chrono::Duration::minutes(5),
+    ));
+    let coordinator = UploadCoordinator::new(
+        repository.clone(),
+        HttpBatchUploader::new(manager),
+        FakePrivacyAlertSink::default(),
+    )
+    .with_host_and_backoff(
+        "dev-api.getvelvt.com",
+        HostBackoff::new(Duration::from_secs(30), Duration::from_secs(900), || 1.0),
+    );
+    let before = Utc::now();
+
+    coordinator
+        .upload_batch(BatchPayload::new(
+            "batch-rate-limited",
+            "1",
+            "0.1.0",
+            vec!["document:edit".into()],
+            "mvp-1",
+            vec![event("one", 10)],
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(cloud.requests.lock().unwrap().len(), 1);
+    assert!(
+        repository
+            .resumable_batches(before + chrono::Duration::seconds(500))
+            .unwrap()
+            .is_empty(),
+        "sent again before the 600 seconds the cloud asked for"
+    );
+    assert_eq!(
+        repository
+            .resumable_batches(before + chrono::Duration::seconds(700))
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(
+        repository
+            .queue_diagnostics()
+            .unwrap()
+            .last_error_code
+            .as_deref(),
+        Some("rate_limited")
+    );
+    assert!(matches!(state.current(), AuthState::Authenticated { .. }));
 }
 
 #[tokio::test]

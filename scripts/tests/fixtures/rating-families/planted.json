@@ -1,0 +1,52 @@
+{
+  "family": "PLANTED",
+  "held_out": false,
+  "author": "the analysis author (velvt-app PR-7)",
+  "description": "Ratings drawn from the H2 model itself: proportional odds on the four standardized features with known slopes (work_anchor_share 0.8, switch-aways per covered hour -0.3, log longest run share 0.3, offer delivered -0.2) and a person offset (SD 0.7). At the planned n (about 220 primary ratings from 15 people), H1 must pass in nearly every replicate, and the held-out AUROC must sit clearly above 0.5.",
+  "seed": 2101,
+  "replicates": 12,
+  "people": 15,
+  "blocks_per_person": {
+    "median": 32,
+    "log_sd": 0.5,
+    "min": 6,
+    "max": 90
+  },
+  "latent": {
+    "mean_logit": 0.9,
+    "person_sd": 0.6,
+    "block_sd": 1.1
+  },
+  "rating": {
+    "mode": "planted",
+    "thresholds": [
+      -2.6,
+      -1.5,
+      -0.6,
+      0.9
+    ],
+    "person_offset_sd": 0.7,
+    "slopes": {
+      "work_anchor_share": 0.8,
+      "switch_aways_per_covered_hour": -0.3,
+      "log_longest_run_share": 0.3,
+      "offer_delivered": -0.2
+    }
+  },
+  "answering": {
+    "mode": "random",
+    "answer_probability": 0.6,
+    "late_probability": 0.04
+  },
+  "check": {
+    "bootstrap_replicates": 499,
+    "lopo_replicates": 2
+  },
+  "expect": {
+    "h1_pass_share_at_least": 0.9,
+    "held_out_auroc_between": [
+      0.6,
+      0.9
+    ]
+  }
+}

@@ -1,0 +1,69 @@
+{
+  "config_version": 1,
+  "rating_prompt_version": 1,
+  "block_feature_version": 1,
+  "minimum_export_format": 7,
+  "analysed_policy_version": 6,
+  "answer_levels": ["little", "less_than_half", "half", "most", "all"],
+  "tiers": {
+    "high": ["all"],
+    "good": ["most"],
+    "low": ["half", "less_than_half", "little"]
+  },
+  "mostly_on": ["all", "most"],
+  "eligibility": {
+    "minimum_elapsed_seconds": 300,
+    "v6_primary_period_seconds": 1209600
+  },
+  "population": {
+    "excluded_coverage_classes": ["insufficient"],
+    "maximum_unlogged_share": 0.30,
+    "descriptive_only_purposes": ["healthy_tech_use", "work_life_boundary"]
+  },
+  "card_branches": {
+    "ordered_low_to_high": ["ended_elsewhere", "came_back", "stayed"],
+    "unordered": ["low_coverage"],
+    "kappa_weights": "linear"
+  },
+  "stop_rule": {
+    "primary_ratings": 220,
+    "testers": 12,
+    "weeks_after_first_enablement": 16,
+    "descriptive_minimum_ratings": 100,
+    "h2_minimum_ratings": 200
+  },
+  "bootstrap": {
+    "seed": 20261017,
+    "replicates": 2000,
+    "quantile_method": "linear interpolation between order statistics (type 7)"
+  },
+  "h1": {
+    "feature": "work_anchor_share",
+    "one_sided_lower_quantile": 0.05,
+    "two_sided_interval": [0.025, 0.975],
+    "within_person_minimum_ratings": 2
+  },
+  "h2": {
+    "features": [
+      "work_anchor_share",
+      "switch_aways_per_covered_hour",
+      "log_longest_run_share",
+      "offer_delivered"
+    ],
+    "baseline_features": ["work_anchor_share"],
+    "longest_run_share_floor": 0.01,
+    "ridge_lambda": 1.0,
+    "person_intercept_sd_grid": [0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 1.0, 1.2, 1.5, 2.0, 2.5, 3.0],
+    "pseudo_weight_per_level": 0.5,
+    "improvement_interval": [0.025, 0.975],
+    "calibration_slope_range": [0.8, 1.2],
+    "reliability_bins_max": 5,
+    "reliability_bin_minimum_rows": 10
+  },
+  "missingness": {
+    "anchor_share_quantile_groups": 3
+  },
+  "reactivity": {
+    "window_days": 14
+  }
+}

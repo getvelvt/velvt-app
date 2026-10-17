@@ -2,7 +2,9 @@
 # Every test for the measurement and evidence scripts, in one command.
 #
 # These cover `analyze_cohort.py`, `export_cohort_evidence.sh` and the outcome
-# labels both compute from one set of vectors,
+# labels both compute from one set of vectors, the self-rating analysis
+# (`analyze_ratings.py`) and the SYNTHETIC families it is checked against
+# (`generate_rating_families.py`, the slowest at about 20-40 seconds),
 # `prove_local.sh`, `prove_egress.sh`, `antecedent_probe.py`,
 # `generate_traces.py`, the pbxproj target-membership guard, the Swift lint
 # gate, the banned-copy guard, and the executable bit on every script. They need only python3, perl,
@@ -21,6 +23,8 @@ tests=(
   analyze_cohort_test.sh
   export_cohort_evidence_test.sh
   outcome_labels_test.sh
+  analyze_ratings_test.sh
+  rating_families_test.sh
   prove_local_test.sh
   prove_egress_test.sh
   antecedent_probe_test.sh

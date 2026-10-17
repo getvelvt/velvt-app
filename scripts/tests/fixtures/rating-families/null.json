@@ -1,0 +1,47 @@
+{
+  "family": "NULL",
+  "held_out": false,
+  "author": "the analysis author (velvt-app PR-7)",
+  "description": "Ratings independent of behaviour, with a person offset (SD 1.0) in the ratings and person-level differences in the features. At the planned n (about 220 primary ratings from 15 people), H1 may pass only at about its nominal one-sided 5% rate (measured while writing this: 7.5% over 200 replicates at 15 people, 3.5% at 24; the percentile bootstrap is mildly liberal with few people). The held-out AUROC must sit near 0.5 (measured: 0.487, SE 0.010, over 16 replicates, with the longest run's share floored at 0.01; leave-one-out discrimination runs slightly low when people differ, and leakage would push it up, not down). Scoring with each person's own fitted intercept, which is what a leaking fold would do, must give a clearly higher AUROC, so the 0.5 is not a check that cannot fail.",
+  "seed": 1101,
+  "replicates": 40,
+  "people": 15,
+  "blocks_per_person": {
+    "median": 32,
+    "log_sd": 0.5,
+    "min": 6,
+    "max": 90
+  },
+  "latent": {
+    "mean_logit": 0.9,
+    "person_sd": 0.6,
+    "block_sd": 1.1
+  },
+  "rating": {
+    "mode": "independent",
+    "thresholds": [
+      -2.6,
+      -1.5,
+      -0.6,
+      0.9
+    ],
+    "person_offset_sd": 1.0
+  },
+  "answering": {
+    "mode": "random",
+    "answer_probability": 0.6,
+    "late_probability": 0.04
+  },
+  "check": {
+    "bootstrap_replicates": 499,
+    "lopo_replicates": 4
+  },
+  "expect": {
+    "h1_pass_share_at_most": 0.12,
+    "held_out_auroc_between": [
+      0.43,
+      0.57
+    ],
+    "in_sample_auroc_with_own_intercepts_at_least": 0.65
+  }
+}

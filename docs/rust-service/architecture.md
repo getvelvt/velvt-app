@@ -105,6 +105,16 @@ expires after 24 hours, and is absent from every upload/cache DTO. Result
 finalization is atomic and unique per block, making deadline and restart paths
 idempotent.
 
+Migration 0048 adds `work_block_self_rating` and `rating_prompt_settings`, the
+storage for an optional question after a block ends. `SelfRatingRepo`
+(`persistence/self_rating.rs`) is the only code that writes them, and it writes
+no other table (`tests/field_inventory.rs`). It records facts the caller
+reports and keeps the record's own rules: a block is eligible once, an answer
+is final and never follows expiry, Not now is never an answer, and the first
+report of each event wins. Each row cascades with its block, so Clear Local
+Work Blocks removes every answer and keeps the on/off setting. It has no caller
+in the shipped path yet. `docs/field-inventory.md` lists every column.
+
 ## Meaningful-Work Aggregation
 
 `WorkBlockManager` receives safe category/status/confidence evidence after the

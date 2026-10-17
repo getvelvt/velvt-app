@@ -12,10 +12,9 @@
 //! - A table it marks `planned` must not exist yet.
 //! - A table it marks `migrated` must have exactly its columns, types and
 //!   nullability.
-//! - Every key, choice, flag and singleton column of a migrated table must
-//!   refuse a typed sentence. SQLite stores whatever it is given in a column
-//!   with no CHECK, so a closed class is a property of the schema rather than
-//!   of the code that writes it.
+//! - Every column of a migrated table must refuse a typed sentence. SQLite
+//!   stores whatever it is given in a column with no CHECK, so a closed class
+//!   is a property of the schema rather than of the code that writes it.
 //!
 //! **The reach of each destructive action.** Reset Corrections, Clear Local
 //! Work Blocks, Log Out and Delete Account are each sent through the real
@@ -64,6 +63,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration as StdDuration;
 
+use chrono::{DateTime, Utc};
 use rusqlite::{types::Value, Connection, ErrorCode};
 use uuid::Uuid;
 use velvt_service::abstraction::AbstractionEngine;
@@ -76,7 +76,7 @@ use velvt_service::delivery::{FakeCacheManager, PushAdapter, PushQueue};
 use velvt_service::focus::FocusManager;
 use velvt_service::initiation::{InitiationManager, InvitationGates, RuntimeInvitationGates};
 use velvt_service::ipc::{MessageRouter, R7Router};
-use velvt_service::persistence::SqlitePersistence;
+use velvt_service::persistence::{SelfRatingAnswer, SqlitePersistence};
 use velvt_service::receipts::ReceiptsManager;
 use velvt_service::upload::{
     BatchAssembler, EventIngestor, FakeBatchUploader, FakePrivacyAlertSink, SharedUploadBatcher,
@@ -270,6 +270,7 @@ const REACH: &[(&str, [Reach; 4])] = &[
     ("personal_semantic_prototype", [Removed, Kept, Kept, Kept]),
     ("personal_site_override", [Removed, Kept, Kept, Kept]),
     ("quiet_hours_offer_state", [Kept, Removed, Kept, Kept]),
+    ("rating_prompt_settings", [Kept; 4]),
     (
         "raw_event_buffer",
         [
@@ -320,6 +321,7 @@ const REACH: &[(&str, [Reach; 4])] = &[
     ("work_block_intervention", [Kept, Removed, Kept, Kept]),
     ("work_block_observation", [Kept, Removed, Kept, Kept]),
     ("work_block_result", [Kept, Removed, Kept, Kept]),
+    ("work_block_self_rating", [Kept, Removed, Kept, Kept]),
 ];
 
 /// A reach as `docs/field-inventory.md` writes it: which kind, and for a
@@ -695,10 +697,9 @@ fn document_section(heading: &str) -> String {
 
 /// The classes `docs/field-inventory.md` may use. There is no free-text class,
 /// and adding a class is a change to this list as well as to the document.
+/// Every class is closed: a column of any of them must refuse a typed
+/// sentence.
 const CLASSES: &[&str] = &["key", "choice", "flag", "singleton", "timestamp", "version"];
-
-/// The classes whose columns must refuse a typed sentence.
-const CLOSED_CLASSES: &[&str] = &["key", "choice", "flag", "singleton"];
 
 #[test]
 fn the_inventory_uses_closed_classes_and_no_free_text() {
@@ -757,7 +758,7 @@ fn the_inventory_uses_closed_classes_and_no_free_text() {
 }
 
 /// A `planned` table does not exist yet. A `migrated` one has exactly its
-/// documented columns, and every closed column refuses a typed sentence.
+/// documented columns, and every one of them refuses a typed sentence.
 #[test]
 fn every_covered_table_is_planned_or_matches_its_inventory() {
     let scratch = ScratchDatabase::new();
@@ -791,64 +792,19 @@ fn every_covered_table_is_planned_or_matches_its_inventory() {
     }
 }
 
-/// The checks above, run against the two planned tables before any migration
-/// creates them, so that they are known to work before they matter.
+/// The checks above refuse a careless copy of `work_block_self_rating`, so a
+/// pass against the real schema means something.
 ///
-/// The schema here is the planned one with `NOT NULL` on `block_id`, which the
-/// inventory requires. A copy with the usual mistakes must fail: a text
-/// primary key that allows NULL and references nothing, a choice with no
-/// CHECK, and a column the inventory does not list. Once both tables are
-/// migrated, the test above does this work against the real schema, and this
-/// test can go.
+/// The copy has the usual mistakes: a text primary key that allows NULL and
+/// references nothing, a choice with no CHECK, timestamp and version columns
+/// with no `typeof` CHECK, and a column the inventory does not list.
 #[test]
-fn the_column_checks_hold_a_table_to_its_inventory() {
+fn the_column_checks_refuse_a_careless_table() {
     let columns = inventory_columns();
-    let of = |table: &str| -> Vec<&InventoryColumn> {
-        columns
-            .iter()
-            .filter(|column| column.table == table)
-            .collect()
-    };
-
-    let planned = probe_connection(
-        "CREATE TABLE work_block (block_id TEXT PRIMARY KEY NOT NULL);
-         CREATE TABLE work_block_self_rating (
-             block_id TEXT PRIMARY KEY NOT NULL
-                 REFERENCES work_block(block_id) ON DELETE CASCADE,
-             prompt_version INTEGER NOT NULL,
-             eligible_at INTEGER NOT NULL,
-             shown_at INTEGER,
-             answer TEXT CHECK (answer IN ('all','most','half','less_than_half','little')),
-             answered_at INTEGER,
-             not_now_at INTEGER,
-             expired_at INTEGER,
-             card_seen_before_answer INTEGER NOT NULL DEFAULT 0
-                 CHECK (card_seen_before_answer IN (0, 1)),
-             CHECK ((answer IS NULL) = (answered_at IS NULL))
-         );
-         CREATE TABLE rating_prompt_settings (
-             id INTEGER PRIMARY KEY CHECK (id = 1),
-             enabled INTEGER NOT NULL DEFAULT 0 CHECK (enabled IN (0, 1)),
-             opted_in_at INTEGER,
-             opted_out_at INTEGER
-         );
-         INSERT INTO work_block VALUES ('block-1'), ('block-2');
-         INSERT INTO work_block_self_rating(block_id, prompt_version, eligible_at, shown_at,
-                                            answer, answered_at)
-             VALUES ('block-1', 1, 100, 110, 'most', 120);
-         INSERT INTO work_block_self_rating(block_id, prompt_version, eligible_at)
-             VALUES ('block-2', 1, 200);
-         INSERT INTO rating_prompt_settings(id, enabled, opted_in_at) VALUES (1, 1, 90);",
-    );
-    for table in ["work_block_self_rating", "rating_prompt_settings"] {
-        let problems = column_problems(&planned, table, &of(table));
-        assert!(
-            problems.is_empty(),
-            "the planned `{table}` does not pass the inventory checks:\n  {}",
-            problems.join("\n  ")
-        );
-    }
-
+    let documented: Vec<&InventoryColumn> = columns
+        .iter()
+        .filter(|column| column.table == "work_block_self_rating")
+        .collect();
     let careless = probe_connection(
         "CREATE TABLE work_block_self_rating (
              block_id TEXT PRIMARY KEY,
@@ -866,22 +822,26 @@ fn the_column_checks_hold_a_table_to_its_inventory() {
          INSERT INTO work_block_self_rating(block_id, prompt_version, eligible_at)
              VALUES ('block-1', 1, 100);",
     );
-    let problems = column_problems(
-        &careless,
-        "work_block_self_rating",
-        &of("work_block_self_rating"),
-    );
+    let problems = column_problems(&careless, "work_block_self_rating", &documented);
     for expected in [
         "`note` is not in the inventory",
         "`block_id` may be NULL",
         "`block_id` accepts a typed sentence",
         "`answer` accepts a typed sentence",
+        "`prompt_version` accepts a typed sentence",
+        "`shown_at` accepts a typed sentence",
     ] {
         assert!(
             problems.iter().any(|problem| problem.contains(expected)),
             "the checks missed \"{expected}\" on a careless table. They reported: {problems:?}"
         );
     }
+    assert!(
+        !problems
+            .iter()
+            .any(|problem| problem.contains("`card_seen_before_answer`")),
+        "the checks reported the one column the careless table gets right: {problems:?}"
+    );
 }
 
 /// Every way `table` differs from its documented columns.
@@ -946,9 +906,7 @@ fn column_problems(
         if !schema.iter().any(|column| column.name == entry.column) {
             continue;
         }
-        if CLOSED_CLASSES.contains(&entry.class.as_str())
-            && write(connection, table, &entry.column, TYPED_SENTENCE) == Write::Accepted
-        {
+        if write(connection, table, &entry.column, TYPED_SENTENCE) == Write::Accepted {
             problems.push(format!(
                 "`{}` accepts a typed sentence, and its class ({}) is closed",
                 entry.column, entry.class
@@ -1041,6 +999,86 @@ fn probe_connection(sql: &str) -> Connection {
         .unwrap();
     connection.execute_batch(sql).unwrap();
     connection
+}
+
+// ---------------------------------------------------------------------------
+// 5 — The store for the question after a block writes its own tables only
+// ---------------------------------------------------------------------------
+
+/// The tables `SelfRatingRepo` writes.
+const RATING_TABLES: [&str; 2] = ["rating_prompt_settings", "work_block_self_rating"];
+
+/// Every write `SelfRatingRepo` has, run against a database holding a row in
+/// every table, changes its own two tables and leaves every other table
+/// exactly as it was. An answer must never reach the drift record: the offers,
+/// the decision log, the demotion state, backoff, invitations or receipts.
+#[test]
+fn the_rating_store_writes_only_its_own_two_tables() {
+    const ANSWERED: &str = "7f3c2a10-5b6e-4c1d-9a8f-0e2d4c6b8a03";
+    const EXPIRED: &str = "7f3c2a10-5b6e-4c1d-9a8f-0e2d4c6b8a04";
+    let scratch = ScratchDatabase::new();
+    let persistence = SqlitePersistence::open(&scratch.path).unwrap();
+    let connection = seeded_connection(&scratch);
+    for block in [ANSWERED, EXPIRED] {
+        connection
+            .execute(
+                "INSERT INTO work_block(block_id, phase, intensity, planned_duration_seconds,
+                                        started_at, ended_at, total_paused_seconds,
+                                        recovered_after_restart, intention_expires_at)
+                 VALUES (?1, 'completed', 'medium', 1500, 1760003000, 1760004500, 0, 0,
+                         1760089400)",
+                [block],
+            )
+            .unwrap();
+    }
+    let ratings = persistence.self_rating_repo();
+    let at = |seconds: i64| DateTime::<Utc>::from_timestamp(1_760_004_500 + seconds, 0).unwrap();
+
+    let before = snapshot(&connection);
+    let writes = [
+        (
+            "record_eligible",
+            ratings.record_eligible(ANSWERED, 1, at(0)),
+        ),
+        ("mark_shown", ratings.mark_shown(ANSWERED, at(5))),
+        ("record_not_now", ratings.record_not_now(ANSWERED, at(9))),
+        (
+            "record_answer",
+            ratings.record_answer(ANSWERED, SelfRatingAnswer::LessThanHalf, true, at(60)),
+        ),
+        (
+            "record_eligible",
+            ratings.record_eligible(EXPIRED, 1, at(0)),
+        ),
+        ("expire", ratings.expire(EXPIRED, at(7_200))),
+        ("set_enabled(false)", ratings.set_enabled(false, at(7_300))),
+        ("set_enabled(true)", ratings.set_enabled(true, at(7_400))),
+    ];
+    for (write, result) in writes {
+        assert!(
+            result.unwrap(),
+            "{write} changed nothing, so nothing below would mean anything"
+        );
+    }
+    let after = snapshot(&connection);
+
+    let mut reached = Vec::new();
+    for (table, before_rows) in &before {
+        let changed = departure(Kept, before_rows, &after[table]).is_some();
+        if RATING_TABLES.contains(&table.as_str()) {
+            assert!(
+                changed,
+                "the rating store's writes left `{table}` unchanged"
+            );
+        } else if changed {
+            reached.push(table.clone());
+        }
+    }
+    assert!(
+        reached.is_empty(),
+        "the store for the question after a block changed {reached:?}. It writes \
+         {RATING_TABLES:?} and nothing else"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1272,6 +1310,11 @@ fn seeded_connection(scratch: &ScratchDatabase) -> Connection {
 /// - **Display names.** Both `abstraction_map` rows carry a `display_name`, and
 ///   two events carry the `local_display_label` a name was applied to.
 /// - **Blocks.** A second block is the recovery of the first.
+/// - **Answers to the question after a block.** The first block's question
+///   was answered after a Not now, and the second block's expired unanswered.
+///   The answered row is the first, because the inventory checks write each
+///   listed answer into the first row and the schema refuses an answer with no
+///   `answered_at`.
 ///
 /// `REACH` names the rows a partial reach touches by the ids given here.
 /// `embedding_salt`, `stable_key_salt` and `schema_migration` are written by
@@ -1362,6 +1405,13 @@ INSERT INTO work_block_observation(block_id, occurred_at, ended_at, category,
                                    classification_status, classification_confidence)
     VALUES ('{block}', 1760000000, 1760000600, 'FOCUS_WORK', 'classified', 'high');
 INSERT INTO work_block_result(block_id, payload) VALUES ('{block}', '{{}}');
+INSERT INTO work_block_self_rating(block_id, prompt_version, eligible_at, shown_at, answer,
+                                   answered_at, not_now_at, expired_at,
+                                   card_seen_before_answer)
+    VALUES ('{block}', 1, 1760001500, 1760001510, 'most', 1760001530, 1760001520, NULL, 1),
+           ('{recovered_block}', 1, 1760002400, NULL, NULL, NULL, NULL, 1760009600, 0);
+INSERT INTO rating_prompt_settings(id, enabled, opted_in_at, opted_out_at)
+    VALUES (1, 1, 1759990000, 1759980000);
 INSERT INTO work_block_intervention(block_id, offered_at, action_id, anchor_category,
                                     switch_count, window_seconds, outcome, outcome_at,
                                     salience, card_seen_at, delivery_channel,

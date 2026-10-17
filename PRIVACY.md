@@ -115,7 +115,9 @@ described. Migration 0040 starts later, with the first build after 1.0.13:
 all described below. Migration 0041 starts with the same build:
 `category_prompt_entry`, `category_prompt_card_entry` and
 `category_prompt_notification`, the record behind the needs-a-category card and
-reminder, also described below.
+reminder, also described below. Migration 0048 creates `work_block_self_rating`
+and `rating_prompt_settings`, for an optional question after a block. No build
+asks it yet, so nothing writes either table; both are described below.
 
 | Table | Contents | Default retention |
 |---|---|---|
@@ -134,17 +136,19 @@ reminder, also described below.
 | `work_block` | local state and optional free-form intention | intention: 24 hours; the safe state until Clear Local Work Blocks |
 | `work_block_observation` | safe category/status/confidence spans only | removed with its block, and by Clear Local Work Blocks |
 | `work_block_result` | safe local duration, transition, recovery, coverage, evidence, observation, and one next action | removed with its block, and by Clear Local Work Blocks |
+| `work_block_self_rating` | your answer to an optional question after a block ends, "How much of this block was on what you meant to do?" (migration 0048): the block it is about, the version of the question's wording, when the block became eligible for the question, when the question was first on screen, the answer — one of five fixed values, `all`, `most`, `half`, `less_than_half` or `little` — and when you gave it, when you tapped Not now, when the question expired unanswered, and whether the block's result card had been on screen before you answered. Not now, closing and silence are never stored as an answer. No text you typed, no app or site name, no window title, no URL, no intention text, and no category: every column refuses free text (`docs/field-inventory.md`). **Nothing writes it today** — see the note below the table | removed with its block, and by Clear Local Work Blocks |
 | `intervention_decision_log` | every moment the drift policy was evaluated and what it decided, including the times it decided to stay silent: policy version, broad anchor category, switch count, elapsed and remaining seconds, the verdict, the propensity (always 1.0: the policy is deterministic), whether Velvt knew a Focus mode was on at that moment (`focus_state`, migration 0044: on, off, or unknown when this copy of Velvt cannot read Focus status), and, once its horizon passes, whether the anchor category was seen again within 600 seconds. No label, no app identity, no window title, no URL, no intention text, no Focus mode name | removed with the block it belongs to, and by Clear Local Work Blocks, which also deletes any row logged without a block |
 | `out_of_block_run` | activity outside a declared work block, as broad category plus coarse time: start floored to a five-minute bucket, duration, local hour, and local date. Structurally cannot hold an application name, a label, a stable ID, a window title, or a URL — it is deliberately less informative than the 14-day `raw_event_buffer` it would be derived from. **Nothing writes it today** — see the note below the table | 90 days once written |
 | `block_antecedent` | the bounded window of activity immediately before a block started, recorded once and never updated: the *set* of broad categories present (not their order), a switch count, a dominant category and its dwell, weekday/weekend, and hour bucket. The window is capped at 30 minutes by the database schema, so it cannot be widened by a setting. **Nothing writes it today** — see the note below the table | removed with its block, and by Clear Local Work Blocks |
 | `antecedent_finding` | a discovered pattern about what precedes a block: a key from a closed compile-time registry (a time bin, a day type, a broad category, a coarse elapsed bucket), an effect size, and a q-value. The registry has no constructor that could mint an application name, a label, a window title, or a URL. **Nothing writes it today** — see the note below the table | no sweep, no cascade, and no in-app action removes a row — deleting `~/.velvt/` is the only removal. Empty today |
 
-Three of those tables are empty on every install, and their rows above say so
+Four of those tables are empty on every install, and their rows above say so
 rather than describing a store that exists only in the schema. `out_of_block_run`,
 `block_antecedent`, and `antecedent_finding` were created by migrations 0027,
 0028, and 0029; the retention sweep for `out_of_block_run` is registered and
-runs. No shipped code path constructs a row for any of the three. The only
-callers of their write methods are tests. They are listed here because the
+runs. `work_block_self_rating` is created by migration 0048, for a question no
+build asks yet. No shipped code path constructs a row for any of the four. The
+only callers of their write methods are tests. They are listed here because the
 tables exist on your disk and you will see them if you open the file, and
 because the retention figures above are what will apply if a writer lands —
 not a description of data being collected today.
@@ -344,15 +348,16 @@ generates the salt and re-keys every digest already on disk under it.
 
 The first table above is every store that holds something drawn from your Mac. It is
 not every table in the file. A database with every migration in this source
-tree applied holds 42 tables, plus SQLite's own `sqlite_sequence`. A Velvt
+tree applied holds 44 tables, plus SQLite's own `sqlite_sequence`. A Velvt
 1.0.11 database (migrations 0001–0036) holds 34: it has no `stable_key_salt`,
 `egress_ledger`, `egress_ledger_checkpoint`, `personal_site_override`,
-`local_site_name`, `category_prompt_entry`, `category_prompt_card_entry`, or
-`category_prompt_notification`, which migrations 0037, 0038, 0040 and 0041
-add. Of the 42,
-the 21 that are not in that table hold counters, settings, keys, feature state,
+`local_site_name`, `category_prompt_entry`, `category_prompt_card_entry`,
+`category_prompt_notification`, `work_block_self_rating`, or
+`rating_prompt_settings`, which migrations 0037, 0038, 0040, 0041 and 0048
+add. Of the 44,
+the 22 that are not in that table hold counters, settings, keys, feature state,
 and the record of what was sent. They are listed here for the same reason the
-three empty ones are — you will see them if you open the file.
+four empty ones are — you will see them if you open the file.
 
 | Table | What it holds | Retention |
 |---|---|---|
@@ -373,6 +378,7 @@ three empty ones are — you will see them if you open the file.
 | `initiation_invitation` | one row per soft-start invitation: when it was offered, its local date, the fixed action id, and its outcome. No app identity, title, or intention text | no sweep; removed by Clear Local Work Blocks |
 | `category_prompt_notification` | one row per local day on which Velvt handed the app a needs-a-category reminder to post (migration 0041): the local date (`local_date`, the primary key, which is what makes one reminder a day a property of the table), when (`posted_at`), how many entries it counted (`entry_count`), the policy version it was decided under, and when you next opened the list from the card or a reminder (`opened_at`), which is what the reminder's backoff reads. No key, name, hostname, or notification text | 30 days after `posted_at`; it survives Clear Local Work Blocks |
 | `initiation_settings` | the single invitations on/off switch | singleton; no sweep, and it survives Clear Local Work Blocks for the same reason |
+| `rating_prompt_settings` | the single on/off switch for the optional question after a block (migration 0048), and when it was last turned on and last turned off. No row means off, and off is the default. **Nothing writes it today**, because no build asks the question yet | singleton; no sweep. It survives Clear Local Work Blocks for the same reason as `initiation_settings`, and it stays on this Mac through Log Out and Delete Account |
 | `weekly_digest` | one row per completed local week: bounded counts — blocks declared and completed, recoveries, wrong interventions, invitations accepted, withheld — and when the digest was shown and closed. No categories, copy, or per-day breakdown is representable | 12 completed weeks, pruned when the next digest is generated; removed by Clear Local Work Blocks |
 | `explain_probe_week` | one tap counter per local week, for the explain-tap metric. Which nudge was explained is not representable | pruned on the same 12-week rule; removed by Clear Local Work Blocks |
 | `schema_migration` | one row per applied migration: its version, its file name, a checksum of the migration's SQL (since migration 0039, the first build after 1.0.11; computed from the public source file, so nothing in it comes from your Mac), and when it ran. Created by the migration runner rather than by a migration file | no sweep; one row is added per migration and none is removed |
@@ -397,14 +403,15 @@ this is the whole of what it reaches:
   applied to until they expire.
 - **Clear Local Work Blocks** deletes `work_block` and everything that cascades
   from it — `work_block_observation`, `work_block_result`,
-  `work_block_intervention`, `work_block_category_correction`, and
-  `block_antecedent` — and every `intervention_decision_log` row (a block's
-  rows by cascade, and any logged without a block), plus
-  `intervention_demotion_state`, `focus_state_evidence`, `focus_observer_state`,
-  `quiet_hours_offer_state`, `initiation_invitation`, `weekly_digest`, and
-  `explain_probe_week`. It does not reach the classification and correction
-  tables, the needs-a-category prompt's three tables, `out_of_block_run`, or
-  `antecedent_finding`.
+  `work_block_intervention`, `work_block_category_correction`,
+  `work_block_self_rating`, and `block_antecedent` — and every
+  `intervention_decision_log` row (a block's rows by cascade, and any logged
+  without a block), plus `intervention_demotion_state`, `focus_state_evidence`,
+  `focus_observer_state`, `quiet_hours_offer_state`, `initiation_invitation`,
+  `weekly_digest`, and `explain_probe_week`. It does not reach the
+  classification and correction tables, the needs-a-category prompt's three
+  tables, `out_of_block_run`, `antecedent_finding`, or the question's on/off
+  switch, `rating_prompt_settings`.
 - **Delete Account** is a request to the cloud. The Rust service first marks
   an open invitation expired (`initiation_invitation`), then relays the
   deletion to the account-deletion endpoint (`ClientMessage::DeleteAccount`,
@@ -543,6 +550,7 @@ fails until this list is updated in the same commit.
 | `personal_semantic_prototype` | `key_hash`, `category`, `embedding`, `dimensions`, `correction_count`, `updated_at` |
 | `personal_site_override` | `site_key_hash`, `category`, `activity_name`, `correction_count`, `created_at`, `updated_at` |
 | `quiet_hours_offer_state` | `id`, `rule_version`, `triggered_at`, `offered_at`, `response`, `responded_at` |
+| `rating_prompt_settings` | `id`, `enabled`, `opted_in_at`, `opted_out_at` |
 | `raw_event_buffer` | `id`, `event_id`, `stable_id`, `label`, `category`, `taxonomy_version`, `occurred_at`, `created_at`, `duration_seconds`, `local_display_label`, `classification_tier`, `classification_status`, `classification_confidence`, `classification_source`, `local_name_suggestion`, `upload_eligible`, `app_stable_id`, `app_scope_eligible`, `app_bundle_stable_id`, `declared_app_category`, `document_type_ids`, `site_stable_id`, `upload_owner_user_id` |
 | `schema_migration` | `id`, `version`, `name`, `created_at`, `checksum` |
 | `semantic_embedding_cache` | `key_hash`, `embedding`, `dimensions`, `updated_at` |
@@ -556,6 +564,7 @@ fails until this list is updated in the same commit.
 | `work_block_intervention` | `block_id`, `offered_at`, `action_id`, `anchor_category`, `switch_count`, `window_seconds`, `outcome`, `outcome_at`, `salience`, `card_seen_at`, `delivery_channel`, `delivery_reported_at` |
 | `work_block_observation` | `id`, `block_id`, `occurred_at`, `ended_at`, `category`, `classification_status`, `classification_confidence` |
 | `work_block_result` | `block_id`, `payload`, `created_at` |
+| `work_block_self_rating` | `block_id`, `prompt_version`, `eligible_at`, `shown_at`, `answer`, `answered_at`, `not_now_at`, `expired_at`, `card_seen_before_answer` |
 
 ### Corrections to earlier versions of this section
 

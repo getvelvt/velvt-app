@@ -18,8 +18,7 @@ schema and to the app:
 - **A `migrated` table must match this file exactly.**
   - It has exactly the columns listed here, with the listed type and
     nullability.
-  - Every `key`, `choice`, `flag` and `singleton` column refuses a typed
-    sentence.
+  - Every column refuses a typed sentence.
   - Every value listed for a `choice` column is accepted.
 - **The listed reach must be the observed reach.** For a `migrated` table, the
   reach listed here must be what the test observes. The test runs each action
@@ -44,22 +43,24 @@ A column that fits none of these classes is not added to a covered table.
 | `choice` | One value from a closed list, fixed by a CHECK constraint. |
 | `flag` | 0 or 1, fixed by a CHECK constraint. |
 | `singleton` | The fixed id 1 of a one-row table. |
-| `timestamp` | Unix seconds, UTC, written by the service. |
-| `version` | A version number compiled into the build, written by the service. |
+| `timestamp` | Unix seconds, UTC, written by the service. A `typeof` CHECK refuses anything but an integer, or NULL where the column may be NULL. |
+| `version` | A version number compiled into the build, written by the service. A CHECK refuses anything but an integer of 1 or more. |
 
-SQLite stores whatever it is given in a column that has no CHECK. So the test
-writes a sentence into every `key`, `choice`, `flag` and `singleton` column of
-a migrated table, and requires the database to refuse it. `timestamp` and
-`version` columns are integers that only the service writes.
+SQLite stores whatever it is given in a column that has no CHECK, and an
+INTEGER column that has none stores text. So every column of a covered table
+has a CHECK or a foreign key, and the test writes a sentence into every column
+of a migrated table and requires the database to refuse it.
 
 ## Tables
 
-Neither table is uploaded, and no upload path reads them.
+Migration 0048 creates both tables. Neither table is uploaded, and no upload
+path reads them. `SelfRatingRepo` (`rust-service/src/persistence/self_rating.rs`)
+writes them and no other table, which the same test checks.
 
 | Table | Status | Retention | Reset Corrections | Clear Local Work Blocks | Log Out | Delete Account |
 |---|---|---|---|---|---|---|
-| `work_block_self_rating` | planned | Removed with its block, and by Clear Local Work Blocks. No sweep of its own. | kept | removed | kept | kept |
-| `rating_prompt_settings` | planned | Singleton, with no sweep. It survives Clear Local Work Blocks because it is a setting the person chose, like `initiation_settings`. | kept | kept | kept | kept |
+| `work_block_self_rating` | migrated | Removed with its block, and by Clear Local Work Blocks. No sweep of its own. | kept | removed | kept | kept |
+| `rating_prompt_settings` | migrated | Singleton, with no sweep. It survives Clear Local Work Blocks because it is a setting the person chose, like `initiation_settings`. | kept | kept | kept | kept |
 
 **What each action does.** Each value is what the action does to the rows
 already in the table:

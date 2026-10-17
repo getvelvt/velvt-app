@@ -2,7 +2,7 @@
 
 > **Status:** built in `rust-service/src/vault/sync` (PR A3), and unreachable.
 > Nothing in the shipped path constructs a `SyncEngine`: turning sync on, the
-> Keychain messages and the device list are protocol 38 (PR A4). Until then no
+> Keychain messages and the device list are PR A4's protocol, the one after 38. Until then no
 > vault request is sent and no `vault_state` row is written. The design is
 > `docs/architecture/personal-vault-and-devices.md` (PR #87): §4.3, §5.5–§5.7,
 > §6.1, §10, §14 and §15.2 row A3. Byte formats are in

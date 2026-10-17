@@ -567,7 +567,7 @@ no export, and no request was added.
 
 *Changed after this audit, 2026-10-15 (migration 0046, no protocol change):*
 the engine for sync across your Macs (`rust-service/src/vault/sync`), with
-nothing that can turn it on: no IPC message reaches it until protocol 38, so
+nothing that can turn it on: no IPC message reaches it until vault A4's protocol (the one after 38), so
 no vault request is sent and no row is written. Migration 0046 adds four
 empty tables, `vault_state`, `vault_rule_link`, `sync_known_device` and
 `sync_notice`, each in `PRIVACY.md`'s inventories. None holds document

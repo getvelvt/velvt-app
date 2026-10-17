@@ -590,7 +590,7 @@ impl SyncEngine {
         self.deps.routing.reset();
     }
 
-    // --- The person's commands (protocol 38, A4) ------------------------------
+    // --- The person's commands (A4's protocol, after 38) ------------------------
 
     /// Settings › Your Macs › Keep my choices in sync (J1), J2's [Turn On],
     /// and [Set Up Sync] after a reset. `default_name` is the computer name

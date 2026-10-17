@@ -3,7 +3,7 @@
 //!
 //! Nothing in the shipped path calls this module. [`sync`] is the engine
 //! that fetches, verifies, merges and writes the copy, but nothing constructs
-//! it until protocol 38 (PR A4) gives the app a way to turn sync on, so no
+//! it until PR A4's protocol (the one after 38) gives the app a way to turn sync on, so no
 //! vault request is sent and no `vault_state` row is written. The rest is a
 //! library with tests, test vectors
 //! (`docs/architecture/vault-v1-test-vectors.json`) and fuzz targets

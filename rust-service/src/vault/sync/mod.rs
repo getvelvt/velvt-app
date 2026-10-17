@@ -3,7 +3,8 @@
 //!
 //! **Unreachable in this build.** Nothing in the shipped path constructs a
 //! [`SyncEngine`]. The messages that would turn sync on, hand Rust the key
-//! from the Keychain and show the device list are protocol 38 (PR A4), and
+//! from the Keychain and show the device list are PR A4's protocol (the one
+//! after 38), and
 //! until then no vault request is ever sent and no `vault_state` row is ever
 //! written.
 //!

@@ -6,8 +6,8 @@
 //! - on wake, when a key arrives in the Keychain, and when the app asks for
 //!   the device list, if the last pass is more than a minute old.
 //!
-//! Nothing spawns [`run`] in this build; the service wires it with protocol
-//! 38 (A4).
+//! Nothing spawns [`run`] in this build; the service wires it with A4's
+//! protocol, the one after 38.
 
 use std::sync::Arc;
 use std::time::Duration;

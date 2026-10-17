@@ -33,6 +33,7 @@ use crate::persistence::{
     UploadQueueDiagnostics, MAX_REPORTED_DWELL_SECONDS, TRIAGE_MAX_LOOKBACK_DAYS,
 };
 use crate::receipts::ReceiptsManager;
+use crate::self_rating::RatingPromptManager;
 use crate::upload::EventIngestor;
 use crate::work_block::{WorkBlockError, WorkBlockManager};
 
@@ -3031,6 +3032,7 @@ pub struct R7Router {
     initiation: Option<Arc<InitiationManager>>,
     receipts: Option<Arc<ReceiptsManager>>,
     category_prompt: Option<Arc<CategoryPromptManager>>,
+    rating_prompt: Option<Arc<RatingPromptManager>>,
     auth_state: Option<tokio::sync::watch::Receiver<AuthState>>,
     in_progress_dwells: Arc<InProgressDwells>,
     /// Set when the cloud failed to give `request_latest_history` a usable
@@ -3079,6 +3081,7 @@ impl R7Router {
             initiation: None,
             receipts: None,
             category_prompt: None,
+            rating_prompt: None,
             auth_state: None,
             in_progress_dwells: Arc::default(),
             cloud_history_outage: Arc::default(),
@@ -3163,6 +3166,16 @@ impl R7Router {
     /// reminder exists.
     pub fn with_category_prompt(mut self, category_prompt: Arc<CategoryPromptManager>) -> Self {
         self.category_prompt = Some(category_prompt);
+        self
+    }
+
+    /// Attaches the question after a block (protocol 38). Without it, its
+    /// reports are dropped and its settings messages answer nothing. The
+    /// snapshot carries the question only when the same manager is attached
+    /// to the `WorkBlockManager` as its `RatingPromptSource`, as `main.rs`
+    /// does.
+    pub fn with_rating_prompt(mut self, rating_prompt: Arc<RatingPromptManager>) -> Self {
+        self.rating_prompt = Some(rating_prompt);
         self
     }
 
@@ -3270,8 +3283,17 @@ impl MessageRouter for R7Router {
                                     message_type = "auth_session",
                                     "restored auth session validated"
                                 );
+                                // Once per launch; any answer, a missing
+                                // route included, is fine (install-release-09).
+                                // A task of its own, so the next session's
+                                // validation is not dropped while the report
+                                // waits; `AuthManager` sends at most one at a
+                                // time.
+                                tokio::spawn(async move {
+                                    session_validator.report_client_version().await;
+                                });
                             }
-                            Err(AuthError::Transport | AuthError::RateLimited) => {
+                            Err(AuthError::Transport | AuthError::RateLimited { .. }) => {
                                 tracing::warn!(
                                     message_type = "auth_session",
                                     "restored auth session validation was deferred"
@@ -4165,6 +4187,102 @@ impl MessageRouter for R7Router {
                         );
                         Ok(None)
                     }
+                }
+            }
+
+            // Answered with nothing, like a drift card sighting's delivery
+            // fact: a reply would re-render the question, and a re-render
+            // would report another sighting.
+            ClientMessage::WorkBlockRatingShown(report) => {
+                if let Some(rating) = &self.rating_prompt {
+                    if rating.record_shown(report.block_id, Utc::now()).is_err() {
+                        tracing::warn!(
+                            error_code = "rating_shown_record_failed",
+                            "the question's sighting was not recorded"
+                        );
+                    }
+                }
+                Ok(None)
+            }
+
+            ClientMessage::RateWorkBlock(request) => {
+                let Some(rating) = &self.rating_prompt else {
+                    return Ok(None);
+                };
+                if rating
+                    .record_answer(
+                        request.block_id,
+                        request.answer,
+                        request.via_link,
+                        Utc::now(),
+                    )
+                    .is_err()
+                {
+                    tracing::warn!(
+                        error_code = "rating_answer_record_failed",
+                        "the answer to the question was not recorded"
+                    );
+                }
+                self.work_block_response(|manager| manager.request_state(Utc::now()))
+            }
+
+            ClientMessage::WorkBlockRatingNotNow(request) => {
+                let Some(rating) = &self.rating_prompt else {
+                    return Ok(None);
+                };
+                if rating.record_not_now(request.block_id, Utc::now()).is_err() {
+                    tracing::warn!(
+                        error_code = "rating_not_now_record_failed",
+                        "the question's Not now was not recorded"
+                    );
+                }
+                self.work_block_response(|manager| manager.request_state(Utc::now()))
+            }
+
+            // The Settings toggle. Answered with the setting only: the
+            // Settings pane is what sent it, and Swift asks for the result
+            // view's snapshot again if that view is open.
+            ClientMessage::SetRatingPromptEnabled(request) => {
+                let Some(rating) = &self.rating_prompt else {
+                    return Ok(None);
+                };
+                match rating.set_enabled(request.enabled, Utc::now()) {
+                    Ok(settings) => Ok(Some(ServerMessage::RatingPromptSettings(settings))),
+                    Err(_) => {
+                        tracing::warn!(
+                            error_code = "rating_settings_write_failed",
+                            "the question's setting was not persisted"
+                        );
+                        Ok(None)
+                    }
+                }
+            }
+
+            // A tap on the one-time invitation. Answered with the snapshot,
+            // so the invitation leaves the result view in the same reply.
+            ClientMessage::RespondRatingOptIn(request) => {
+                let Some(rating) = &self.rating_prompt else {
+                    return Ok(None);
+                };
+                if rating
+                    .respond_to_invitation(request.turn_on, Utc::now())
+                    .is_err()
+                {
+                    tracing::warn!(
+                        error_code = "rating_opt_in_record_failed",
+                        "the reply to the question's invitation was not recorded"
+                    );
+                }
+                self.work_block_response(|manager| manager.request_state(Utc::now()))
+            }
+
+            ClientMessage::RequestRatingPromptSettings(_) => {
+                let Some(rating) = &self.rating_prompt else {
+                    return Ok(None);
+                };
+                match rating.settings(Utc::now()) {
+                    Ok(settings) => Ok(Some(ServerMessage::RatingPromptSettings(settings))),
+                    Err(_) => Ok(None),
                 }
             }
 

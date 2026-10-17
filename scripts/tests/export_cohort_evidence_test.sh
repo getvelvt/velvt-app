@@ -20,7 +20,8 @@
 # 3. The export must still run on the databases testers actually have. Every
 #    fixture is built by replaying the shipped migrations up to a real build's
 #    schema: protocol 30 (1.0.11), protocol 35 and 36 upgrades (what became of
-#    a notification, what was known about Focus), protocol 28 (1.0.9, no `card_seen_at`), a
+#    a notification, what was known about Focus), the schema with the question
+#    after a block (0048, export format 7), protocol 28 (1.0.9, no `card_seen_at`), a
 #    28 -> 30 upgrade (rows from before migration 0032 are "unknown", not
 #    "unseen"), protocol 25 (1.0.1, no decision log at all), 1.0.0 (no
 #    app-scoped corrections), protocol 31 (no site rules) and policy v5
@@ -257,6 +258,9 @@ stem="$pasted/velvt-cohort-$(date -u +%Y-%m-%d)"
 for suffix in "" -decisions -outcomes -blocks -invitations -explain -corrections -meta; do
   [[ -f "$stem$suffix.csv" ]] || fail "missing $(basename "$stem$suffix.csv")"
 done
+for suffix in -ratings -blockfeatures; do
+  [[ ! -e "$stem$suffix.csv" ]] || fail "$(basename "$stem$suffix.csv") written with no table"
+done
 
 # 1. Headers are exactly the column lists, in order, and every row agrees.
 check_header() {
@@ -385,8 +389,15 @@ assert meta["explain_probe"] == "present", meta
 assert meta["card_seen_recorded_since"] == str(1800000000 - 86400), meta
 assert meta["invitations_enabled"] == "0", meta
 assert meta["exported_at"].isdigit(), meta
-assert meta["export_format"] == "6", meta
+assert meta["export_format"] == "7", meta
 assert meta["delivery_channel_recorded_since"] == "", meta
+# Format 7 on a database without the question after a block (no 0048): no
+# ratings files, said so, and the period start the app's floor would use,
+# its first block (every decision here is under policy 6).
+assert meta["ratings"] == "absent", meta
+assert (meta["rating_prompt_version"], meta["rating_prompt_enabled_at"],
+        meta["rating_expiries_filled"], meta["block_feature_version"]) == ("", "", "", ""), meta
+assert meta["v6_period_start"] == str(1800000000), meta
 assert meta["focus_state_recorded_since"] == "", meta
 assert meta["corrections"] == "present", meta
 assert meta["outcomes"] == "present", meta
@@ -466,8 +477,12 @@ assert r["blocks_per_participant"]["per_participant"]["p30"]["blocks_declared"] 
 inv = r["invitation_acceptance"]
 assert (inv["accepted"], inv["terminal"], inv["unresolved_offered_excluded"]) == (1, 2, 1), inv
 assert inv["participants_with_invitations_off"] == ["p30"], inv
+# The one explain week (Monday 2027-01-11) holds the period's start, the
+# first block on Friday 2027-01-15, so it straddles and counts in no figure
+# (v6 primary-period amendment, item 2); it is counted instead.
 ex = r["explain_tap_rate"]
-assert (ex["taps"], ex["delivered_interventions"]) == (2, 3), ex
+assert (ex["taps"], ex["delivered_interventions"], ex["participant_weeks"]) == (0, 0, []), ex
+assert r["v6_primary_period"]["rows_by_placement"]["explain_weeks"] == {"straddles": 1}, r["v6_primary_period"]
 corr = r["corrections_per_participant"]["per_participant"]["p30"]
 assert (corr["app_scoped_corrections"], corr["applications_with_an_app_rule"],
         corr["window_rules"]) == (1, 1, 1), corr
@@ -581,7 +596,7 @@ assert rows == {"d-01": "", "d-02": "", "d-03": "on", "d-04": "unknown",
                 "d-05": "unknown", "d-06": "", "d-07": "off"}, rows
 meta = {r["key"]: r["value"] for r in csv.DictReader(open(sys.argv[2]))}
 assert meta["focus_state_recorded_since"] == str(T0 + 25000), meta
-assert meta["export_format"] == "6", meta
+assert meta["export_format"] == "7", meta
 PY
 grep -qF "whether Velvt knew a Focus mode was on at that moment" "$work/p36/log.txt" \
   || fail "the participant summary does not say the decisions file carries the Focus state"
@@ -604,7 +619,253 @@ assert withheld == {"on": {"delivery_suppressed_dnd": 1},
 PY
 
 # ===========================================================================
-# B. Protocol 28 (1.0.9): no card_seen_at column. The export must still work
+# A4. Export format 7: the question after a block (migration 0048). Its own
+#     timeline, because a question's late expiry is filled in only when its
+#     deadline is before the moment of the export, and T0 is in 2027:
+#       r-00  a policy-5 block, before the upgrade cut
+#       r-0   the first policy-6 block: the v6 period starts here
+#       r-7   after day 14, never rated: no summary
+#       r-1   rated "most", before its card was seen
+#       r-2   never shown, its expiry stored
+#       r-3   shown, unanswered, past its deadline (the next block's start)
+#             with no expiry stored yet: the export fills it in
+#       r-4   Not now, then answered through the link (card seen first)
+#       r-5   never shown, past its two-hour deadline, nothing stored
+#       r-6   in 2030: unanswered, its deadline after the export, left open
+#     The question was first turned on after day 14, turned off and on again
+#     since; the export reports the first time.
+# ===========================================================================
+TP=1760000000              # 2025-10-09 08:53:20 UTC, a Thursday
+TF=1900000000              # 2030-03-17, after any run of this test
+S_SENTENCE='ZZSENTINELRESULTSENTENCEZZ'
+db48="$work/p48.sqlite3"
+migrate_fixture_db "$db48" "$FIXTURE_MIGRATIONS_RATING" "$INSTALLED_AT"
+result_json() { # COVERAGE RATIO ELAPSED SWITCHES RETURNS LONGEST EVIDENCE
+  printf '{"planned_duration_seconds":1800,"elapsed_duration_seconds":%s,"longest_uninterrupted_seconds":%s,"switch_away_count":%s,"recovery_count":%s,"confidence":"medium","coverage":"%s","coverage_ratio":%s,"safe_evidence_category":%s,"observation":"%s","next_action":{"action_id":"protect_next_10","label":"Protect the next 10 minutes.","duration_seconds":600}}' \
+    "$3" "$6" "$4" "$5" "$1" "$2" "$7" "$S_SENTENCE"
+}
+sqlite3 "$db48" <<SQL
+INSERT INTO work_block (block_id, phase, intention, purpose, intensity,
+    planned_duration_seconds, started_at, total_paused_seconds, ended_at,
+    intention_expires_at, origin)
+VALUES
+ ('r-00','completed','$S_INTENTION old','deep_work','medium',1800,$((TP - 1400000)),0,$((TP - 1398200)),$((TP - 1300000)),'manual'),
+ ('r-0','completed',NULL,'deep_work','medium',1800,$((TP - 1300000)),0,$((TP - 1298200)),$((TP - 1200000)),'manual'),
+ ('r-7','completed',NULL,'study','light',1800,$((TP - 50000)),0,$((TP - 48200)),$((TP + 36400)),'manual'),
+ ('r-1','completed','$S_INTENTION rated','deep_work','medium',1800,$TP,0,$((TP + 1800)),$((TP + 88200)),'manual'),
+ ('r-2','completed',NULL,'study','light',1800,$((TP + 10000)),0,$((TP + 11800)),$((TP + 98200)),'invitation'),
+ ('r-3','completed',NULL,'deep_work','intense',1800,$((TP + 20000)),0,$((TP + 21800)),$((TP + 108200)),'manual'),
+ ('r-4','completed',NULL,NULL,'medium',1800,$((TP + 23000)),0,$((TP + 24800)),$((TP + 111200)),'invitation'),
+ ('r-5','abandoned',NULL,'creative_practice','medium',1800,$((TP + 30000)),0,$((TP + 31800)),$((TP + 118200)),'manual'),
+ ('r-6','completed',NULL,'deep_work','medium',1800,$TF,0,$((TF + 1800)),$((TF + 88200)),'manual');
+INSERT INTO work_block_observation (block_id, occurred_at, ended_at, category,
+    classification_status, classification_confidence)
+VALUES
+ ('r-1', $TP, $((TP + 900)), 'FOCUS_WORK', 'classified', 'high'),
+ ('r-1', $((TP + 900)), $((TP + 1200)), 'SOCIAL_FEED', 'classified', 'high'),
+ ('r-1', $((TP + 1200)), $((TP + 1700)), 'FOCUS_WORK', 'classified', 'medium'),
+ ('r-7', $((TP - 50000)), $((TP - 48300)), '$S_CATEGORY', 'classified', 'high');
+INSERT INTO work_block_result (block_id, payload)
+VALUES
+ ('r-1', '$(result_json good 0.9444444444444444 1800 1 1 900 '"FOCUS_WORK"')'),
+ ('r-2', '$(result_json insufficient 0.0 1800 0 0 0 null)'),
+ ('r-3', '$(result_json good 1.0 1800 0 0 1800 '"REFERENCE"')'),
+ ('r-4', '$(result_json partial 0.5 1800 2 1 600 '"FOCUS_WORK"')'),
+ ('r-5', '$(result_json good 0.8 1800 1 0 1000 '"FOCUS_WORK"')'),
+ ('r-6', '$(result_json good 1.0 1800 0 0 1800 '"FOCUS_WORK"')'),
+ ('r-7', '$(result_json good 1.0 1800 0 0 1700 '"FOCUS_WORK"')');
+INSERT INTO intervention_decision_log (decision_id, occurred_at, block_id,
+    policy_version, anchor_category, switch_count, elapsed_seconds,
+    remaining_seconds, gate_verdict, propensity)
+VALUES
+ ('q-00', $((TP - 1399000)), 'r-00', 5, 'FOCUS_WORK', 3, 1000, 800, 'offered', 1.0),
+ ('q-0',  $((TP - 1299000)), 'r-0',  6, 'FOCUS_WORK', 3, 1000, 800, 'offered', 1.0),
+ ('q-1a', $((TP + 60)),      'r-1',  6, NULL,         0,   60, 1740, 'abstained_warmup', 1.0),
+ ('q-1b', $((TP + 950)),     'r-1',  6, 'FOCUS_WORK', 1,  950, 850, 'abstained_min_switches', 1.0),
+ ('q-4',  $((TP + 23600)),   'r-4',  6, 'FOCUS_WORK', 3,  600, 1200, 'offered', 1.0),
+ ('q-5a', $((TP + 30060)),   'r-5',  6, NULL,         0,   60, 1740, 'abstained_warmup', 1.0),
+ ('q-5b', $((TP + 30900)),   'r-5',  6, 'FOCUS_WORK', 1,  900, 900, 'abstained_min_switches', 1.0);
+INSERT INTO work_block_intervention (block_id, offered_at, action_id,
+    anchor_category, switch_count, window_seconds, outcome, outcome_at, salience)
+VALUES
+ ('r-00', $((TP - 1399000)), 'protect_next_10', 'FOCUS_WORK', 3, 600, 'returned', $((TP - 1398900)), 'normal'),
+ ('r-0',  $((TP - 1299000)), 'protect_next_10', 'FOCUS_WORK', 3, 600, 'no_response', $((TP - 1298200)), 'normal'),
+ ('r-1',  $((TP + 1000)), 'protect_next_10', 'FOCUS_WORK', 3, 600, 'returned', $((TP + 1200)), 'normal'),
+ ('r-4',  $((TP + 23600)), 'protect_next_10', 'FOCUS_WORK', 3, 600, 'withheld_demotion', $((TP + 23600)), 'normal');
+INSERT INTO work_block_self_rating (block_id, prompt_version, eligible_at,
+    shown_at, answer, answered_at, not_now_at, expired_at, card_seen_before_answer)
+VALUES
+ ('r-1', 1, $((TP + 1800)),  $((TP + 1805)),  'most', $((TP + 1810)),  NULL, NULL, 0),
+ ('r-2', 1, $((TP + 11800)), NULL,            NULL,   NULL,            NULL, $((TP + 19000)), 0),
+ ('r-3', 1, $((TP + 21800)), $((TP + 21805)), NULL,   NULL,            NULL, NULL, 0),
+ ('r-4', 1, $((TP + 24800)), $((TP + 24805)), 'half', $((TP + 24900)), $((TP + 24810)), NULL, 1),
+ ('r-5', 1, $((TP + 31800)), NULL,            NULL,   NULL,            NULL, NULL, 0),
+ ('r-6', 1, $((TF + 1800)),  $((TF + 1805)),  NULL,   NULL,            NULL, NULL, 0);
+INSERT INTO rating_prompt_settings (id, enabled, first_opted_in_at, opted_in_at, opted_out_at)
+VALUES (1, 1, $((TP - 100)), $((TP + 5000)), $((TP + 4000)));
+SQL
+mkdir -p "$work/p48"
+echo "stale" > "$work/p48/export-ratings.csv"
+run_export "$db48" "$work/p48/export.csv" "$work/p48/log.txt"
+RATINGS_HEADER='block_id,prompt_version,eligible_at,shown_at,answered_at,not_now_at,expired_at,card_seen_before_answer,answer'
+BLOCKFEATURES_HEADER='block_id,block_feature_version,policy_version,card_branch,card_anchor_is_work,elapsed_seconds,covered_seconds,coverage_class,work_anchor_share,switch_aways_per_covered_hour,longest_run_share,recovery_ratio,feed_share,unlogged_share,offer_delivered,offer_outcome,purpose,intensity,planned_minutes,origin,hour_bucket,weekend'
+check_header "$work/p48/export-ratings.csv" "$RATINGS_HEADER"
+check_header "$work/p48/export-blockfeatures.csv" "$BLOCKFEATURES_HEADER"
+check_header "$work/p48/export-blocks.csv" "$BLOCKS_HEADER"
+check_header "$work/p48/export-decisions.csv" "$DECISIONS_HEADER"
+python3 - "$work/p48/export-ratings.csv" "$work/p48/export-blockfeatures.csv" "$work/p48/export-meta.csv" <<'PY' \
+  || fail "export format 7 rows are wrong"
+import csv, sys
+TP, TF = 1760000000, 1900000000
+ratings = list(csv.DictReader(open(sys.argv[1])))
+# Every rating row, answered or not, in eligibility order.
+assert [r["block_id"] for r in ratings] == ["r-1", "r-2", "r-3", "r-4", "r-5", "r-6"], ratings
+by = {r["block_id"]: r for r in ratings}
+cells = lambda r: tuple(r[k] for k in ("shown_at", "answered_at", "not_now_at", "expired_at",
+                                       "card_seen_before_answer", "answer"))
+assert cells(by["r-1"]) == (str(TP + 1805), str(TP + 1810), "", "", "0", "most"), by["r-1"]
+assert cells(by["r-2"]) == ("", "", "", str(TP + 19000), "0", ""), by["r-2"]
+# Unanswered and past its deadline, nothing stored: the next block (by
+# creation) started before two hours were up, so that is the deadline.
+assert cells(by["r-3"]) == (str(TP + 21805), "", "", str(TP + 23000), "0", ""), by["r-3"]
+assert cells(by["r-4"]) == (str(TP + 24805), str(TP + 24900), str(TP + 24810), "", "1", "half"), by["r-4"]
+# The next block by creation (r-6) starts in 2030: two hours after its end.
+assert cells(by["r-5"]) == ("", "", "", str(TP + 31800 + 7200), "0", ""), by["r-5"]
+# Its deadline is after this export: still open, nothing invented.
+assert cells(by["r-6"]) == (str(TF + 1805), "", "", "", "0", ""), by["r-6"]
+assert {r["prompt_version"] for r in ratings} == {"1"}
+
+features = list(csv.DictReader(open(sys.argv[2])))
+# Only the rated blocks, in start order: not r-00, r-0 or r-7.
+assert [f["block_id"] for f in features] == ["r-1", "r-2", "r-3", "r-4", "r-5", "r-6"], features
+f = {row["block_id"]: row for row in features}
+assert dict(f["r-1"]) == {
+    "block_id": "r-1", "block_feature_version": "1", "policy_version": "6",
+    "card_branch": "came_back", "card_anchor_is_work": "1",
+    "elapsed_seconds": "1800", "covered_seconds": "1700",
+    "coverage_class": "good", "work_anchor_share": "0.823529",
+    "switch_aways_per_covered_hour": "2.117647", "longest_run_share": "0.5",
+    "recovery_ratio": "1.0", "feed_share": "0.176471", "unlogged_share": "0.0",
+    "offer_delivered": "1", "offer_outcome": "returned", "purpose": "deep_work",
+    "intensity": "medium", "planned_minutes": "30", "origin": "manual",
+    "hour_bucket": "morning", "weekend": "0"}, dict(f["r-1"])
+assert dict(f["r-2"]) == {
+    "block_id": "r-2", "block_feature_version": "1", "policy_version": "",
+    "card_branch": "low_coverage", "card_anchor_is_work": "",
+    "elapsed_seconds": "1800", "covered_seconds": "0",
+    "coverage_class": "insufficient", "work_anchor_share": "0.0",
+    "switch_aways_per_covered_hour": "0.0", "longest_run_share": "0.0",
+    "recovery_ratio": "0.0", "feed_share": "0.0", "unlogged_share": "0.0",
+    "offer_delivered": "0", "offer_outcome": "", "purpose": "study",
+    "intensity": "light", "planned_minutes": "30", "origin": "invitation",
+    "hour_bucket": "morning", "weekend": "0"}, dict(f["r-2"])
+assert (f["r-3"]["card_branch"], f["r-4"]["card_branch"], f["r-5"]["card_branch"]) == (
+    "stayed", "came_back", "ended_elsewhere"), features
+# r-3's card is about REFERENCE, a work category.
+assert {f[b]["card_anchor_is_work"] for b in ("r-3", "r-4", "r-5", "r-6")} == {"1"}, features
+# A withheld offer was not delivered; a block with no purpose writes none; a
+# block with no decision row (r-2, above) has no policy version.
+assert (f["r-4"]["offer_delivered"], f["r-4"]["offer_outcome"], f["r-4"]["purpose"]) == ("0", "", ""), f["r-4"]
+assert (f["r-5"]["policy_version"], f["r-6"]["policy_version"]) == ("6", ""), features
+assert (f["r-6"]["hour_bucket"], f["r-6"]["weekend"]) == ("afternoon", "1"), f["r-6"]  # Sunday 17:46
+
+meta = {r["key"]: r["value"] for r in csv.DictReader(open(sys.argv[3]))}
+assert meta["export_format"] == "7", meta
+assert meta["ratings"] == "present", meta
+assert meta["rating_prompt_version"] == "1", meta
+# The first time it was turned on, not the latest.
+assert meta["rating_prompt_enabled_at"] == str(TP - 100), meta
+assert meta["rating_expiries_filled"] == "2", meta
+assert meta["block_feature_version"] == "1", meta
+# The start of the first block after the last policy-5 decision.
+assert meta["v6_period_start"] == str(TP - 1300000), meta
+PY
+assert_no_sentinel "$work/p48"/*.csv
+grep -qF -- "$S_SENTENCE" "$work/p48"/*.csv && fail "the stored result's sentence was exported"
+[[ "$(sqlite3 "$db48" "SELECT COUNT(*) FROM work_block_result WHERE payload LIKE '%$S_SENTENCE%';")" == "7" ]] \
+  || fail "seeding failed, the sentence check would be vacuous"
+# The stored expiries are untouched: the export fills in a copy only.
+[[ "$(sqlite3 "$db48" "SELECT COUNT(*) FROM work_block_self_rating WHERE expired_at IS NULL;")" == "5" ]] \
+  || fail "the export wrote to the database"
+folded48="$(tr '\n' ' ' < "$work/p48/log.txt" | tr -s ' ')"
+for phrase in "record(s) of the question after a block to:" \
+              "Wrote a summary of each of those 6 block(s) to:" \
+              "How much of this block was on what you meant to do?" \
+              "whether or not you answered" \
+              "It is worked out on this Mac, and it names no category, app, site or window." \
+              "whether the activity its end-of-session summary was about counts as work" \
+              "it shows roughly which time zone your Mac is set to." \
+              "when you first turned on the question after a session, if you did."; do
+  grep -qF -- "$phrase" <<<"$folded48" || fail "format 7 disclosure omits: $phrase"
+done
+
+# The analyser reads a format 7 folder as one export: its ratings and
+# block-features files are companions, never a second per-offer file. The
+# question was first turned on after day 14, so the rated blocks are the
+# "question on" stratum and nothing is a deviation.
+mkdir -p "$work/cohort48/p48"
+cp "$work/p48"/export*.csv "$work/cohort48/p48/"
+python3 "$analyze" --json "$work/cohort48/p48" > "$work/analysis48.json"
+python3 - "$work/analysis48.json" <<'PY' || fail "exporter/analyser round trip (format 7)"
+import json, sys
+TP = 1760000000
+r = json.load(open(sys.argv[1]))
+assert r["participants"]["analysed"] == 1, r["participants"]
+assert r["data_quality"]["malformed"] == [], r["data_quality"]
+period = r["v6_primary_period"]
+entry = period["per_participant"]["p48"]
+assert (entry["start"], entry["stated_start"], entry["upgrade_cut"]) == (
+    TP - 1300000, TP - 1300000, TP - 1399000), entry
+assert entry["rating_prompt_enabled_at"] == TP - 100, entry
+placed = period["rows_by_placement"]
+assert placed["blocks"] == {"in_period": 1, "after_day_14": 1, "question_on": 6}, placed
+assert placed["decisions"] == {"in_period": 1, "question_on": 5}, placed
+assert period["protocol_deviations"]["total"] == 0, period
+# In the period: r-0's offer only. r-00 is policy 5, never pooled.
+assert r["power"]["observed_eligible_decision_points"] == 1, r["power"]
+assert r["decisions_recorded"]["delivered"] == 1, r["decisions_recorded"]
+on = r["strata"]["question_on"]
+assert on["blocks_declared"] == {"p48": 6}, on
+assert on["eligible_decision_points"] == 1 and on["decisions_recorded"]["withheld"] == 1, on
+assert r["strata"]["after_day_14"]["blocks_declared"] == {"p48": 1}, r["strata"]["after_day_14"]
+PY
+
+# The kit sends the exporter as a script, so a graduate on a build with the
+# question can run an older copy of it. Its meta has the schema version and
+# no `ratings` row, and it writes neither format 7 file. That export cannot
+# say when the question was turned on: everything after day 14 counts in no
+# figure and in neither stratum, and the deviations are not measurable.
+mkdir -p "$work/cohort48-old/p48-old"
+for f in "$work/p48"/export*.csv; do
+  case "$f" in *-ratings.csv|*-blockfeatures.csv|*-meta.csv) continue ;; esac
+  cp "$f" "$work/cohort48-old/p48-old/"
+done
+python3 - "$work/p48/export-meta.csv" "$work/cohort48-old/p48-old/export-meta.csv" <<'PY'
+import csv, sys
+FORMAT_7 = {"ratings", "rating_prompt_version", "rating_prompt_enabled_at",
+            "rating_expiries_filled", "block_feature_version", "v6_period_start"}
+rows = [r for r in csv.reader(open(sys.argv[1])) if r[0] not in FORMAT_7]
+rows = [["export_format", "6"] if r[0] == "export_format" else r for r in rows]
+csv.writer(open(sys.argv[2], "w", newline="")).writerows(rows)
+PY
+python3 "$analyze" --json "$work/cohort48-old/p48-old" > "$work/analysis48-old.json"
+python3 - "$work/analysis48-old.json" <<'PY' || fail "an older exporter's copy of a database with the question"
+import json, sys
+r = json.load(open(sys.argv[1]))
+assert r["participants"]["analysed"] == 1, r["participants"]
+period = r["v6_primary_period"]
+assert period["per_participant"]["p48-old"]["question_boundary_unknown"] is True, period
+placed = period["rows_by_placement"]
+assert placed["blocks"] == {"in_period": 1, "question_unknown": 7}, placed
+assert placed["decisions"] == {"in_period": 1, "question_unknown": 5}, placed
+assert r["strata"]["after_day_14"]["blocks_declared"] == {}, r["strata"]
+assert r["strata"]["question_on"]["blocks_declared"] == {}, r["strata"]
+deviations = period["protocol_deviations"]
+assert (deviations["total"], deviations["not_measurable_for"]) == (0, ["p48-old"]), deviations
+assert any("older than format 7" in m for m in r["data_quality"]["malformed"]), r["data_quality"]
+# In-period figures stand: the app refuses to turn the question on before day 14.
+assert r["power"]["observed_eligible_decision_points"] == 1, r["power"]
+PY
 #    and say "unknown", never fail and never say "unseen".
 # ===========================================================================
 db28="$work/p28.sqlite3"
@@ -705,7 +966,11 @@ mkdir -p "$work/p25"
 echo "stale" > "$work/p25/export-decisions.csv"
 echo "stale" > "$work/p25/export-outcomes.csv"
 echo "stale" > "$work/p25/export-explain.csv"
+echo "stale" > "$work/p25/export-ratings.csv"
+echo "stale" > "$work/p25/export-blockfeatures.csv"
 run_export "$db25" "$work/p25/export.csv" "$work/stdout25.txt"
+[[ ! -e "$work/p25/export-ratings.csv" ]] || fail "a stale ratings file survived"
+[[ ! -e "$work/p25/export-blockfeatures.csv" ]] || fail "a stale block-features file survived"
 [[ ! -e "$work/p25/export-decisions.csv" ]] || fail "a stale decisions file survived"
 [[ ! -e "$work/p25/export-outcomes.csv" ]] || fail "a stale outcomes file survived"
 [[ ! -e "$work/p25/export-explain.csv" ]] || fail "a stale explain file survived"

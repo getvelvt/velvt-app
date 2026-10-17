@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$comment": "Direction: Swift to Rust. Protocol 38. Local IPC only. One of the five answers to the question after a block, \"How much of this block was on what you meant to do?\". `via_link` is true when the answer was given through the link under the result card, after Not now, so the card had been seen; the service records an answer after a Not now as given with the card seen whatever this says. The service stamps the time. Only an open question takes an answer: one that was answered, expired, or belongs to a question that is off is refused and changes nothing. No free text, no score and no sixth value. Answered with work_block_state, which no longer carries the question.",
+  "type": "object",
+  "required": ["type", "payload"],
+  "properties": {
+    "type": { "const": "rate_work_block" },
+    "payload": {
+      "type": "object",
+      "required": ["block_id", "answer", "via_link"],
+      "properties": {
+        "block_id": { "type": "string", "format": "uuid" },
+        "answer": { "enum": ["all", "most", "half", "less_than_half", "little"] },
+        "via_link": { "type": "boolean" }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

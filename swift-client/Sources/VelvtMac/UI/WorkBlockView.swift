@@ -35,9 +35,16 @@ public struct WorkBlockView: View {
     @State private var purpose: WorkBlockPurpose?
     @State private var intensity: WorkBlockIntensity = .medium
     @State private var plansAnotherSession = false
+    private let surfaceIsOnScreen: Bool
 
-    public init(coordinator: WorkBlockCoordinator) {
+    /// - Parameter surfaceIsOnScreen: whether the window drawing this view is
+    ///   on screen, from the window server. The question after a block reports
+    ///   a sighting only while it is. An open popover is not necessarily a
+    ///   visible one: left open while the screen is locked or the display is
+    ///   asleep, it would otherwise report a question nobody could see.
+    public init(coordinator: WorkBlockCoordinator, surfaceIsOnScreen: Bool = false) {
         self.coordinator = coordinator
+        self.surfaceIsOnScreen = surfaceIsOnScreen
     }
 
     /// Snapshot-render seam. The duration controls are `@State`, so the
@@ -50,6 +57,7 @@ public struct WorkBlockView: View {
         customMinutes: Int
     ) {
         self.coordinator = coordinator
+        self.surfaceIsOnScreen = false
         _durationChoice = State(initialValue: durationChoice)
         _customMinutes = State(initialValue: customMinutes)
     }
@@ -390,79 +398,21 @@ public struct WorkBlockView: View {
             Text(snapshot.statusLine)
                 .velvtBody(12)
 
+            // The question after a block, above the result it asks about. It
+            // reports a sighting only while the popover's window is on screen.
+            QuestionAfterABlockView(
+                coordinator: coordinator, parts: [.ask, .acknowledgement],
+                surfaceIsOnScreen: surfaceIsOnScreen)
+
             if let result = snapshot.result {
-                Text(result.observation)
-                    .font(VelvtType.body(13))
-                    .lineSpacing(VelvtType.bodySpacing(13))
-                    .foregroundStyle(VelvtInk.primaryOnInk)
-                    .fixedSize(horizontal: false, vertical: true)
-
-                Text(evidenceLabel(result))
-                    .font(VelvtType.caption())
-                    .foregroundStyle(VelvtInk.secondaryOnInk)
-                    .fixedSize(horizontal: false, vertical: true)
-
-                // The one calm DND reconciliation line, authored in Rust: what
-                // completed and what was held. Positive framing; never a late nudge.
-                if let reconciliation = result.reconciliation {
-                    Label(reconciliation, systemImage: "moon")
-                        .font(VelvtType.caption())
-                        .foregroundStyle(VelvtInk.secondaryOnInk)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .accessibilityLabel("Do Not Disturb summary. \(reconciliation)")
+                // Held back while the question is up for the first time: an answer
+                // given after the result was read is a different measurement, and
+                // Rust files it as one only through Not now or the link.
+                if !coordinator.withholdsBlockSummary {
+                    resultSummary(result)
+                    QuestionAfterABlockView(
+                        coordinator: coordinator, parts: [.link], surfaceIsOnScreen: surfaceIsOnScreen)
                 }
-
-                // The qualifier goes above the numbers it qualifies, in the same
-                // words the local dashboard's work-block card already uses, from the
-                // same two fields. This card shows elapsed and the dashboard card
-                // shows elapsed, and only one of them said what the other numbers
-                // beside it were measured over: `25m / 25m` next to a 17-second
-                // longest stretch is unreadable without it. `nil` when coverage is
-                // good, so this is not a second notice bolted onto the existing one
-                // — it is the existing one, on the other surface that shows elapsed.
-                if let notice = coverageNotice(result) {
-                    Text(notice)
-                        .font(VelvtType.caption(10.5))
-                        .foregroundStyle(VelvtInk.tertiaryOnInk)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .accessibilityLabel(notice)
-                }
-
-                // Recoveries lead, and are counted rather than rated. A number that
-                // can only go up cannot be lost, which is what a streak gets wrong:
-                // coming back four times is the achievement, not going unbroken.
-                // Switch-aways stay visible as the denominator, never as a score.
-                HStack(spacing: VelvtMetrics.spaceMD) {
-                    VStack(alignment: .leading, spacing: VelvtMetrics.spaceXS) {
-                        Text("Recoveries")
-                            .font(VelvtType.label(9.5))
-                            .tracking(VelvtType.labelTracking)
-                            .textCase(.uppercase)
-                            .foregroundStyle(VelvtInk.tertiaryOnInk)
-                        Text("\(result.recoveryCount)")
-                            .font(VelvtType.measurement(13).monospacedDigit())
-                            .foregroundStyle(VelvtPalette.signal)
-                    }
-                    resultMetric(
-                        "Longest stretch", DurationText.compact(result.longestUninterruptedSeconds))
-                    resultMetric(BlockTimeText.label, BlockTimeText.compact(result))
-                    VStack(alignment: .leading, spacing: VelvtMetrics.spaceXS) {
-                        Text("Switch-aways")
-                            .font(VelvtType.label(9.5))
-                            .tracking(VelvtType.labelTracking)
-                            .textCase(.uppercase)
-                            .foregroundStyle(VelvtInk.tertiaryOnInk)
-                        Text("\(result.switchAwayCount)")
-                            .font(VelvtType.body(12).monospacedDigit())
-                            .foregroundStyle(VelvtInk.tertiaryOnInk)
-                    }
-                }
-                .accessibilityElement(children: .combine)
-                .accessibilityLabel(Self.resultMetricsAccessibilityLabel(result))
-
-                Text(coverageLabel(result))
-                    .font(VelvtType.caption(10.5))
-                    .foregroundStyle(VelvtInk.tertiaryOnInk)
 
                 // The gentle re-entry action, offered by Rust only on an invited
                 // block that ended early. Label comes from the registry verbatim;
@@ -484,6 +434,8 @@ public struct WorkBlockView: View {
                 // `clearWorkBlockData` removes it. Every button used to live inside
                 // `if let result`, so this state rendered a title, a status line, and
                 // no way out of itself at all.
+                QuestionAfterABlockView(
+                    coordinator: coordinator, parts: [.link], surfaceIsOnScreen: surfaceIsOnScreen)
                 planAnotherButton(prominent: true)
             }
 
@@ -494,6 +446,83 @@ public struct WorkBlockView: View {
             }
         }
         .padding(VelvtMetrics.cardPadding)
+    }
+
+    /// The block's result: its observation, evidence and numbers.
+    @ViewBuilder
+    private func resultSummary(_ result: WorkBlockResult) -> some View {
+        Text(result.observation)
+            .font(VelvtType.body(13))
+            .lineSpacing(VelvtType.bodySpacing(13))
+            .foregroundStyle(VelvtInk.primaryOnInk)
+            .fixedSize(horizontal: false, vertical: true)
+
+        Text(evidenceLabel(result))
+            .font(VelvtType.caption())
+            .foregroundStyle(VelvtInk.secondaryOnInk)
+            .fixedSize(horizontal: false, vertical: true)
+
+        // The one calm DND reconciliation line, authored in Rust: what
+        // completed and what was held. Positive framing; never a late nudge.
+        if let reconciliation = result.reconciliation {
+            Label(reconciliation, systemImage: "moon")
+                .font(VelvtType.caption())
+                .foregroundStyle(VelvtInk.secondaryOnInk)
+                .fixedSize(horizontal: false, vertical: true)
+                .accessibilityLabel("Do Not Disturb summary. \(reconciliation)")
+        }
+
+        // The qualifier goes above the numbers it qualifies, in the same
+        // words the local dashboard's work-block card already uses, from the
+        // same two fields. This card shows elapsed and the dashboard card
+        // shows elapsed, and only one of them said what the other numbers
+        // beside it were measured over: `25m / 25m` next to a 17-second
+        // longest stretch is unreadable without it. `nil` when coverage is
+        // good, so this is not a second notice bolted onto the existing one
+        // — it is the existing one, on the other surface that shows elapsed.
+        if let notice = coverageNotice(result) {
+            Text(notice)
+                .font(VelvtType.caption(10.5))
+                .foregroundStyle(VelvtInk.tertiaryOnInk)
+                .fixedSize(horizontal: false, vertical: true)
+                .accessibilityLabel(notice)
+        }
+
+        // Recoveries lead, and are counted rather than rated. A number that
+        // can only go up cannot be lost, which is what a streak gets wrong:
+        // coming back four times is the achievement, not going unbroken.
+        // Switch-aways stay visible as the denominator, never as a score.
+        HStack(spacing: VelvtMetrics.spaceMD) {
+            VStack(alignment: .leading, spacing: VelvtMetrics.spaceXS) {
+                Text("Recoveries")
+                    .font(VelvtType.label(9.5))
+                    .tracking(VelvtType.labelTracking)
+                    .textCase(.uppercase)
+                    .foregroundStyle(VelvtInk.tertiaryOnInk)
+                Text("\(result.recoveryCount)")
+                    .font(VelvtType.measurement(13).monospacedDigit())
+                    .foregroundStyle(VelvtPalette.signal)
+            }
+            resultMetric(
+                "Longest stretch", DurationText.compact(result.longestUninterruptedSeconds))
+            resultMetric(BlockTimeText.label, BlockTimeText.compact(result))
+            VStack(alignment: .leading, spacing: VelvtMetrics.spaceXS) {
+                Text("Switch-aways")
+                    .font(VelvtType.label(9.5))
+                    .tracking(VelvtType.labelTracking)
+                    .textCase(.uppercase)
+                    .foregroundStyle(VelvtInk.tertiaryOnInk)
+                Text("\(result.switchAwayCount)")
+                    .font(VelvtType.body(12).monospacedDigit())
+                    .foregroundStyle(VelvtInk.tertiaryOnInk)
+            }
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(Self.resultMetricsAccessibilityLabel(result))
+
+        Text(coverageLabel(result))
+            .font(VelvtType.caption(10.5))
+            .foregroundStyle(VelvtInk.tertiaryOnInk)
     }
 
     @ViewBuilder

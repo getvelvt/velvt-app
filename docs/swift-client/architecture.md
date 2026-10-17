@@ -129,6 +129,13 @@ claims. `WorkBlockView` renders the exact Rust snapshot, using SwiftUI's timer
 rendering for the displayed clock without adding a state polling loop. Offline
 send failures leave the displayed Rust-owned state unchanged.
 
+Since protocol 38 the coordinator also relays the optional question after a
+block: the sighting, an answer, Not now, the reply to its one-time invitation
+and the Settings switch. It asks for the block's state once, at the question's
+deadline, a one-shot timer like the block-deadline dwell flush, not polling.
+`docs/architecture/work-block-loop.md` ("The Question After a Block") describes
+where the question is drawn and what each tap reports.
+
 ## Permissions
 
 `PermissionManager` monitors Accessibility and notification permission state. `PermissionCollectionCoordinator` starts and stops collection based on Accessibility status. Missing or revoked permission stops collection and surfaces recovery UI.

@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$comment": "Direction: Swift to Rust. Protocol 38. Local IPC only. A tap on the one-time invitation to turn the question after a block on (work_block_state.rating_opt_in): turn_on is true for Turn on and false for Not now. A fact about which button was tapped, and nothing else. The service decides what it records: Turn on turns the question on, refused until this Mac's first 14 days of blocks are over, as the Settings toggle is; Not now is recorded only while the invitation is still owed, so it is never shown again, and a Not now on an invitation left on screen after the question was turned on changes nothing. Closing the popover is not Not now and sends nothing. Answered with work_block_state, which no longer carries the invitation once it is answered.",
+  "type": "object",
+  "required": ["type", "payload"],
+  "properties": {
+    "type": { "const": "respond_rating_opt_in" },
+    "payload": {
+      "type": "object",
+      "required": ["turn_on"],
+      "properties": {
+        "turn_on": { "type": "boolean" }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

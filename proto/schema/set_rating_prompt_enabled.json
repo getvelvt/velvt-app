@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$comment": "Direction: Swift to Rust. Protocol 38. The Settings toggle for the question after a block. The service refuses true until this Mac's first 14 days of blocks are over (rating_prompt_settings.available). It never answers the one-time invitation, which has its own message (respond_rating_opt_in): false while the question was never on changes nothing. Answered with rating_prompt_settings only; Swift sends request_work_block_state afterwards if the result view is open, so a question or an invitation the change withdrew leaves the screen. Turning it off hides an open question for good: turning it on again does not bring back a question about a block that started before, and the row expires on its own schedule.",
+  "type": "object",
+  "required": ["type", "payload"],
+  "properties": {
+    "type": { "const": "set_rating_prompt_enabled" },
+    "payload": {
+      "type": "object",
+      "required": ["enabled"],
+      "properties": {
+        "enabled": { "type": "boolean" }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

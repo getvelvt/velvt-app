@@ -64,6 +64,21 @@ public enum ClientMessage: Codable, Equatable, Sendable {
     case requestWeeklyDigest(RequestWeeklyDigest)
     case acknowledgeWeeklyDigest(AcknowledgeWeeklyDigest)
     case requestInterventionExplanation(RequestInterventionExplanation)
+    /// The question after a block was drawn on screen (proto v38). A fact,
+    /// never an answer: Rust stamps it and keeps the first.
+    case workBlockRatingShown(WorkBlockIdentifier)
+    /// One of the five answers to the question after a block (proto v38).
+    case rateWorkBlock(RateWorkBlock)
+    /// Not now on the question after a block (proto v38). Never an answer.
+    case workBlockRatingNotNow(WorkBlockIdentifier)
+    /// The Settings toggle for the question after a block (proto v38). It
+    /// never answers the one-time invitation.
+    case setRatingPromptEnabled(SetRatingPromptEnabled)
+    /// A tap on the one-time invitation to turn the question on (proto v38):
+    /// which button, and nothing else. Rust decides what it records.
+    case respondRatingOptIn(RespondRatingOptIn)
+    /// Reads the question after a block's setting (proto v38).
+    case requestRatingPromptSettings
 
     public init(from decoder: Decoder) throws {
         let envelope = try decoder.container(keyedBy: EnvelopeCodingKeys.self)
@@ -162,6 +177,18 @@ public enum ClientMessage: Codable, Equatable, Sendable {
             self = .acknowledgeWeeklyDigest(try AcknowledgeWeeklyDigest(from: payload))
         case "request_intervention_explanation":
             self = .requestInterventionExplanation(try RequestInterventionExplanation(from: payload))
+        case "work_block_rating_shown":
+            self = .workBlockRatingShown(try WorkBlockIdentifier(from: payload))
+        case "rate_work_block":
+            self = .rateWorkBlock(try RateWorkBlock(from: payload))
+        case "work_block_rating_not_now":
+            self = .workBlockRatingNotNow(try WorkBlockIdentifier(from: payload))
+        case "set_rating_prompt_enabled":
+            self = .setRatingPromptEnabled(try SetRatingPromptEnabled(from: payload))
+        case "request_rating_prompt_settings":
+            self = .requestRatingPromptSettings
+        case "respond_rating_opt_in":
+            self = .respondRatingOptIn(try RespondRatingOptIn(from: payload))
         default:
             throw DecodingError.dataCorrupted(
                 .init(codingPath: decoder.codingPath, debugDescription: "Unknown client message type"))
@@ -309,6 +336,24 @@ public enum ClientMessage: Codable, Equatable, Sendable {
         case .requestInterventionExplanation(let value):
             try envelope.encode("request_intervention_explanation", forKey: .type)
             try value.encode(to: envelope.superEncoder(forKey: .payload))
+        case .workBlockRatingShown(let value):
+            try envelope.encode("work_block_rating_shown", forKey: .type)
+            try value.encode(to: envelope.superEncoder(forKey: .payload))
+        case .rateWorkBlock(let value):
+            try envelope.encode("rate_work_block", forKey: .type)
+            try value.encode(to: envelope.superEncoder(forKey: .payload))
+        case .workBlockRatingNotNow(let value):
+            try envelope.encode("work_block_rating_not_now", forKey: .type)
+            try value.encode(to: envelope.superEncoder(forKey: .payload))
+        case .setRatingPromptEnabled(let value):
+            try envelope.encode("set_rating_prompt_enabled", forKey: .type)
+            try value.encode(to: envelope.superEncoder(forKey: .payload))
+        case .requestRatingPromptSettings:
+            try envelope.encode("request_rating_prompt_settings", forKey: .type)
+            try EmptyPayload().encode(to: envelope.superEncoder(forKey: .payload))
+        case .respondRatingOptIn(let value):
+            try envelope.encode("respond_rating_opt_in", forKey: .type)
+            try value.encode(to: envelope.superEncoder(forKey: .payload))
         }
     }
 }
@@ -358,6 +403,9 @@ public enum ServerMessage: Codable, Equatable, Sendable {
     case weeklyDigest(WeeklyDigest)
     /// Exactly one grounded sentence explaining a shown intervention.
     case interventionExplanation(InterventionExplanation)
+    /// The question after a block's setting and the Settings pane's words
+    /// (proto v38).
+    case ratingPromptSettings(RatingPromptSettings)
     /// Extension point for a future server discriminator. Unknown payload fields
     /// are deliberately discarded so handlers do not require exhaustive updates.
     case unknown(type: String)
@@ -429,6 +477,8 @@ public enum ServerMessage: Codable, Equatable, Sendable {
             self = .weeklyDigest(try WeeklyDigest(from: payload))
         case "intervention_explanation":
             self = .interventionExplanation(try InterventionExplanation(from: payload))
+        case "rating_prompt_settings":
+            self = .ratingPromptSettings(try RatingPromptSettings(from: payload))
         default:
             self = .unknown(type: type)
         }
@@ -530,6 +580,9 @@ public enum ServerMessage: Codable, Equatable, Sendable {
         case .interventionExplanation(let value):
             try envelope.encode("intervention_explanation", forKey: .type)
             try value.encode(to: envelope.superEncoder(forKey: .payload))
+        case .ratingPromptSettings(let value):
+            try envelope.encode("rating_prompt_settings", forKey: .type)
+            try value.encode(to: envelope.superEncoder(forKey: .payload))
         case .unknown(let type):
             try envelope.encode(type, forKey: .type)
             try EmptyPayload().encode(to: envelope.superEncoder(forKey: .payload))
@@ -571,6 +624,7 @@ public enum ServerMessage: Codable, Equatable, Sendable {
         case .demotionState: "demotion_state"
         case .weeklyDigest: "weekly_digest"
         case .interventionExplanation: "intervention_explanation"
+        case .ratingPromptSettings: "rating_prompt_settings"
         case .unknown: "unknown"
         }
     }
@@ -2992,6 +3046,13 @@ public struct WorkBlockSnapshot: Codable, Equatable, Sendable {
     public let result: WorkBlockResult?
     /// Present only while a drift offer is unanswered.
     public let activeIntervention: ActiveIntervention?
+    /// The question after a block (proto v38). Rust sets it only on the
+    /// snapshot of an ended block, while the question about it can be
+    /// answered; `nil` on every live block and on any pre-v38 payload.
+    public var ratingPrompt: RatingPrompt? = nil
+    /// The one-time invitation to turn the question on (proto v38). `nil`
+    /// unless Rust offers it.
+    public var ratingOptIn: RatingOptIn? = nil
 
     private enum CodingKeys: String, CodingKey {
         case phase, intention, purpose, intensity, confidence, result
@@ -3009,6 +3070,169 @@ public struct WorkBlockSnapshot: Codable, Equatable, Sendable {
         case classificationStatus = "classification_status"
         case statusLine = "status_line"
         case activeIntervention = "active_intervention"
+        case ratingPrompt = "rating_prompt"
+        case ratingOptIn = "rating_opt_in"
+    }
+}
+
+/// One answer to the question after a block (proto v38), from most of the
+/// block to least. The raw values are the wire and stored values.
+public enum WorkBlockRatingAnswer: String, Codable, Equatable, Sendable, CaseIterable {
+    case all
+    case most
+    case half
+    case lessThanHalf = "less_than_half"
+    case little
+}
+
+/// Where the question after a block sits on the result view (proto v38).
+public enum RatingPromptPresentation: String, Codable, Equatable, Sendable {
+    /// Above the result card, whose observation and numbers stay hidden until
+    /// an answer or Not now.
+    case question
+    /// After Not now: the card shows, with `RatingPrompt.link` under it.
+    case link
+}
+
+/// One tap on the question after a block: the answer it sends and its
+/// Rust-authored label.
+public struct RatingPromptOption: Codable, Equatable, Sendable {
+    public let answer: WorkBlockRatingAnswer
+    public let label: String
+
+    public init(answer: WorkBlockRatingAnswer, label: String) {
+        self.answer = answer
+        self.label = label
+    }
+}
+
+/// The question after a block (proto v38). Rust decides when it is asked and
+/// writes every word; Swift renders it verbatim and reports what happened.
+public struct RatingPrompt: Codable, Equatable, Sendable {
+    public let blockID: UUID
+    public let promptVersion: Int
+    public let presentation: RatingPromptPresentation
+    public let question: String
+    public let options: [RatingPromptOption]
+    public let notNow: String
+    public let footnote: String
+    /// Shown after an answer, before the result card.
+    public let acknowledgement: String
+    /// The quiet link under the result card after Not now.
+    public let link: String
+    public let expiresAt: Date
+
+    public init(
+        blockID: UUID,
+        promptVersion: Int,
+        presentation: RatingPromptPresentation,
+        question: String,
+        options: [RatingPromptOption],
+        notNow: String,
+        footnote: String,
+        acknowledgement: String,
+        link: String,
+        expiresAt: Date
+    ) {
+        self.blockID = blockID
+        self.promptVersion = promptVersion
+        self.presentation = presentation
+        self.question = question
+        self.options = options
+        self.notNow = notNow
+        self.footnote = footnote
+        self.acknowledgement = acknowledgement
+        self.link = link
+        self.expiresAt = expiresAt
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case presentation, question, options, footnote, acknowledgement, link
+        case blockID = "block_id"
+        case promptVersion = "prompt_version"
+        case notNow = "not_now"
+        case expiresAt = "expires_at"
+    }
+}
+
+/// The one-time invitation to turn the question after a block on (proto
+/// v38). Either button sends `respondRatingOptIn`: Turn on with `turnOn`
+/// true, Not now with false.
+public struct RatingOptIn: Codable, Equatable, Sendable {
+    public let body: String
+    public let turnOn: String
+    public let notNow: String
+
+    public init(body: String, turnOn: String, notNow: String) {
+        self.body = body
+        self.turnOn = turnOn
+        self.notNow = notNow
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case body
+        case turnOn = "turn_on"
+        case notNow = "not_now"
+    }
+}
+
+/// An answer to the question after a block. `viaLink` is true when it was
+/// given through the link under the result card.
+public struct RateWorkBlock: Codable, Equatable, Sendable {
+    public let blockID: UUID
+    public let answer: WorkBlockRatingAnswer
+    public let viaLink: Bool
+
+    public init(blockID: UUID, answer: WorkBlockRatingAnswer, viaLink: Bool) {
+        self.blockID = blockID
+        self.answer = answer
+        self.viaLink = viaLink
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case answer
+        case blockID = "block_id"
+        case viaLink = "via_link"
+    }
+}
+
+/// The Settings toggle for the question after a block. Answered with
+/// `ratingPromptSettings` only: if the result view is open, send
+/// `requestWorkBlockState` afterwards so a question or invitation the change
+/// withdrew leaves the screen.
+public struct SetRatingPromptEnabled: Codable, Equatable, Sendable {
+    public let enabled: Bool
+
+    public init(enabled: Bool) { self.enabled = enabled }
+}
+
+/// A tap on the one-time invitation: `turnOn` is true for Turn on and false
+/// for Not now. Rust decides what it records and answers with
+/// `workBlockState`.
+public struct RespondRatingOptIn: Codable, Equatable, Sendable {
+    public let turnOn: Bool
+
+    public init(turnOn: Bool) { self.turnOn = turnOn }
+
+    private enum CodingKeys: String, CodingKey {
+        case turnOn = "turn_on"
+    }
+}
+
+/// The question after a block's setting and the Settings pane's words.
+/// `available` is false until this Mac's first 14 days of blocks are over,
+/// unless the question is already on.
+public struct RatingPromptSettings: Codable, Equatable, Sendable {
+    public let available: Bool
+    public let enabled: Bool
+    public let title: String
+    public let subtitle: String
+
+    public init(available: Bool, enabled: Bool, title: String, subtitle: String) {
+        self.available = available
+        self.enabled = enabled
+        self.title = title
+        self.subtitle = subtitle
     }
 }
 
@@ -3230,6 +3454,9 @@ public enum AuthFailureCode: String, Codable, Equatable, Sendable {
     case invalidCredentials = "invalid_credentials"
     case networkError = "network_error"
     case serverError = "server_error"
+    /// The cloud refused the sign-up or login for too many attempts (protocol
+    /// 37). The message already says how long to wait.
+    case rateLimited = "rate_limited"
 }
 
 /// Reports a failed authentication attempt. The message field is safe for

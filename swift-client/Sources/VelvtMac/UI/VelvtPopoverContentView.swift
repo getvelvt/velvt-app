@@ -130,19 +130,12 @@ public struct TodayWorkspaceView: View {
         .accessibilityHint("Built only from days with real privacy-safe summaries")
     }
 
+    /// Today's numbers come from this Mac's local window. A synced row is a
+    /// UTC calendar day, not the local one (cross-device-10), so none is
+    /// shown here as today's.
     @ViewBuilder
     private var dailyMetrics: some View {
-        if let day = coordinator.historyViewModel.todayReadyDay {
-            ViewThatFits(in: .horizontal) {
-                HStack(spacing: 8) {
-                    metricViews(for: day)
-                }
-                VStack(spacing: 8) {
-                    metricViews(for: day)
-                }
-            }
-            .padding(.horizontal, VelvtMetrics.cardPadding)
-        } else if let signal = readyLocalSignal {
+        if let signal = readyLocalSignal {
             ViewThatFits(in: .horizontal) {
                 HStack(spacing: 8) { localMetricViews(for: signal) }
                 VStack(spacing: 8) { localMetricViews(for: signal) }
@@ -176,25 +169,6 @@ public struct TodayWorkspaceView: View {
             title: "Longest stretch",
             value: DaySummaryViewModel.formatActiveTime(signal.longestUninterruptedSeconds),
             explanation: "The longest observed privacy-safe category stretch in this local window."
-        )
-    }
-
-    @ViewBuilder
-    private func metricViews(for day: DaySummaryViewModel) -> some View {
-        todayMetric(
-            title: "Focused time",
-            value: day.focusedTime,
-            explanation: "Time in broad focus-oriented work categories."
-        )
-        todayMetric(
-            title: "Meaningful switches",
-            value: "\(day.meaningfulSwitchCount)",
-            explanation: "Changes between broad work categories; brief system activity is excluded."
-        )
-        todayMetric(
-            title: "Longest block",
-            value: day.longestUninterrupted,
-            explanation: "Your longest recorded work block without a broad-category switch."
         )
     }
 
@@ -629,14 +603,25 @@ public struct MinimalDashboardWorkspaceView: View {
     private let onStartWorkBlock: () -> Void
     private let highlightsInsight: Bool
     private let highlightsFocus: Bool
+    private let surfaceIsOnScreen: Bool
+    private let focusSessionIsOpen: Bool
 
+    /// - Parameters:
+    ///   - surfaceIsOnScreen: whether the panel drawing this tab is on screen.
+    ///     The question after a block reports a sighting only while it is.
+    ///   - focusSessionIsOpen: whether the focus-session popover, which draws
+    ///     the same block's result and the same question, is open over this
+    ///     tab. The question is then left to it, so one set of answers is on
+    ///     screen.
     public init(
         coordinator: ConcreteDisplayDataCoordinator,
         workBlockCoordinator: WorkBlockCoordinator,
         localDashboardCoordinator: LocalDashboardCoordinator,
         onStartWorkBlock: @escaping () -> Void,
         highlightsInsight: Bool = false,
-        highlightsFocus: Bool = false
+        highlightsFocus: Bool = false,
+        surfaceIsOnScreen: Bool = false,
+        focusSessionIsOpen: Bool = false
     ) {
         self.coordinator = coordinator
         self.workBlockCoordinator = workBlockCoordinator
@@ -644,10 +629,27 @@ public struct MinimalDashboardWorkspaceView: View {
         self.onStartWorkBlock = onStartWorkBlock
         self.highlightsInsight = highlightsInsight
         self.highlightsFocus = highlightsFocus
+        self.surfaceIsOnScreen = surfaceIsOnScreen
+        self.focusSessionIsOpen = focusSessionIsOpen
     }
 
     public var body: some View {
         VStack(alignment: .leading, spacing: 12) {
+            // The question after a block comes first on this tab, above Today
+            // so far and the insight. Its sighting is reported whenever the
+            // panel is on screen on this tab, so the question has to be where
+            // the tab starts, not below cards that can fill the panel's first
+            // screenful. "Noted." replaces it in the same place. It is drawn
+            // only after a block has ended, and the live block's control below
+            // only during one, so the two never share the tab.
+            if !focusSessionIsOpen {
+                QuestionAfterABlockView(
+                    coordinator: workBlockCoordinator,
+                    parts: [.ask, .acknowledgement],
+                    surfaceIsOnScreen: surfaceIsOnScreen
+                )
+            }
+
             if let snapshot = workBlockCoordinator.snapshot,
                 snapshot.phase == .active || snapshot.phase == .paused
             {
@@ -656,19 +658,41 @@ public struct MinimalDashboardWorkspaceView: View {
 
             TodaySoFarView(day: localDashboardCoordinator.snapshot?.dailyActivity.last)
 
-            latestInsight
-                .tourHighlight(highlightsInsight)
+            if showsLatestInsight {
+                latestInsight
+                    .tourHighlight(highlightsInsight)
+            }
 
-            FocusFragmentationView(
-                focus: localDashboardCoordinator.snapshot?.focusFragmentation,
-                errorMessage: localDashboardCoordinator.commandError,
-                onStartWorkBlock: onStartWorkBlock,
-                header: workBlockCardHeader
-            )
-            .tourHighlight(highlightsFocus)
+            if !workBlockCoordinator.withholdsBlockSummary {
+                FocusFragmentationView(
+                    focus: localDashboardCoordinator.snapshot?.focusFragmentation,
+                    errorMessage: localDashboardCoordinator.commandError,
+                    onStartWorkBlock: onStartWorkBlock,
+                    header: workBlockCardHeader
+                )
+                .tourHighlight(highlightsFocus)
+
+                if !focusSessionIsOpen {
+                    QuestionAfterABlockView(
+                        coordinator: workBlockCoordinator,
+                        parts: [.link],
+                        surfaceIsOnScreen: surfaceIsOnScreen
+                    )
+                }
+            }
         }
         .padding(VelvtMetrics.spaceMD)
         .onAppear { localDashboardCoordinator.refresh() }
+    }
+
+    /// The insight slot, except while the question after a block is up for
+    /// the first time and the slot would hold the local early signal. That
+    /// signal summarises the last hour, which a block that just ended
+    /// mostly is, in the same words and numbers as the block's own card; it
+    /// is held back with that card until an answer or Not now. A cloud
+    /// insight is about a whole day and stays.
+    private var showsLatestInsight: Bool {
+        !workBlockCoordinator.withholdsBlockSummary || coordinator.insightAvailability == .available
     }
 
     /// The intention the user typed when they declared this block, else the

@@ -70,9 +70,15 @@ history, the router answers with daily summaries Rust builds from
 `source: this_mac`. Nothing is stored or sent. After a failed cloud read the
 router stops waiting on the cloud for history, which would hold the whole
 connection for the HTTP timeout, until the fetch scheduler's cache holds the
-cloud's history again or the session changes. The Patterns card renders
-either source; the Today tab's baseline label and day metrics read only the
-cloud's.
+cloud's history again or the session changes. The Patterns tab's coaching
+card (`WeekOverWeekCoachingView`) renders either source. Synced rows are UTC
+calendar days, so Swift never matches one against the local "today" (protocol
+37, cross-device-10): the card's "Today so far" tier describes only a history
+built on this Mac, and a synced history with one ready day reads "This week so
+far". `TodayWorkspaceView` (the baseline label and the day metrics) and
+`HistoryListView` (the UTC day labels and the bar tooltip) follow the same
+rule, but the app mounts neither: they appear only in `VelvtPopoverContentView`,
+which only `#if DEBUG` previews create.
 
 Daily insights additionally produce a `notification_payload` IPC push (see
 "IPC framing and versioning" below), consumed by
@@ -112,6 +118,7 @@ allowed. Neither is shown during an active or paused block.
 | Initiation (`initiation`) | Rust | Good-hours windows and the soft-start invitation (at most one a day, in-app only, off switch) | versioned policy constants | The invitation payload carries no schedule or timing evidence |
 | Receipts (`receipts`) | Rust | Weekly receipts digest, explain-tap weekly bucket | `WeeklyDigest` | Exact bounded counts from stored aggregates; local IPC only |
 | Needs-a-category (`category_prompt`) | Rust | The merged list of applications and sites Velvt could not categorize, and the card and daily reminder about it (`CATEGORY_PROMPT_POLICY_VERSION = 1`; at most one reminder a local day, never during a live block, backoff after three unopened) | `CategoryPromptRepo`, `InvitationGates` | Card and reminder copy are counts only, never names, because Notification Center keeps a reminder's text; the ledger (migration 0041) holds salted keys, random card ids, dates and counts |
+| The question after a block (`self_rating`) | Rust | Which ended blocks the optional question covers (`RATING_PROMPT_VERSION = 1`: five minutes or more, started at or after the end of the Mac's first 14 days of blocks, wholly while the question was on), its frozen copy, its expiry, and the one-time invitation to turn it on (protocol 38). In-app only, never during a block, never a notification | `SelfRatingRepo`, `RatingPromptSource` | Answers are one of five fixed values beside timestamps (migration 0048), local IPC only and never uploaded; no drift decision reads them (`tests/rating_isolation.rs`) |
 | Dashboard (`dashboard.rs`) | Rust | Focus Fragmentation and 14-day Daily Activity aggregates | `LocalDashboardSnapshot` | Local display labels appear only in the `daily_activity` branch of this local payload |
 | Behavior (`behavior/`, declared in `main.rs`) | Rust | Shadow models: BOCPD, HMM, antecedent miner, and the `out_of_block_run` retention target | frozen feature contract | No caller in the shipped path; cannot reach the drift gate, delivery, or copy. Scope for new work here is gated (`AGENTS.md`, Scope Boundary) |
 | S1 — IPC scaffold | Swift | Unix socket client, version handshake | `IPCClientProtocol` | Sends raw events to Rust (the one designed crossing point); never calls the cloud |

@@ -54,6 +54,15 @@
 #      protocol 36 each decision says on, off or unknown, and offers are broken
 #      down by it as an ADDITIONAL descriptive figure that changes no
 #      pre-registered denominator. An older row is not_recorded, never off.
+#  16. Every v6 row counted, whatever its date: nothing kept a later
+#      instrument, such as the question after a block, out of the pooled v6
+#      figures. The v6 primary-period amendment (2026-10-17, pending) counts
+#      each Mac's first 14 days only, reports rows after day 14 and rows after
+#      the question was turned on as two strata never pooled, counts the
+#      protocol deviations, and checks a period start the export states. An
+#      export with no blocks file is not taken for a cleared history, and an
+#      older exporter's copy of a database with the question has its rows
+#      after day 14 in no figure and its deviations not measurable.
 #
 # Fixtures are CSVs written the way export_cohort_evidence.sh writes them.
 # export_cohort_evidence_test.sh covers the databases behind them, across
@@ -97,6 +106,8 @@ HEADERS = {
     "explain": "week_start_local_date,taps,delivered_interventions,blocks_declared",
     "corrections": "scope,category,rules,corrections",
     "outcomes": "decision_id,censor_reason,observer_gap_cause,sustained_anchor_900s,departure_free_600s,seconds_to_sustained_return,departure_category",
+    "ratings": "block_id,prompt_version,eligible_at,shown_at,answered_at,not_now_at,expired_at,card_seen_before_answer,answer",
+    "blockfeatures": "block_id,block_feature_version,policy_version,card_branch,card_anchor_is_work,elapsed_seconds,covered_seconds,coverage_class,work_anchor_share,switch_aways_per_covered_hour,longest_run_share,recovery_ratio,feed_share,unlogged_share,offer_delivered,offer_outcome,purpose,intensity,planned_minutes,origin,hour_bucket,weekend",
 }
 T0 = 1800000000
 spec = json.load(sys.stdin)
@@ -180,6 +191,13 @@ if spec.get("corrections") is not None:
     write("corrections", spec["corrections"])
 if spec.get("outcomes") is not None:
     write("outcomes", spec["outcomes"])
+# Export format 7: a rating row (unanswered) per listed block, and a
+# block-features file, which this script never reads.
+if spec.get("rated") is not None:
+    write("ratings", [{"block_id": b, "prompt_version": 1,
+                       "eligible_at": blocks[b]["ended_at"], "card_seen_before_answer": 0}
+                      for b in spec["rated"]])
+    write("blockfeatures", [{"block_id": b, "block_feature_version": 1} for b in spec["rated"]])
 meta = {"export_format": "4" if spec.get("outcomes") is not None else "3",
         "exported_at": str(T0 + 7 * 86400), "schema_version": "36",
         "decision_log": "present" if spec.get("decisions") is not None else "absent",
@@ -644,12 +662,21 @@ assert c["open_at_export_excluded"] == 1, c
 inv = r["invitation_acceptance"]
 assert (inv["accepted"], inv["terminal"], inv["unresolved_offered_excluded"]) == (2, 4, 1), inv
 assert inv["participants_with_invitations_off"] == ["p-idle"], inv
-assert inv["participants_measured"] == 3, inv
+# p-none declared no block, so it has no v6 primary period and counts in no
+# figure but blocks declared (period amendment item 1): it is not measured
+# here, and is listed once, under the period.
+assert inv["participants_measured"] == 2, inv
+assert r["v6_primary_period"]["participants_without_a_period"] == ["p-none"], r["v6_primary_period"]
 
+# Both Macs' periods start on Friday 2027-01-15 08:00 UTC, the first block.
+# The week of Monday 2027-01-11, widened by a day at each end, holds that
+# start, so it straddles and counts in no figure (item 2); the week of
+# 2027-01-18 lies wholly inside the period.
 ex = r["explain_tap_rate"]
-assert (ex["taps"], ex["delivered_interventions"]) == (1, 3), ex
-assert ex["weekly_active_participant_weeks"] == 3, ex
-assert ex["weekly_active_participant_weeks_with_a_tap"] == 1, ex
+assert (ex["taps"], ex["delivered_interventions"]) == (0, 1), ex
+assert ex["weekly_active_participant_weeks"] == 1, ex
+assert ex["weekly_active_participant_weeks_with_a_tap"] == 0, ex
+assert r["v6_primary_period"]["rows_by_placement"]["explain_weeks"] == {"in_period": 1, "straddles": 2}, r["v6_primary_period"]
 
 assert r["card_seen"]["no_response"] == {"seen": 1, "unseen": 1, "unknown": 1}, r["card_seen"]
 
@@ -748,10 +775,14 @@ make_export "$work/corr/p-bad" <<'JSON'
  ],
  "meta": {"site_rules": "present"}}
 JSON
+# A block under policy 1, then one under policy 6 after the upgrade: the
+# second starts the v6 primary period. A Mac whose only block came before the
+# upgrade has no period, and its counts would go in no figure (item 1).
 make_export "$work/corr/p-upgraded" <<'JSON'
-{"blocks": [{"block_id": "a", "started_at": 1800000000}],
+{"blocks": [{"block_id": "a", "started_at": 1800000000}, {"block_id": "b", "started_at": 1800100000}],
  "offers": [],
- "decisions": [{"block_id": "a", "gate_verdict": "abstained_warmup", "policy_version": 1}],
+ "decisions": [{"block_id": "a", "gate_verdict": "abstained_warmup", "policy_version": 1},
+               {"block_id": "b", "gate_verdict": "abstained_warmup"}],
  "corrections": [{"scope": "app", "category": "FOCUS_WORK", "rules": 1, "corrections": 2}]}
 JSON
 make_export "$work/corr/founder-corr" <<'JSON'
@@ -1346,5 +1377,326 @@ assert by["not_recorded"]["offers"] == 1, by
 # The decision itself still counts: focus_state is descriptive.
 assert r["decisions_recorded"]["delivered"] == 1, r["decisions_recorded"]
 PY
+
+# ===========================================================================
+# 16. The v6 primary period: each Mac's first 14 days (amendment items 1-6).
+#
+#     p-long upgraded from a policy-5 build, then used Velvt for 16 days. Its
+#     period starts at its first block after the last policy-5 decision,
+#     Saturday 2027-01-16 11:46:40 UTC (S), and ends at S + 1,209,600 s (E),
+#     Saturday 2027-01-30 11:46:40. A block counts by its start: "day13"
+#     starts on day 13 and counts whole, "edge-in" one second before E counts,
+#     "edge-out" at E does not.
+# ===========================================================================
+make_export "$work/period/p-long" <<'JSON'
+{"blocks": [
+   {"block_id": "old",      "started_at": 1800000000},
+   {"block_id": "first",    "started_at": 1800100000},
+   {"block_id": "day13",    "started_at": 1801223200},
+   {"block_id": "edge-in",  "started_at": 1801309599},
+   {"block_id": "edge-out", "started_at": 1801309600},
+   {"block_id": "late",     "started_at": 1801396000}
+ ],
+ "offers": [
+   {"block_id": "day13",    "outcome": "returned", "outcome_at": 1801223900},
+   {"block_id": "edge-in",  "outcome": "was_focused", "outcome_at": 1801310300},
+   {"block_id": "edge-out", "outcome": "no_response"}
+ ],
+ "decisions": [
+   {"block_id": "old",      "gate_verdict": "abstained_min_switches", "policy_version": 5, "occurred_at": 1800000600},
+   {"block_id": "first",    "gate_verdict": "abstained_min_switches"},
+   {"block_id": "day13",    "gate_verdict": "offered"},
+   {"block_id": "edge-in",  "gate_verdict": "offered"},
+   {"block_id": "edge-out", "gate_verdict": "offered"},
+   {"block_id": "late",     "gate_verdict": "abstained_min_switches"}
+ ],
+ "invitations": [
+   {"offered_at": 1800050000, "outcome": "dismissed"},
+   {"offered_at": 1800186400, "outcome": "accepted"},
+   {"offered_at": 1801313200, "outcome": "dismissed"}
+ ],
+ "explain": [
+   {"week_start_local_date": "2027-01-11", "taps": 1, "delivered_interventions": 0, "blocks_declared": 1},
+   {"week_start_local_date": "2027-01-18", "taps": 0, "delivered_interventions": 0, "blocks_declared": 0},
+   {"week_start_local_date": "2027-01-25", "taps": 2, "delivered_interventions": 2, "blocks_declared": 2},
+   {"week_start_local_date": "2027-02-01", "taps": 1, "delivered_interventions": 1, "blocks_declared": 1}
+ ]}
+JSON
+"$analyze" --json --cohort-start 2027-01-16 --cohort-weeks 3 "$work/period/p-long" > "$work/period.json"
+check "$work/period.json" "the v6 primary period" <<'PY'
+S, E = 1800100000, 1800100000 + 1209600
+period = r["v6_primary_period"]
+entry = period["per_participant"]["p-long"]
+assert (entry["start"], entry["end"], entry["upgrade_cut"]) == (S, E, 1800000600), entry
+placed = period["rows_by_placement"]
+# "old" is before the upgrade cut, excluded as it always was, and not placed.
+assert placed["blocks"] == {"in_period": 3, "after_day_14": 2}, placed
+assert placed["decisions"] == {"in_period": 3, "after_day_14": 2}, placed
+assert placed["offers"] == {"in_period": 2, "after_day_14": 1}, placed
+# The first invitation is after the cut and before the period's start: in no
+# figure, counted.
+assert placed["invitations"] == {"before_period": 1, "in_period": 1, "after_day_14": 1}, placed
+# 01-11 holds the upgrade, so the existing rule excludes it before any
+# placement; 01-25 holds E, widened by a day; 01-18 is inside, 02-01 after.
+assert placed["explain_weeks"] == {"in_period": 1, "after_day_14": 1, "straddles": 1}, placed
+assert r["policy"]["rows_before_last_other_policy_decision_excluded"] == {
+    "blocks": 1, "explain_weeks": 1}, r["policy"]
+assert period["protocol_deviations"]["total"] == 0, period
+
+# Every figure is in-period only, the power count too (items 2 and 3).
+assert r["power"]["observed_eligible_decision_points"] == 2, r["power"]
+assert r["primary_outcome"]["eligible_decision_points"] == 2, r["primary_outcome"]
+d = r["decisions_recorded"]
+assert (d["delivered"], d["withheld"]) == (2, 0), d
+assert (r["trust"]["was_focused"], r["trust"]["denominator"]) == (1, 2), r["trust"]
+assert r["decision_log_integrity"]["rows"] == 3, r["decision_log_integrity"]
+inv = r["invitation_acceptance"]
+assert (inv["accepted"], inv["terminal"]) == (1, 1), inv
+ex = r["explain_tap_rate"]
+assert (ex["taps"], len(ex["participant_weeks"])) == (0, 1), ex
+
+# Gate D measure 1 (item 6): in-period blocks only, the rest beside it, and
+# the denominator unchanged: three weeks for one participant.
+b = r["blocks_per_participant"]
+assert b["per_participant"]["p-long"]["blocks_declared"] == 3, b
+assert b["per_participant"]["p-long"]["blocks_outside_their_v6_period"] == 2, b
+assert b["blocks_outside_their_v6_period"] == 2, b
+assert b["blocks_left_out_by_placement"] == {"after_day_14": 2}, b
+assert b["blocks_per_participant_week"] == "3/3", b
+
+# After day 14 (item 4): the same definitions, never pooled.
+late = r["strata"]["after_day_14"]
+assert late["blocks_declared"] == {"p-long": 2}, late
+assert late["eligible_decision_points"] == 1, late
+assert late["decisions_recorded"] == {"delivered": 1, "withheld": 0}, late
+assert late["decision_log_rows"] == 2, late
+assert late["invitations"]["terminal"] == 1 and late["explain"]["taps"] == 1, late
+assert r["strata"]["question_on"]["blocks_declared"] == {}, r["strata"]
+reasons = r["exclusions"]["by_reason"]
+assert reasons["blocks after day 14 (the 'after day 14' stratum)"] == 2, reasons
+assert reasons["invitations after the upgrade cut and before the period's start (in no figure)"] == 1, reasons
+PY
+period_report="$("$analyze" --cohort-start 2027-01-16 --cohort-weeks 3 "$work/period/p-long")"
+check_power_markers "$period_report"
+for needle in "V6 PRIMARY PERIOD (each Mac's first 14 days)" \
+              "p-long                   2027-01-16 11:46 UTC to 2027-01-30 11:46 UTC; question first on: never" \
+              "blocks           in_period 3, after_day_14 2" \
+              "explain weeks    in_period 1, after_day_14 1, straddles 1" \
+              "protocol deviations (item 5): 0" \
+              "blocks the v6 period leaves out of those weeks, not counted: 2 (after_day_14 2)" \
+              "AFTER DAY 14 (descriptive stratum, never pooled)" \
+              "QUESTION ON (descriptive stratum, never pooled)" \
+              "sustained anchor 900 s: 0 of 0 uncensored point(s)"; do
+  grep -qF -- "$needle" <<<"$period_report" || fail "period report omits: $needle"
+done
+
+# ===========================================================================
+# 16b. The question turned on inside the period (item 5). Velvt refuses that,
+#      so only a failed day-14 floor, or a history cleared after it was
+#      turned on, can produce it. Every row at or after it is the "question
+#      on" stratum, whether inside the period or after it; one inside the
+#      period is a protocol deviation, and so is any block inside the period
+#      with a rating row. p-early's period runs from Friday 2027-01-15 08:00
+#      UTC to 2027-01-29 08:00; the question was first on Wednesday
+#      2027-01-20 08:00. Its format 7 files sit in the same folder, and the
+#      export is still one participant.
+# ===========================================================================
+make_export "$work/early/p-early" <<'JSON'
+{"blocks": [
+   {"block_id": "b1", "started_at": 1800000000},
+   {"block_id": "b2", "started_at": 1800086400},
+   {"block_id": "b3", "started_at": 1800518400},
+   {"block_id": "b4", "started_at": 1801728000}
+ ],
+ "offers": [{"block_id": "b3", "outcome": "no_response"}],
+ "decisions": [
+   {"block_id": "b1", "gate_verdict": "offered"},
+   {"block_id": "b3", "gate_verdict": "offered"},
+   {"block_id": "b4", "gate_verdict": "offered"}
+ ],
+ "explain": [
+   {"week_start_local_date": "2027-01-18", "taps": 1, "delivered_interventions": 1, "blocks_declared": 1}
+ ],
+ "corrections": [{"scope": "app", "category": "FOCUS_WORK", "rules": 1, "corrections": 1}],
+ "rated": ["b2", "b4"],
+ "meta": {"export_format": "7", "rating_prompt_enabled_at": "1800432000",
+          "v6_period_start": "1800000000", "ratings": "present"}}
+JSON
+"$analyze" --json "$work/early/p-early" > "$work/early.json"
+check "$work/early.json" "the question turned on inside the period" <<'PY'
+assert r["participants"]["analysed"] == 1, r["participants"]
+assert r["data_quality"]["malformed"] == [], r["data_quality"]
+period = r["v6_primary_period"]
+placed = period["rows_by_placement"]
+assert placed["blocks"] == {"in_period": 2, "question_on": 2}, placed
+# The week of 2027-01-18, widened, holds the moment it was turned on.
+assert placed["explain_weeks"] == {"straddles": 1}, placed
+deviations = period["protocol_deviations"]
+assert deviations["rows_at_or_after_rating_prompt_enabled_at_inside_the_period"] == {
+    "decisions": 1, "offers": 1, "blocks": 1}, deviations
+assert deviations["rated_blocks_inside_the_period"] == {"p-early": 1}, deviations
+assert deviations["total"] == 4, deviations
+# Neither question-on block is in a figure or in "after day 14".
+assert r["power"]["observed_eligible_decision_points"] == 1, r["power"]
+assert r["decisions_recorded"]["delivered"] == 0, r["decisions_recorded"]
+assert r["blocks_per_participant"]["per_participant"]["p-early"]["blocks_declared"] == 2, r
+on = r["strata"]["question_on"]
+assert on["blocks_declared"] == {"p-early": 2}, on
+assert on["eligible_decision_points"] == 2 and on["decisions_recorded"]["delivered"] == 1, on
+assert r["strata"]["after_day_14"]["blocks_declared"] == {}, r["strata"]
+# Correction counts carry no time: reported whole, and flagged.
+c = r["corrections_per_participant"]
+assert c["per_participant"]["p-early"]["corrections"] == 1, c
+assert c["includes_rows_outside_the_v6_period"] == ["p-early"], c
+PY
+# Item 6 in the cohort weeks: the blocks the period leaves out there, with
+# the question on inside the period (b3) as well as after it, and none from
+# outside the weeks (b4), so they and the figure add up to every block there.
+"$analyze" --json --cohort-start 2027-01-15 --cohort-weeks 2 "$work/early/p-early" > "$work/early-window.json"
+check "$work/early-window.json" "measure 1's left-out blocks in the cohort weeks" <<'PY'
+b = r["blocks_per_participant"]
+assert b["blocks_in_window"] == 2, b
+assert b["blocks_outside_their_v6_period"] == 1, b
+assert b["blocks_left_out_by_placement"] == {"question_on": 1}, b
+assert b["per_participant"]["p-early"]["blocks_left_out_by_placement"] == {"question_on": 1}, b
+assert b["blocks_in_window"] + b["blocks_outside_their_v6_period"] == 3, b
+PY
+early_report="$("$analyze" "$work/early/p-early")"
+check_power_markers "$early_report"
+for needle in "question first on: 2027-01-20 08:00 UTC" \
+              "protocol deviations (item 5): 4" \
+              "blocks inside the period with a rating row: {'p-early': 1}" \
+              "counts carry no time and are reported whole"; do
+  grep -qF -- "$needle" <<<"$early_report" || fail "early report omits: $needle"
+done
+
+# ===========================================================================
+# 16c. A period start the export states (item 1). Earlier than its blocks
+#      give: the history was cleared, so the reinstall exclusion applies.
+#      Later: malformed, and the computed start is used. Stated with no block
+#      at all: malformed, and the Mac has no period, so it counts only in
+#      blocks declared, as a zero.
+# ===========================================================================
+make_export "$work/stated/p-cleared" <<'JSON'
+{"blocks": [{"block_id": "a", "started_at": 1800000000}],
+ "offers": [], "decisions": [{"block_id": "a", "gate_verdict": "abstained_warmup"}],
+ "meta": {"v6_period_start": "1799913600"}}
+JSON
+make_export "$work/stated/p-later" <<'JSON'
+{"blocks": [{"block_id": "a", "started_at": 1800000000}],
+ "offers": [], "decisions": [{"block_id": "a", "gate_verdict": "abstained_warmup"}],
+ "meta": {"v6_period_start": "1800000100"}}
+JSON
+make_export "$work/stated/p-noblock" <<'JSON'
+{"blocks": [], "offers": [], "decisions": [],
+ "invitations": [{"offered_at": 1800000000, "outcome": "dismissed"}],
+ "explain": [{"week_start_local_date": "2027-01-11", "taps": 0, "delivered_interventions": 0, "blocks_declared": 0}],
+ "corrections": [{"scope": "app", "category": "FOCUS_WORK", "rules": 1, "corrections": 3}],
+ "meta": {"v6_period_start": "1800000000"}}
+JSON
+"$analyze" --json "$work/stated"/*/ > "$work/stated.json"
+check "$work/stated.json" "a stated v6 period start" <<'PY'
+whole = r["participants"]["excluded_whole"]
+assert "history cleared" in whole["p-cleared"] and "reinstall" in whole["p-cleared"], whole
+assert sorted(r["v6_primary_period"]["per_participant"]) == ["p-later", "p-noblock"], r
+later = r["v6_primary_period"]["per_participant"]["p-later"]
+assert (later["start"], later["stated_start"]) == (1800000000, 1800000100), later
+problems = r["v6_primary_period"]["problems"]
+assert any("p-later" in p and "computed start is used" in p for p in problems), problems
+assert any("p-noblock" in p and "no block" in p for p in problems), problems
+assert r["v6_primary_period"]["participants_without_a_period"] == ["p-noblock"], r
+# Item 1: no period, no figure but blocks declared, where it is a zero.
+assert r["blocks_per_participant"]["per_participant"]["p-noblock"]["blocks_declared"] == 0, r
+# p-later wrote no invitations file; p-noblock's is not measured either.
+assert r["invitation_acceptance"]["participants_measured"] == 0, r["invitation_acceptance"]
+assert r["invitation_acceptance"]["not_measurable_for"] == ["p-later"], r["invitation_acceptance"]
+assert r["explain_tap_rate"]["participant_weeks"] == [], r["explain_tap_rate"]
+assert "p-noblock" not in r["corrections_per_participant"]["per_participant"], r
+assert r["corrections_per_participant"]["not_measurable_for"] == ["p-later"], r
+placed = r["v6_primary_period"]["rows_by_placement"]
+assert placed["invitations"] == {"no_period": 1}, placed
+assert placed["explain_weeks"] == {"no_period": 1}, placed
+PY
+
+# ===========================================================================
+# 16d. A blocks file lost on the way. The exporter always writes one beside
+#      its meta file, so its absence is malformed. Without it the start comes
+#      from the blocks the decisions and offers files name, and here the
+#      first block has neither (Accessibility not granted yet), so the stated
+#      start is earlier than that. That is no sign of a cleared history: the
+#      Mac is analysed, and the period problem says why it cannot be checked.
+# ===========================================================================
+make_export "$work/blocks-gone/p-blocks-gone" <<'JSON'
+{"blocks": [{"block_id": "a", "started_at": 1800000000},
+            {"block_id": "b", "started_at": 1800086400}],
+ "offers": [], "decisions": [{"block_id": "b", "gate_verdict": "abstained_warmup"}],
+ "write_blocks": false,
+ "meta": {"export_format": "7", "v6_period_start": "1800000000", "ratings": "absent",
+          "schema_version": "48"}}
+JSON
+"$analyze" --json "$work/blocks-gone/p-blocks-gone" > "$work/blocks-gone.json"
+check "$work/blocks-gone.json" "a lost blocks file is not a cleared history" <<'PY'
+assert r["participants"]["excluded_whole"] == {}, r["participants"]
+assert r["participants"]["analysed"] == 1, r["participants"]
+malformed = r["data_quality"]["malformed"]
+assert any("wrote a blocks file and it was not received" in m for m in malformed), malformed
+period = r["v6_primary_period"]
+assert period["per_participant"]["p-blocks-gone"]["start"] == 1800086400, period
+assert any("no blocks file was read" in p and "cannot be computed" in p
+           for p in period["problems"]), period["problems"]
+assert r["blocks_per_participant"]["not_measurable_for"] == ["p-blocks-gone"], r
+PY
+
+# ===========================================================================
+# 16e. An older exporter's copy of a database that can hold the question
+#      (schema 48 or later, no `ratings` row, format 6). When the question was
+#      turned on is unknown, so rows after day 14 count in no figure and in
+#      neither stratum, and the deviations are not measurable, never zero.
+#      In-period rows still count: the app refuses the question before day 14.
+#      The same export from a database without the question (schema 44) has
+#      an ordinary "after day 14" stratum.
+# ===========================================================================
+for schema in 48 44; do
+  make_export "$work/old-script-$schema/p-schema-$schema" <<JSON
+{"blocks": [{"block_id": "in", "started_at": 1800000000},
+            {"block_id": "late", "started_at": 1801296000}],
+ "offers": [{"block_id": "late", "outcome": "no_response"}],
+ "decisions": [{"block_id": "in", "gate_verdict": "abstained_warmup"},
+               {"block_id": "late", "gate_verdict": "offered"}],
+ "explain": [{"week_start_local_date": "2027-02-08", "taps": 1, "delivered_interventions": 1, "blocks_declared": 1}],
+ "meta": {"export_format": "6", "schema_version": "$schema"}}
+JSON
+  "$analyze" --json "$work/old-script-$schema/p-schema-$schema" > "$work/old-script-$schema.json"
+done
+check "$work/old-script-48.json" "an older exporter's copy of a database with the question" <<'PY'
+period = r["v6_primary_period"]
+assert period["per_participant"]["p-schema-48"]["question_boundary_unknown"] is True, period
+placed = period["rows_by_placement"]
+assert placed["blocks"] == {"in_period": 1, "question_unknown": 1}, placed
+assert placed["decisions"] == {"in_period": 1, "question_unknown": 1}, placed
+assert placed["offers"] == {"question_unknown": 1}, placed
+assert placed["explain_weeks"] == {"question_unknown": 1}, placed
+for stratum in ("after_day_14", "question_on"):
+    assert r["strata"][stratum]["blocks_declared"] == {}, r["strata"]
+    assert r["strata"][stratum]["decisions_recorded"]["delivered"] == 0, r["strata"]
+deviations = period["protocol_deviations"]
+assert (deviations["total"], deviations["not_measurable_for"]) == (0, ["p-schema-48"]), deviations
+assert any("older than format 7" in m for m in r["data_quality"]["malformed"]), r["data_quality"]
+assert r["blocks_per_participant"]["blocks_left_out_by_placement"] == {"question_unknown": 1}, r
+PY
+check "$work/old-script-44.json" "an older exporter's copy of a database without the question" <<'PY'
+period = r["v6_primary_period"]
+assert period["per_participant"]["p-schema-44"]["question_boundary_unknown"] is False, period
+assert period["rows_by_placement"]["blocks"] == {"in_period": 1, "after_day_14": 1}, period
+assert r["strata"]["after_day_14"]["decisions_recorded"]["delivered"] == 1, r["strata"]
+assert period["protocol_deviations"]["not_measurable_for"] == [], period
+assert r["data_quality"]["malformed"] == [], r["data_quality"]
+PY
+old_report="$("$analyze" "$work/old-script-48/p-schema-48")"
+for needle in "question first on: unknown (an export older than format 7)" \
+              "protocol deviations (item 5): 0; not measurable for p-schema-48" \
+              "question_unknown 1"; do
+  grep -qF -- "$needle" <<<"$old_report" || fail "older-exporter report omits: $needle"
+done
 
 echo "analyze_cohort_test.sh: OK"

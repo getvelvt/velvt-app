@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Every test for the measurement and evidence scripts, in one command.
 #
-# These cover `analyze_cohort.py`, `export_cohort_evidence.sh` and the outcome
-# labels both compute from one set of vectors,
+# These cover `analyze_cohort.py`, `export_cohort_evidence.sh`, the outcome
+# labels both compute from one set of vectors, the block summaries of export
+# format 7, held to another,
 # `prove_local.sh`, `prove_egress.sh`, `antecedent_probe.py`,
 # `generate_traces.py`, the pbxproj target-membership guard, the Swift lint
 # gate, the banned-copy guard, and the executable bit on every script. They need only python3, perl,
@@ -21,6 +22,7 @@ tests=(
   analyze_cohort_test.sh
   export_cohort_evidence_test.sh
   outcome_labels_test.sh
+  block_features_test.sh
   prove_local_test.sh
   prove_egress_test.sh
   antecedent_probe_test.sh

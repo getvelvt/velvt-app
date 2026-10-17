@@ -169,8 +169,14 @@ whichever category had the most confident time. In a block with five minutes
 of Xcode and fifteen of YouTube, the offer therefore counts switches away from
 focus work while the result card reads "You left passive consumption 4 times
 and came back 3 of them". Whether the result follows the anchor rule is an
-open founder decision. The cohort export reads none of these fields; the
-weekly digest and the dashboard read `recovery_count`.
+open founder decision. The weekly digest and the dashboard read
+`recovery_count`. The cohort export (format 7) reads the stored result's
+coverage, switch-away and return counts and longest run, as the card states
+them, but only for a block with a row for the question after a block, and
+writes beside them the block's share of confident time in its work anchor and
+whether the category the card is about is a work category
+(`card_anchor_is_work`), so the two are reported side by side and never
+reconciled.
 
 An observation row's end is the next row's start. At a boundary — pause or
 sleep, a service restart, or the end of the block — there is no next row, and
@@ -346,6 +352,97 @@ reply, or thread anywhere. Taps are counted as one coarse local integer
 per week (`explain_probe_week`) — the pre-registered R4 gate metric — and
 the delivered denominator is derived from the same stored predicate the
 counter uses. No upload path for these counts exists in this release.
+
+## The Question After a Block (protocol 38)
+
+An optional measurement instrument (workspace
+`plan/attention-labels-and-model.md` § 3, founder decision 2026-10-17): "How
+much of this block was on what you meant to do?", five answers, Not now.
+`rust-service/src/self_rating/` owns every rule and every word: which ended
+blocks it covers (five minutes or more, started at least 14 days after the
+Mac's v6 primary period began, the question on for the whole block), when it
+expires (two hours after the block ended or when the next block starts), and
+what a sighting, a Not now and an answer record. It never changes a drift
+decision: the gate does not read it, and `tests/rating_isolation.rs` holds
+every drift table byte-identical with it on. The golden replay's arm for it
+(`tests/golden_replay.rs`, from #90) is not on this branch yet; it arrives
+with the rebase after stage 2.
+
+Swift draws it and reports taps (`UI/QuestionAfterABlockView.swift`,
+`WorkBlockCoordinator`):
+
+- It is drawn only from the snapshot of an ended block, for that block, before
+  `expires_at`. It is never drawn during a block, and it is never a
+  notification: no delivery path reads it.
+- Two surfaces show a block's result, and both draw it:
+  - the result view in the focus-session popover, directly above the result;
+  - the panel's Now tab, whose fragmentation card summarises the same block.
+    There the question is the first thing on the tab, above Today so far and
+    the insight. Only what the panel draws above every tab comes before it,
+    when one is up: a permission notice, a soft-start invitation or a
+    needs-a-category card.
+  While the popover is open the panel leaves the question to it, so one set
+  of answers is on screen.
+- While it is up for the first time (`presentation: question`), the block's
+  end-of-block result is held back on both surfaces: the observation, the
+  evidence, Do Not Disturb and coverage lines, the numbers, and the panel's
+  fragmentation card for the block. So is the panel's last-hour early signal,
+  which a block that just ended mostly is. Today so far stays, and so does a
+  cloud insight, which covers a whole day.
+- What that hold-back covers, and what it does not. Rust records
+  `card_seen_before_answer = 1` only for an answer given through the link, or
+  after Not now; the hold-back keeps the end-of-block result off screen until
+  then. It does not cover what the person saw during the block. While a block
+  runs, the panel's Now tab shows the live fragmentation card for it ("on one
+  thing" or "in pieces", switch-aways, the longest stretch, recoveries), next
+  to the control that ends the block. Someone who ends a block from the panel
+  may have read nearly the final summary a moment before the question
+  appears, and their answer is still stored with `card_seen_before_answer =
+  0`. So the flag means "the end-of-block result was not on screen before the
+  answer", not "no Velvt summary of the block was seen". The live card is
+  unchanged on purpose: changing what a block shows while it runs would change
+  the product during the measurement.
+- Not now is reported once (`work_block_rating_not_now`), and Rust's reply
+  shows the result with the link under it. The link reopens the question above
+  the result, and an answer from there carries `via_link`. Not now on the
+  reopened question closes it and reports nothing new.
+- An answer (`rate_work_block`) disables the five answers until the reply.
+  Rust's reply is a snapshot and does not say whether the answer was stored.
+  "Noted." appears when a reply for that block arrives before the question's
+  deadline and no longer carries the question. A reply at or after the
+  deadline shows the result without "Noted.", because Rust refuses an answer
+  that reaches it after the deadline and that reply looks the same. A reply
+  that still carries the question, or a work-block error, offers the answers
+  again.
+- The sighting (`work_block_rating_shown`) is reported only while the window
+  drawing the question is on screen, from the window server's occlusion state
+  (`MenuBarWindowOnScreenReader`): the panel's for the Now tab, as for the
+  drift card, and the popover's own window for the popover. An open popover
+  behind a locked screen or a sleeping display reports nothing until it can be
+  seen. On the Now tab a sighting means the panel was on screen with that tab
+  selected and the question first on it; the panel's scroll position is not
+  read.
+- At `expires_at` the coordinator asks for the block's state once, because the
+  service publishes on commands, not on a timer.
+- The one-time invitation (`rating_opt_in`) sits in the same place and reports
+  which button was tapped (`respond_rating_opt_in`); Rust decides what that
+  records. The Settings toggle is described in `docs/swift-client/settings.md`.
+
+The answers leave the Mac only in the files a tester reads and sends:
+`scripts/export_cohort_evidence.sh` (export format 7) writes every rating row,
+answered or not, to `-ratings.csv`, and a summary of each rated block, and of
+no other block, to `-blockfeatures.csv` (`BLOCK_FEATURE_VERSION` 1). The
+summary is shares, counts, durations and closed-set values worked out on the
+Mac from the observation rows and the stored result; it names no category. Its
+part of the day and weekend flag are read on the Mac's clock when the export
+runs, so beside the blocks file's UTC start times they show the Mac's time
+zone to about an hour; the participant summary says so. The
+definitions are in the exporter's header, restated in
+`scripts/analyze_cohort.py` (`block_features`), and held, with this module's
+own result (`src/work_block/block_feature_vectors.rs`), to
+`scripts/tests/fixtures/block-feature-vectors.json`. A row the app has not yet
+stamped as expired is exported with the deadline it will stamp, when that is
+before the export.
 
 ## Failure Behavior
 

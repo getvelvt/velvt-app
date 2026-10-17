@@ -13,9 +13,8 @@ use velvt_shared_types::{
     ActiveIntervention, ClassificationConfidence, ClassificationSource, ClassificationStatus,
     ConfidenceLevel, InterventionDeliveryChannel, InterventionResponse, InterventionSalience,
     RatingOptIn, RatingPrompt, StartWorkBlock, WorkBlockCoverage, WorkBlockDndOutcome,
-    WorkBlockIntensity,
-    WorkBlockLifecycleEvent, WorkBlockNextAction, WorkBlockPhase, WorkBlockPurpose,
-    WorkBlockResult, WorkBlockSnapshot, WORK_BLOCK_STATE_VERSION,
+    WorkBlockIntensity, WorkBlockLifecycleEvent, WorkBlockNextAction, WorkBlockPhase,
+    WorkBlockPurpose, WorkBlockResult, WorkBlockSnapshot, WORK_BLOCK_STATE_VERSION,
 };
 
 use velvt_shared_types::{DemotionState, DemotionStateKind};

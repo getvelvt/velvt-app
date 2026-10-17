@@ -50,8 +50,9 @@ use velvt_service::work_block::{
     EndedBlock, FocusStateSource, RatingPromptSource, RatingSurfaces, WorkBlockManager,
 };
 use velvt_shared_types::{
-    ClassificationConfidence, ClassificationStatus, InterventionResponse, StartWorkBlock,
-    WorkBlockIntensity, WorkBlockPhase, WorkBlockPurpose, WorkBlockRatingAnswer, WorkBlockSnapshot,
+    ClassificationConfidence, ClassificationSource, ClassificationStatus, InterventionResponse,
+    StartWorkBlock, WorkBlockIntensity, WorkBlockPhase, WorkBlockPurpose, WorkBlockRatingAnswer,
+    WorkBlockSnapshot,
 };
 
 const DAY: i64 = 86_400;
@@ -175,6 +176,7 @@ impl Arm {
                     category,
                     ClassificationStatus::Classified,
                     ClassificationConfidence::High,
+                    ClassificationSource::Seed,
                     at(start + offset),
                 )
                 .unwrap();
@@ -674,6 +676,7 @@ fn the_question_is_consulted_only_for_an_ended_block() {
                 category,
                 ClassificationStatus::Classified,
                 ClassificationConfidence::High,
+                ClassificationSource::Seed,
                 at(offset),
             )
             .unwrap()

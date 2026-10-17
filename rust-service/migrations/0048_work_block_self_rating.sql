@@ -20,10 +20,21 @@
 -- exactly when `answer` is. `card_seen_before_answer` is 1 when the answer was
 -- given after the block's result card had been on screen.
 --
+-- The table CHECKs hold the rules the pre-registered analysis reads a row by,
+-- so a row it would discard as malformed cannot be stored. An answer or a Not
+-- now is given on screen, so neither is stored with `shown_at` NULL: the store
+-- fills a missing sighting with the answer's or the Not now's time. The card
+-- appears after Not now, so an answer that follows a Not now has
+-- `card_seen_before_answer` 1, and the flag is never 1 without an answer.
+--
 -- `rating_prompt_settings` is the question's on/off switch, a singleton like
 -- `initiation_settings`. No row means off: the question is asked only after the
 -- person turns it on. `opted_in_at` and `opted_out_at` are the last time each
--- happened.
+-- happened. `first_opted_in_at` is the first time the question was ever turned
+-- on, which turning it off and on again never changes. The plan's § 4.2 keeps
+-- every block that started at or after it out of the v6 primary, and the
+-- rating analysis's stop rule counts from it. It is set whenever `opted_in_at`
+-- is.
 --
 -- Every column is a key, one value from a closed list, a 0/1 flag, the
 -- singleton id, a timestamp or a version (`docs/field-inventory.md`). There is
@@ -56,12 +67,17 @@ CREATE TABLE work_block_self_rating (
     expired_at INTEGER CHECK (typeof(expired_at) IN ('integer', 'null')),
     card_seen_before_answer INTEGER NOT NULL DEFAULT 0
         CHECK (card_seen_before_answer IN (0, 1)),
-    CHECK ((answer IS NULL) = (answered_at IS NULL))
+    CHECK ((answer IS NULL) = (answered_at IS NULL)),
+    CHECK (shown_at IS NOT NULL OR (answer IS NULL AND not_now_at IS NULL)),
+    CHECK (card_seen_before_answer = 0 OR answer IS NOT NULL),
+    CHECK (answer IS NULL OR not_now_at IS NULL OR card_seen_before_answer = 1)
 );
 
 CREATE TABLE rating_prompt_settings (
     id INTEGER PRIMARY KEY CHECK (id = 1),
     enabled INTEGER NOT NULL DEFAULT 0 CHECK (enabled IN (0, 1)),
+    first_opted_in_at INTEGER CHECK (typeof(first_opted_in_at) IN ('integer', 'null')),
     opted_in_at INTEGER CHECK (typeof(opted_in_at) IN ('integer', 'null')),
-    opted_out_at INTEGER CHECK (typeof(opted_out_at) IN ('integer', 'null'))
+    opted_out_at INTEGER CHECK (typeof(opted_out_at) IN ('integer', 'null')),
+    CHECK ((first_opted_in_at IS NULL) = (opted_in_at IS NULL))
 );

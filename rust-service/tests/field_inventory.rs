@@ -94,6 +94,18 @@ const PRIVACY_DOCUMENT: &str = include_str!("../../PRIVACY.md");
 /// What a covered column is written with to prove it refuses free text.
 const TYPED_SENTENCE: &str = "Quorvane, something I typed about this block";
 
+/// The values each class rules out besides free text, which a column of that
+/// class must refuse too: a flag or the singleton id is never 2, a timestamp
+/// is a whole number of seconds, and a version is a whole number of 1 or more.
+fn ruled_out_by(class: &str) -> &'static [&'static str] {
+    match class {
+        "flag" | "singleton" => &["2"],
+        "timestamp" => &["1.5"],
+        "version" => &["0", "1.5"],
+        _ => &[],
+    }
+}
+
 // ---------------------------------------------------------------------------
 // The actions and their reach
 // ---------------------------------------------------------------------------
@@ -698,7 +710,7 @@ fn document_section(heading: &str) -> String {
 /// The classes `docs/field-inventory.md` may use. There is no free-text class,
 /// and adding a class is a change to this list as well as to the document.
 /// Every class is closed: a column of any of them must refuse a typed
-/// sentence.
+/// sentence, and the values `ruled_out_by` its class.
 const CLASSES: &[&str] = &["key", "choice", "flag", "singleton", "timestamp", "version"];
 
 #[test]
@@ -796,8 +808,9 @@ fn every_covered_table_is_planned_or_matches_its_inventory() {
 /// pass against the real schema means something.
 ///
 /// The copy has the usual mistakes: a text primary key that allows NULL and
-/// references nothing, a choice with no CHECK, timestamp and version columns
-/// with no `typeof` CHECK, and a column the inventory does not list.
+/// references nothing, a choice with no CHECK, a timestamp with no CHECK, a
+/// timestamp whose CHECK allows a fraction, a version whose CHECK allows 0,
+/// and a column the inventory does not list.
 #[test]
 fn the_column_checks_refuse_a_careless_table() {
     let columns = inventory_columns();
@@ -808,13 +821,13 @@ fn the_column_checks_refuse_a_careless_table() {
     let careless = probe_connection(
         "CREATE TABLE work_block_self_rating (
              block_id TEXT PRIMARY KEY,
-             prompt_version INTEGER NOT NULL,
+             prompt_version INTEGER NOT NULL CHECK (typeof(prompt_version) = 'integer'),
              eligible_at INTEGER NOT NULL,
              shown_at INTEGER,
              answer TEXT,
              answered_at INTEGER,
              not_now_at INTEGER,
-             expired_at INTEGER,
+             expired_at INTEGER CHECK (expired_at >= 0),
              card_seen_before_answer INTEGER NOT NULL DEFAULT 0
                  CHECK (card_seen_before_answer IN (0, 1)),
              note TEXT
@@ -828,8 +841,9 @@ fn the_column_checks_refuse_a_careless_table() {
         "`block_id` may be NULL",
         "`block_id` accepts a typed sentence",
         "`answer` accepts a typed sentence",
-        "`prompt_version` accepts a typed sentence",
         "`shown_at` accepts a typed sentence",
+        "`prompt_version` accepts `0`",
+        "`expired_at` accepts `1.5`",
     ] {
         assert!(
             problems.iter().any(|problem| problem.contains(expected)),
@@ -911,6 +925,14 @@ fn column_problems(
                 "`{}` accepts a typed sentence, and its class ({}) is closed",
                 entry.column, entry.class
             ));
+        }
+        for value in ruled_out_by(&entry.class) {
+            if write(connection, table, &entry.column, value) == Write::Accepted {
+                problems.push(format!(
+                    "`{}` accepts `{value}`, which its class ({}) rules out",
+                    entry.column, entry.class
+                ));
+            }
         }
         if entry.class == "choice" {
             for value in &entry.values {
@@ -1410,8 +1432,8 @@ INSERT INTO work_block_self_rating(block_id, prompt_version, eligible_at, shown_
                                    card_seen_before_answer)
     VALUES ('{block}', 1, 1760001500, 1760001510, 'most', 1760001530, 1760001520, NULL, 1),
            ('{recovered_block}', 1, 1760002400, NULL, NULL, NULL, NULL, 1760009600, 0);
-INSERT INTO rating_prompt_settings(id, enabled, opted_in_at, opted_out_at)
-    VALUES (1, 1, 1759990000, 1759980000);
+INSERT INTO rating_prompt_settings(id, enabled, first_opted_in_at, opted_in_at, opted_out_at)
+    VALUES (1, 1, 1759970000, 1759990000, 1759980000);
 INSERT INTO work_block_intervention(block_id, offered_at, action_id, anchor_category,
                                     switch_count, window_seconds, outcome, outcome_at,
                                     salience, card_seen_at, delivery_channel,

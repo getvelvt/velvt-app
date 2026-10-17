@@ -110,9 +110,13 @@ storage for an optional question after a block ends. `SelfRatingRepo`
 (`persistence/self_rating.rs`) is the only code that writes them, and it writes
 no other table (`tests/field_inventory.rs`). It records facts the caller
 reports and keeps the record's own rules: a block is eligible once, an answer
-is final and never follows expiry, Not now is never an answer, and the first
-report of each event wins. Each row cascades with its block, so Clear Local
-Work Blocks removes every answer and keeps the on/off setting. It has no caller
+is final and never follows expiry, Not now is never an answer, the first
+report of each event wins, an answer or a Not now counts as the sighting when
+none was reported before it, an answer after Not now was given with the card
+seen, and the first time the question was turned on is kept. The schema's
+CHECKs refuse every row the pre-registered analysis would discard as
+malformed. Each row cascades with its block, so Clear Local Work Blocks
+removes every answer and keeps the on/off setting. It has no caller
 in the shipped path yet. `docs/field-inventory.md` lists every column.
 
 ## Meaningful-Work Aggregation

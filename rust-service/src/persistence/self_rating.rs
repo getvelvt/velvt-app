@@ -14,6 +14,12 @@
 //!   their own timestamps, and `answer` stays NULL.
 //! - The first time each thing happened wins. A later report of the same
 //!   thing changes nothing.
+//! - An answer and a Not now are given on screen. If no sighting was reported
+//!   before one of them, its time is the sighting.
+//! - The result card appears after Not now, so an answer that follows a Not
+//!   now was given with the card seen.
+//! - The first time the question was turned on is kept. Turning it off and on
+//!   again never changes it.
 //!
 //! Nothing in the shipped path calls it yet.
 
@@ -74,7 +80,8 @@ pub struct SelfRating {
     pub prompt_version: u32,
     /// When the block became eligible, which is when the row was written.
     pub eligible_at: DateTime<Utc>,
-    /// When the question was first on screen. `None` if it never was.
+    /// When the question was first on screen. `None` if it never was. An
+    /// answer or a Not now with no sighting before it sets it to its own time.
     pub shown_at: Option<DateTime<Utc>>,
     /// `None` if there is no answer. Not now and expiry are never an answer.
     pub answer: Option<SelfRatingAnswer>,
@@ -84,6 +91,7 @@ pub struct SelfRating {
     /// When the question stopped being available without an answer.
     pub expired_at: Option<DateTime<Utc>>,
     /// The answer was given after the block's result card had been on screen.
+    /// Always true for an answer after a Not now, and false with no answer.
     pub card_seen_before_answer: bool,
 }
 
@@ -100,6 +108,9 @@ impl SelfRating {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct RatingPromptSettings {
     pub enabled: bool,
+    /// The first time the question was ever turned on. Turning it off and on
+    /// again never changes it. The export's `rating_prompt_enabled_at`.
+    pub first_opted_in_at: Option<DateTime<Utc>>,
     /// The last time the question was turned on.
     pub opted_in_at: Option<DateTime<Utc>>,
     /// The last time the question was turned off.
@@ -133,12 +144,15 @@ pub trait SelfRatingRepo: Send + Sync {
     fn open_ratings(&self) -> Result<Vec<SelfRating>, PersistenceError>;
 
     /// Records that the question was on screen at `at`. The first sighting
-    /// wins, and only an open question is marked.
+    /// wins, and only an open question is marked. An answer or a Not now
+    /// already counts as a sighting.
     fn mark_shown(&self, block_id: &str, at: DateTime<Utc>) -> Result<bool, PersistenceError>;
 
     /// Records `answer` at `at`. Only an open question takes an answer, so an
     /// answer is never replaced and never follows expiry. A Not now before it
-    /// stays recorded beside it.
+    /// stays recorded beside it, and makes `card_seen_before_answer` true
+    /// whatever the caller passed, because the card appears after Not now. With
+    /// no sighting recorded, `at` is also the sighting.
     fn record_answer(
         &self,
         block_id: &str,
@@ -149,19 +163,21 @@ pub trait SelfRatingRepo: Send + Sync {
 
     /// Records a tap on Not now at `at`. It is not an answer, and the question
     /// stays open. The first tap wins, and only an open question is marked.
+    /// With no sighting recorded, `at` is also the sighting.
     fn record_not_now(&self, block_id: &str, at: DateTime<Utc>) -> Result<bool, PersistenceError>;
 
     /// Records that the question stopped being available at `at`. Only an
     /// open question expires: an answered one never does.
     fn expire(&self, block_id: &str, at: DateTime<Utc>) -> Result<bool, PersistenceError>;
 
-    /// Whether the question is asked, and when it was last turned on and off.
+    /// Whether the question is asked, when it was first turned on, and when it
+    /// was last turned on and off.
     fn settings(&self) -> Result<RatingPromptSettings, PersistenceError>;
 
     /// Turns the question on or off at `at`. Turning it on stamps
-    /// `opted_in_at` and turning it off stamps `opted_out_at`. Setting the
-    /// state it already has changes nothing, so the stamps say when the state
-    /// last changed.
+    /// `opted_in_at`, and `first_opted_in_at` the first time only. Turning it
+    /// off stamps `opted_out_at`. Setting the state it already has changes
+    /// nothing, so the stamps say when the state changed.
     fn set_enabled(&self, enabled: bool, at: DateTime<Utc>) -> Result<bool, PersistenceError>;
 }
 
@@ -235,7 +251,8 @@ impl SelfRatingRepo for SqliteSelfRatingRepo {
         let updated = connection.execute(
             &format!(
                 "UPDATE work_block_self_rating
-                 SET answer = ?2, answered_at = ?3, card_seen_before_answer = ?4
+                 SET answer = ?2, answered_at = ?3, shown_at = COALESCE(shown_at, ?3),
+                     card_seen_before_answer = (?4 OR not_now_at IS NOT NULL)
                  WHERE block_id = ?1 AND {OPEN}"
             ),
             params![
@@ -252,7 +269,7 @@ impl SelfRatingRepo for SqliteSelfRatingRepo {
         let connection = self.0.connection()?;
         update_open(
             &connection,
-            "not_now_at = ?2",
+            "not_now_at = ?2, shown_at = COALESCE(shown_at, ?2)",
             "not_now_at IS NULL",
             block_id,
             at,
@@ -277,10 +294,14 @@ impl SelfRatingRepo for SqliteSelfRatingRepo {
         }
         if enabled {
             transaction.execute(
-                "INSERT INTO rating_prompt_settings(id, enabled, opted_in_at)
-                 VALUES (1, 1, ?1)
+                "INSERT INTO rating_prompt_settings(id, enabled, first_opted_in_at, opted_in_at)
+                 VALUES (1, 1, ?1, ?1)
                  ON CONFLICT(id) DO UPDATE SET
                     enabled = 1,
+                    first_opted_in_at = COALESCE(
+                        rating_prompt_settings.first_opted_in_at,
+                        excluded.first_opted_in_at
+                    ),
                     opted_in_at = excluded.opted_in_at",
                 [at.timestamp()],
             )?;
@@ -319,13 +340,15 @@ fn update_open(
 fn settings(connection: &Connection) -> Result<RatingPromptSettings, PersistenceError> {
     let stored = connection
         .query_row(
-            "SELECT enabled, opted_in_at, opted_out_at FROM rating_prompt_settings WHERE id = 1",
+            "SELECT enabled, first_opted_in_at, opted_in_at, opted_out_at
+             FROM rating_prompt_settings WHERE id = 1",
             [],
             |row| {
                 Ok(RatingPromptSettings {
                     enabled: row.get::<_, i64>(0)? != 0,
-                    opted_in_at: optional_timestamp_from_row(row, 1)?,
-                    opted_out_at: optional_timestamp_from_row(row, 2)?,
+                    first_opted_in_at: optional_timestamp_from_row(row, 1)?,
+                    opted_in_at: optional_timestamp_from_row(row, 2)?,
+                    opted_out_at: optional_timestamp_from_row(row, 3)?,
                 })
             },
         )
@@ -577,9 +600,94 @@ mod tests {
         assert_eq!(SelfRatingAnswer::from_db_value("none"), None);
     }
 
+    /// An answer is given on screen. When it arrives before any report that the
+    /// question was shown, its own time is the sighting, so the row never says
+    /// "answered, never shown". The late report then changes nothing.
+    #[test]
+    fn an_answer_with_no_sighting_before_it_is_the_sighting() {
+        let (_database, ratings) = store(&["block-a", "block-b"]);
+        ratings.record_eligible("block-a", 1, at(0)).unwrap();
+        assert!(ratings
+            .record_answer("block-a", SelfRatingAnswer::Most, false, at(10))
+            .unwrap());
+        assert!(!ratings.mark_shown("block-a", at(11)).unwrap());
+        let answered = ratings.rating("block-a").unwrap().unwrap();
+        assert_eq!(answered.shown_at, Some(at(10)));
+        assert_eq!(answered.answered_at, Some(at(10)));
+
+        // A sighting reported first stays the sighting.
+        ratings.record_eligible("block-b", 1, at(0)).unwrap();
+        assert!(ratings.mark_shown("block-b", at(4)).unwrap());
+        assert!(ratings
+            .record_answer("block-b", SelfRatingAnswer::Most, false, at(10))
+            .unwrap());
+        assert_eq!(
+            ratings.rating("block-b").unwrap().unwrap().shown_at,
+            Some(at(4))
+        );
+    }
+
+    /// Not now is tapped on screen too. With no sighting before it, its time
+    /// is the sighting, and an answer after it keeps that sighting.
+    #[test]
+    fn a_not_now_with_no_sighting_before_it_is_the_sighting() {
+        let (_database, ratings) = store(&["block-a"]);
+        ratings.record_eligible("block-a", 1, at(0)).unwrap();
+        assert!(ratings.record_not_now("block-a", at(9)).unwrap());
+        assert!(!ratings.mark_shown("block-a", at(12)).unwrap());
+        assert_eq!(
+            ratings.rating("block-a").unwrap().unwrap().shown_at,
+            Some(at(9))
+        );
+
+        ratings
+            .record_answer("block-a", SelfRatingAnswer::Little, true, at(300))
+            .unwrap();
+        assert_eq!(
+            ratings.rating("block-a").unwrap().unwrap().shown_at,
+            Some(at(9))
+        );
+    }
+
+    /// The card appears after Not now, so an answer after a Not now was given
+    /// with the card seen, whatever the caller reports. Without a Not now the
+    /// caller's report stands.
+    #[test]
+    fn an_answer_after_not_now_was_given_with_the_card_seen() {
+        let (_database, ratings) = store(&["after-not-now", "card-unseen", "card-seen"]);
+        for block in ["after-not-now", "card-unseen", "card-seen"] {
+            ratings.record_eligible(block, 1, at(0)).unwrap();
+            ratings.mark_shown(block, at(5)).unwrap();
+        }
+        ratings.record_not_now("after-not-now", at(9)).unwrap();
+        for (block, card_seen) in [
+            ("after-not-now", false),
+            ("card-unseen", false),
+            ("card-seen", true),
+        ] {
+            assert!(ratings
+                .record_answer(block, SelfRatingAnswer::Half, card_seen, at(60))
+                .unwrap());
+        }
+        let card = |block| {
+            ratings
+                .rating(block)
+                .unwrap()
+                .unwrap()
+                .card_seen_before_answer
+        };
+        assert!(
+            card("after-not-now"),
+            "an answer after Not now was stored as given before the card"
+        );
+        assert!(!card("card-unseen"));
+        assert!(card("card-seen"));
+    }
+
     /// The question is off until the person turns it on. The stamps say when
-    /// the state last changed, so asking for the state it already has changes
-    /// nothing.
+    /// the state changed, so asking for the state it already has changes
+    /// nothing. The first time it was turned on is kept through turning it off
+    /// and on again: the analysis counts from it.
     #[test]
     fn the_question_is_off_until_turned_on() {
         let (database, ratings) = store(&[]);
@@ -599,19 +707,32 @@ mod tests {
             ratings.settings().unwrap(),
             RatingPromptSettings {
                 enabled: true,
+                first_opted_in_at: Some(at(10)),
                 opted_in_at: Some(at(10)),
                 opted_out_at: None,
             }
         );
 
         assert!(ratings.set_enabled(false, at(30)).unwrap());
+        assert_eq!(
+            ratings.settings().unwrap(),
+            RatingPromptSettings {
+                enabled: false,
+                first_opted_in_at: Some(at(10)),
+                opted_in_at: Some(at(10)),
+                opted_out_at: Some(at(30)),
+            }
+        );
         assert!(ratings.set_enabled(true, at(40)).unwrap());
+        assert!(ratings.set_enabled(false, at(50)).unwrap());
+        assert!(ratings.set_enabled(true, at(60)).unwrap());
         assert_eq!(
             ratings.settings().unwrap(),
             RatingPromptSettings {
                 enabled: true,
-                opted_in_at: Some(at(40)),
-                opted_out_at: Some(at(30)),
+                first_opted_in_at: Some(at(10)),
+                opted_in_at: Some(at(60)),
+                opted_out_at: Some(at(50)),
             }
         );
         assert_eq!(row_count(&database, "rating_prompt_settings"), 1);
@@ -645,6 +766,7 @@ mod tests {
             ratings.settings().unwrap(),
             RatingPromptSettings {
                 enabled: true,
+                first_opted_in_at: Some(at(5)),
                 opted_in_at: Some(at(5)),
                 opted_out_at: None,
             }
@@ -663,8 +785,9 @@ mod tests {
                     .execute(
                         &format!(
                             "INSERT INTO work_block_self_rating(block_id, prompt_version,
-                                 eligible_at, answer, answered_at)
-                             VALUES ('block-a', 1, 1800000000, {answer}, {answered_at})"
+                                 eligible_at, shown_at, answer, answered_at)
+                             VALUES ('block-a', 1, 1800000000, 1800000005, {answer},
+                                     {answered_at})"
                         ),
                         [],
                     )
@@ -682,5 +805,73 @@ mod tests {
                 .is_err(),
             "a prompt version of 0 was stored"
         );
+    }
+
+    /// The schema refuses every row the pre-registered analysis would discard
+    /// as malformed, so a row written by anything but this store cannot be
+    /// one either: an answer or a Not now never shown, a card seen with no
+    /// answer, an answer after Not now with the card unseen, and an opt-in
+    /// time without the first one.
+    #[test]
+    fn the_schema_refuses_the_rows_the_analysis_discards() {
+        let (database, _ratings) = store(&["block-a"]);
+        let connection = database.connection().unwrap();
+        for (columns, values, what) in [
+            (
+                "answer, answered_at",
+                "'most', 1800000010",
+                "an answer never shown",
+            ),
+            ("not_now_at", "1800000010", "a Not now never shown"),
+            (
+                "shown_at, card_seen_before_answer",
+                "1800000005, 1",
+                "a card seen with no answer",
+            ),
+            (
+                "shown_at, not_now_at, answer, answered_at",
+                "1800000005, 1800000009, 'most', 1800000010",
+                "an answer after Not now with the card unseen",
+            ),
+        ] {
+            assert!(
+                connection
+                    .execute(
+                        &format!(
+                            "INSERT INTO work_block_self_rating(block_id, prompt_version,
+                                 eligible_at, {columns})
+                             VALUES ('block-a', 1, 1800000000, {values})"
+                        ),
+                        [],
+                    )
+                    .is_err(),
+                "{what} was stored"
+            );
+        }
+        connection
+            .execute(
+                "INSERT INTO work_block_self_rating(block_id, prompt_version, eligible_at,
+                     shown_at, not_now_at, answer, answered_at, card_seen_before_answer)
+                 VALUES ('block-a', 1, 1800000000, 1800000005, 1800000009, 'most',
+                         1800000010, 1)",
+                [],
+            )
+            .expect("a well-formed late answer was refused");
+
+        for (first, last) in [("NULL", "1800000010"), ("1800000010", "NULL")] {
+            assert!(
+                connection
+                    .execute(
+                        &format!(
+                            "INSERT INTO rating_prompt_settings(id, enabled, first_opted_in_at,
+                                 opted_in_at)
+                             VALUES (1, 1, {first}, {last})"
+                        ),
+                        [],
+                    )
+                    .is_err(),
+                "first_opted_in_at {first} with opted_in_at {last} was stored"
+            );
+        }
     }
 }

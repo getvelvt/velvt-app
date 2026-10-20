@@ -35,3 +35,4 @@ Open the relevant file, make your changes, and do not modify files unrelated to 
 | Release ledger | `docs/RELEASES.md` | Every notarized release with build, protocol, source commit or tag, DMG sha256 and recipients; how to cut the next one |
 | Secure application updates | `docs/updates.md` | Updater architecture, trust model, activation checklist, publishing order, and N-to-N+1 verification |
 | Local meaningful-work loop | `docs/architecture/work-block-loop.md` | Work-block ownership, state machine, evidence rules, privacy field table, lifecycle, and failure behavior |
+| Personal vault and device registry (design, not built) | `docs/architecture/personal-vault-and-devices.md` | Proposed Phase 3 sync across Macs (encrypted `prefs` blob, iCloud Keychain or setup code, held policy inputs) and the Phase 4 device chain, QR pairing and phone relay; for founder review |

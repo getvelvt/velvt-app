@@ -21,6 +21,7 @@ The settings tab currently exposes:
 - Queued Events submenu.
 - Collection Settings submenu.
 - Onboarding & Tour submenu, including replay actions for both experiences.
+- Contact support… action (since 1.0.15, in the place of the greyed-out Check for Updates…; see below).
 - Quit Velvt action.
 - App version display.
 
@@ -50,6 +51,25 @@ Refreshing sends:
 ```swift
 try await ipcClient.send(.requestMenuStatus)
 ```
+
+## Copy Diagnostics and Contact support…
+
+**Copy Diagnostics** (App Info) copies `key=value` lines that hold versions,
+status codes and counts only: `app_version`, `build_number` (`CFBundleVersion`),
+`protocol_version`, `macos_version` (major.minor.patch), `architecture`
+(`arm64`, `x86_64`, or `x86_64_rosetta` for an Intel process on Apple silicon),
+`local_service`, `collection`, `account`, `backend`, `queued_event_count`,
+`last_successful_sync`, `next_retry` and `last_error_code`. No app, title, site,
+account email or device identifier is in them. The builders for the build and
+system lines are in `UI/SupportDiagnostics.swift`.
+
+**Contact support…** (the Settings footer) opens a `mailto:hi@getvelvt.com`
+draft whose body is a "What happened?" line followed by exactly that text. The
+person's mail app shows the draft; Velvt sends nothing itself. If no app takes
+the draft, the diagnostics are copied and an alert names the address. It took
+the place of **Check for Updates…**, which alpha builds showed greyed out
+because their updater is off (`docs/updates.md`), so the footer stays at three
+buttons.
 
 ## Queued Events
 

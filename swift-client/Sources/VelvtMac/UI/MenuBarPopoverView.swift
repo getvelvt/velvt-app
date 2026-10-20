@@ -1892,7 +1892,6 @@ public struct MenuBarPopoverView: View {
     private let restartLocalService: (() -> Void)?
     private let replayOnboarding: (() -> Void)?
     private let startGuidedTour: (() -> Void)?
-    @ObservedObject private var updateController: AppUpdateController
     @ObservedObject private var guidedTour: GuidedTourModel
     @ObservedObject private var metricsStore: AppMetricsStore
     private let popoverWillOpen: AnyPublisher<Void, Never>
@@ -1934,7 +1933,6 @@ public struct MenuBarPopoverView: View {
         restartLocalService: (() -> Void)? = nil,
         replayOnboarding: (() -> Void)? = nil,
         startGuidedTour: (() -> Void)? = nil,
-        updateController: AppUpdateController,
         guidedTour: GuidedTourModel = GuidedTourModel(),
         metricsStore: AppMetricsStore = AppMetricsStore(
             defaults: UserDefaults(suiteName: "MenuBarPopoverView.preview") ?? .standard),
@@ -1964,7 +1962,6 @@ public struct MenuBarPopoverView: View {
         self.restartLocalService = restartLocalService
         self.replayOnboarding = replayOnboarding
         self.startGuidedTour = startGuidedTour
-        self.updateController = updateController
         self.guidedTour = guidedTour
         self.metricsStore = metricsStore
         self.popoverWillOpen = popoverWillOpen
@@ -2543,14 +2540,13 @@ public struct MenuBarPopoverView: View {
                 }
                 Divider().opacity(0.15)
                 // Deliberately outside the columns and always on screen:
-                // account deletion, updates and Quit belong to the app rather
+                // account deletion, support and Quit belong to the app rather
                 // than to any one destination, and they used to be reachable
                 // no matter which submenu window was open.
                 settingsFooter
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         }
-        .onAppear { updateController.refreshAvailability() }
     }
 
     /// The DEBUG destination only exists when the app was built with a way to
@@ -2656,11 +2652,13 @@ public struct MenuBarPopoverView: View {
                     ipcClient: ipcClient
                 )
             }
-            Button("Check for Updates…") {
-                updateController.checkForUpdates()
-            }
-            .buttonStyle(VelvtSecondaryButtonStyle(onPaper: false))
-            .disabled(!updateController.canCheckForUpdates)
+            // In the place of "Check for Updates…", which alpha builds showed
+            // greyed out: their updater is off, and new builds arrive by
+            // email. Taking its place keeps the row at three buttons.
+            Button("Contact support…", action: contactSupport)
+                .buttonStyle(VelvtSecondaryButtonStyle(onPaper: false))
+                .help(Self.contactSupportHint)
+                .accessibilityHint(Self.contactSupportHint)
             Button("Quit Velvt", role: .destructive, action: onTerminate)
                 .buttonStyle(VelvtDestructiveButtonStyle())
             Spacer(minLength: 8)
@@ -3081,7 +3079,10 @@ public struct MenuBarPopoverView: View {
         }
     }
 
-    private func copyDiagnostics() {
+    private static let contactSupportHint =
+        "Opens an email to \(SupportDiagnostics.supportAddress) holding the diagnostics, for you to read and edit before sending"
+
+    private var diagnosticsText: String {
         let status = menuStatusViewModel?.status
         let accountStatus: String
         if accountStateManager?.requiresReauthentication == true {
@@ -3098,7 +3099,10 @@ public struct MenuBarPopoverView: View {
         let lines = [
             "Velvt privacy-safe diagnostics",
             "app_version=\(appVersion)",
+            "build_number=\(SupportDiagnostics.buildNumber(infoDictionary: Bundle.main.infoDictionary))",
             "protocol_version=\(protocolVersion)",
+            "macos_version=\(SupportDiagnostics.macOSVersion(ProcessInfo.processInfo.operatingSystemVersion))",
+            "architecture=\(SupportDiagnostics.currentArchitecture)",
             "local_service=\(String(describing: serviceConnectionStatus.phase))",
             "collection=\(collectionDiagnosticCode)",
             "account=\(accountStatus)",
@@ -3108,9 +3112,33 @@ public struct MenuBarPopoverView: View {
             "next_retry=\(status?.nextUploadAttemptAt?.ISO8601Format() ?? "none")",
             "last_error_code=\(status?.lastUploadErrorCode ?? "none")",
         ]
+        return lines.joined(separator: "\n")
+    }
+
+    private func copyDiagnostics() {
         NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(lines.joined(separator: "\n"), forType: .string)
+        NSPasteboard.general.setString(diagnosticsText, forType: .string)
         diagnosticsCopied = true
+    }
+
+    /// Opens a draft to support holding what Copy Diagnostics copies. Velvt
+    /// sends nothing: the person's mail app shows the draft, and they send it
+    /// or not.
+    private func contactSupport() {
+        if let url = SupportDiagnostics.mailDraftURL(diagnostics: diagnosticsText),
+            NSWorkspace.shared.open(url)
+        {
+            return
+        }
+        // Nothing took the draft. The address and the diagnostics are all
+        // support needs, so hand over both rather than fail without a word.
+        copyDiagnostics()
+        let alert = NSAlert()
+        alert.messageText = "No mail app opened"
+        alert.informativeText =
+            "The diagnostics are copied. Paste them into an email to \(SupportDiagnostics.supportAddress)."
+        alert.addButton(withTitle: "OK")
+        alert.runModal()
     }
 
     private var collectionDiagnosticCode: String {

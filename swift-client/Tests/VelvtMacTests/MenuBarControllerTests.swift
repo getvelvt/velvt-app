@@ -523,7 +523,6 @@ final class MenuBarControllerTests: XCTestCase {
             currentActivity: CurrentActivityModel(),
             serviceAlertModel: ServiceAlertModel(messages: Empty<ServerMessage, Never>()),
             ipcClient: client,
-            updateController: .disabled(),
             onEscape: {}
         )
     }

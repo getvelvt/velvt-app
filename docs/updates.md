@@ -47,9 +47,13 @@ the only updater-originated network traffic.
 
 1. Keep `https://github.com/sparkle-project/Sparkle` pinned at exact version
    `2.9.4` in both Swift package resolution and the Xcode project.
-2. Retain `SPUStandardUpdaterController` for the application lifetime and keep
-   the **Check for Updates…** action wired to it. Do not claim automatic updates
-   until the packaged end-to-end test below passes.
+2. Retain `SPUStandardUpdaterController` for the application lifetime
+   (`AppDelegate.updateController`). Do not claim automatic updates until the
+   packaged end-to-end test below passes. The menu's **Check for Updates…**
+   button was removed in 1.0.15, while alpha builds ship with the updater off;
+   **Contact support…** took its place in the Settings footer. Turning the
+   updater on means deciding where its manual check goes, and
+   `AppUpdateController.checkForUpdates()` is still there to call.
 3. Continue injecting production-only `SUFeedURL`, `SUPublicEDKey`,
    `SURequireSignedFeed=true`, and `SUVerifyUpdateBeforeExtraction=true` into the
    generated Info.plist. Debug/local builds should use an explicit local test
@@ -189,7 +193,9 @@ feed. Local development builds are insufficient evidence.
    generate representative local state, and record checksums/counts that do not
    expose content.
 2. Serve a signed appcast and notarized N+1 archive from the controlled feed.
-3. Trigger **Check for Updates…**. Verify feed acceptance, archive download,
+3. Trigger an update check. The menu has had no button for one since 1.0.15
+   (see Required integration, step 2), so this waits on that decision or on
+   Sparkle's scheduled check. Verify feed acceptance, archive download,
    pre-extraction Ed25519 verification, install-on-relaunch, and successful launch
    of both N+1 app and N+1 embedded helper.
 4. Confirm app version, helper version, IPC protocol agreement, Keychain session,

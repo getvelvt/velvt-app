@@ -24,6 +24,7 @@ The Swift client is a SwiftUI/AppKit macOS app with an AppKit composition root a
 
 ```text
 ServiceProcessLauncher
+OpenAtLoginDefault
 PermissionManager
 IPCClientProtocol
 AccountStateManager
@@ -38,6 +39,11 @@ NotificationDeliveryCoordinator
 NotificationResponseRouter
 WorkBlockCoordinator
 ```
+
+`OpenAtLoginDefault.apply()` adds Velvt to Login Items through
+`SMAppService.mainApp` on the first launch from an Applications folder, records
+that it did, and never touches the registration again. It is a default with no
+Velvt setting: the Login Items list in System Settings is the off switch.
 
 The ordering matters:
 

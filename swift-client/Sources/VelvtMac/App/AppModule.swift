@@ -47,6 +47,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     private var versionMismatchCancellable: AnyCancellable?
     private let metricsStore = AppMetricsStore()
     private let serviceProcessLauncher = ServiceProcessLauncher()
+    private let openAtLogin = OpenAtLoginDefault()
 
     public override convenience init() {
         self.init(
@@ -79,6 +80,9 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         // running as a packaged .app; a no-op under `swift run`, where the
         // service is started separately per README development instructions.
         serviceProcessLauncher.start()
+        // Once per Mac, and only from an Applications folder. After that the
+        // Login Items list in System Settings is the person's to change.
+        openAtLogin.apply()
 
         permissionManager.startMonitoring()
         Task {

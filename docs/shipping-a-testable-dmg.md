@@ -166,6 +166,10 @@ broken DMG shipped.
    has never built Velvt, so it carries a genuine `com.apple.quarantine` flag.
 2. Install and launch it **without** running `xattr`.
 3. Confirm it opens, requests Accessibility, and reaches a working state.
+4. Log out and back in (or restart) and confirm Velvt opens by itself. Then
+   remove it in System Settings > General > Login Items, log out and in again,
+   and confirm it stays closed: that list is the only off switch, and a launch
+   must not undo it.
 
 If you must unblock a machine you own during development:
 

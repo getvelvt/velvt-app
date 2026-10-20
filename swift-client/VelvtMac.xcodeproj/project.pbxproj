@@ -37,6 +37,7 @@
 		89AC090DEEE9F19A1A61543B /* UnixSocketIPCClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 22090E8600EB879CBD976826 /* UnixSocketIPCClient.swift */; };
 		8AC53105D9E0437AB5B5E703 /* HistoryListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8E269EDC9F6E4366A86A35F1 /* HistoryListView.swift */; };
 		97552E1EF5904F8599EAC9E6 /* ServiceProcessLauncher.swift in Sources */ = {isa = PBXBuildFile; fileRef = D6E8B36F349C4DC1A2E4D3D5 /* ServiceProcessLauncher.swift */; };
+		F6B2D1EF8C3A4E2B0D4F6C01 /* OpenAtLogin.swift in Sources */ = {isa = PBXBuildFile; fileRef = F6B2D1EF8C3A4E2B0D4F6C02 /* OpenAtLogin.swift */; };
 		9A6928BC73B9B53A90E1B4E3 /* FakeIPCClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = EF36F72E108BC558D18F9523 /* FakeIPCClient.swift */; };
 		9CDDE6FAD40B420D9DC4F3F7 /* HistoryViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 75F5611EE8684F0C8736139F /* HistoryViewModel.swift */; };
 		9DB1CFAA2FE2D0CB00632E03 /* com.velvt.service.plist.template in Resources */ = {isa = PBXBuildFile; fileRef = 9DB1CFA92FE2D0CB00632E03 /* com.velvt.service.plist.template */; };
@@ -110,6 +111,7 @@
 		C9F1ADB76DD4328B7586E87C /* UIModule.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = UIModule.swift; path = UI/UIModule.swift; sourceTree = "<group>"; };
 		C31D8E315B114A8B9345F302 /* OnboardingExperience.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = OnboardingExperience.swift; path = UI/OnboardingExperience.swift; sourceTree = "<group>"; };
 		D6E8B36F349C4DC1A2E4D3D5 /* ServiceProcessLauncher.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ServiceProcessLauncher.swift; path = App/ServiceProcessLauncher.swift; sourceTree = "<group>"; };
+		F6B2D1EF8C3A4E2B0D4F6C02 /* OpenAtLogin.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = OpenAtLogin.swift; path = App/OpenAtLogin.swift; sourceTree = "<group>"; };
 		D7C02BD1C04707361E1B23FF /* DeliveryModule.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = DeliveryModule.swift; path = Delivery/DeliveryModule.swift; sourceTree = "<group>"; };
 		D4A0C4A9A65047B88055A102 /* UpdateController.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = UpdateController.swift; path = App/UpdateController.swift; sourceTree = "<group>"; };
 		E2F95C23A6804E568E326FE0 /* DisplayDataCoordinator.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = DisplayDataCoordinator.swift; path = Delivery/DisplayDataCoordinator.swift; sourceTree = "<group>"; };
@@ -186,6 +188,7 @@
 				A19C7D204B9345F3A6E1C102 /* CredentialTextField.swift */,
 				93C055AD72C0443A8CD98C13 /* PermissionManager.swift */,
 				D6E8B36F349C4DC1A2E4D3D5 /* ServiceProcessLauncher.swift */,
+				F6B2D1EF8C3A4E2B0D4F6C02 /* OpenAtLogin.swift */,
 				A1B2C3D4E5F601234567890D /* ServiceManager.swift */,
 				2A9ADCDFF34741EE93EC7B6A /* MenuBarController.swift */,
 				81032E99C0684420AFA1791A /* AuthViewModel.swift */,
@@ -392,6 +395,7 @@
 				A19C7D204B9345F3A6E1C101 /* CredentialTextField.swift in Sources */,
 				38ABFEC236C54BCDBB9D836F /* PermissionManager.swift in Sources */,
 				97552E1EF5904F8599EAC9E6 /* ServiceProcessLauncher.swift in Sources */,
+				F6B2D1EF8C3A4E2B0D4F6C01 /* OpenAtLogin.swift in Sources */,
 				443F93164E6A45C582B1BB38 /* MenuBarController.swift in Sources */,
 				4346E234F70547A289E2D2EE /* AuthViewModel.swift in Sources */,
 				E422A6EE3F134F359B286F33 /* DisplayDataCoordinator.swift in Sources */,

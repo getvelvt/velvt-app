@@ -14,6 +14,12 @@ public enum OnboardingCopy {
     public static let notificationsBlocked =
         "Notifications are off for Velvt, so drift nudges, daily insights and category reminders can't reach you. Turn them on in System Settings > Notifications > Velvt."
 
+    /// Shown at the end of first run only while macOS will in fact open Velvt
+    /// at login (`OpenAtLoginDefault`). It is the only place the app says so;
+    /// the Login Items list it names is the off switch.
+    public static let opensAtLogin =
+        "Velvt opens when you log in; to stop that, remove it in System Settings > General > Login Items."
+
     public static let privacySummary =
         "Raw app names, window titles, URLs, filenames, paths, contacts, and work-block intentions stay on this Mac. Approved broad categories, coarse durations, timestamps, and safe summaries may synchronize for beta insights. Depending on the service configuration, privacy-safe derived prompts may be processed by an approved external model provider."
 }
@@ -956,13 +962,16 @@ public struct FocusAllowanceExperienceView: View {
 }
 
 public struct TourInvitationExperienceView: View {
+    private let opensAtLogin: Bool
     private let onContinue: () -> Void
     private let onStartTour: () -> Void
 
     public init(
+        opensAtLogin: Bool = false,
         onContinue: @escaping () -> Void,
         onStartTour: @escaping () -> Void
     ) {
+        self.opensAtLogin = opensAtLogin
         self.onContinue = onContinue
         self.onStartTour = onStartTour
     }
@@ -986,12 +995,19 @@ public struct TourInvitationExperienceView: View {
 
             VelvtHairline()
 
-            IntroPage(
-                systemImage: "checkmark.circle.fill",
-                title: "Take a quick look around.",
-                body:
-                    "The guided tour opens the live menu-bar interface and points to the controls you will use."
-            )
+            VStack(alignment: .leading, spacing: VelvtMetrics.spaceLG) {
+                IntroPage(
+                    systemImage: "checkmark.circle.fill",
+                    title: "Take a quick look around.",
+                    body:
+                        "The guided tour opens the live menu-bar interface and points to the controls you will use."
+                )
+                if opensAtLogin {
+                    Text(OnboardingCopy.opensAtLogin)
+                        .velvtBody(13)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
             .frame(maxWidth: 620, maxHeight: .infinity, alignment: .topLeading)
             .padding(36)
 
@@ -1389,6 +1405,7 @@ public final class OnboardingWindowController: NSObject, NSWindowDelegate {
     private func presentTourInvitationStage() {
         presentWindow(
             TourInvitationExperienceView(
+                opensAtLogin: OpenAtLoginDefault().opensAtLogin,
                 onContinue: { [weak self] in self?.finishWithoutTour() },
                 onStartTour: { [weak self] in self?.finishWithTour() }
             ),

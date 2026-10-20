@@ -83,10 +83,17 @@ Swift persists only lightweight UI/session state:
 | First-run completion | `UserDefaults` keys `hasCompletedPermissionOnboarding` and `velvt.onboarding.completed_version` | `UI/PermissionViews.swift` |
 | Action counter | `UserDefaults` key `velvt.metrics.actions_logged` | `App/AppMetricsStore.swift` |
 | Intervention counter | `UserDefaults` key `velvt.metrics.interventions` | `App/AppMetricsStore.swift` |
+| Open at login applied (a boolean; macOS keeps the login item itself) | `UserDefaults` key `velvt.open_at_login.default_applied` | `App/OpenAtLogin.swift` |
 | Auth session and account email | Keychain | `Auth/AuthModule.swift` |
 | Pending deletion sentinel | Keychain key `velvt.pending_deletion` | `Auth/AuthModule.swift` |
 
 No raw event buffer is persisted by Swift. Captured events are held in memory by `EventRelay` only.
+
+Open at login is deliberately not a setting. Since 1.0.15 Velvt adds itself to
+Login Items once, on the first launch from an Applications folder, and the last
+onboarding screen says so while it is true. Removing Velvt in System Settings >
+General > Login Items turns it off for good, because the key above records that
+the default was applied and no later launch registers again.
 
 ## Configuration Sources
 

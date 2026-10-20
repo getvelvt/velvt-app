@@ -13,6 +13,7 @@ use std::time::Duration;
 pub enum HttpMethod {
     Get,
     Post,
+    Put,
     Patch,
     Delete,
 }
@@ -22,10 +23,22 @@ impl HttpMethod {
         match self {
             Self::Get => "GET",
             Self::Post => "POST",
+            Self::Put => "PUT",
             Self::Patch => "PATCH",
             Self::Delete => "DELETE",
         }
     }
+}
+
+/// A conditional request header: the only request header a caller chooses.
+/// The vault's compare-and-swap names the version a write replaces
+/// (`If-Match`) and the version a read already holds (`If-None-Match`), each
+/// as an entity tag, `"<version>"`. Neither is recorded in the egress ledger,
+/// which records the method, the URL and the body.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Precondition {
+    IfMatch(String),
+    IfNoneMatch(String),
 }
 
 #[derive(Clone)]
@@ -40,6 +53,7 @@ pub struct HttpRequest {
     /// names its batch's owner. Never sent. With none, `AuthManager` binds the
     /// request to the account signed in when it starts.
     pub account: Option<String>,
+    pub precondition: Option<Precondition>,
 }
 
 impl HttpRequest {
@@ -52,6 +66,7 @@ impl HttpRequest {
             json_body: None,
             timeout: None,
             account: None,
+            precondition: None,
         }
     }
 
@@ -64,6 +79,7 @@ impl HttpRequest {
             json_body: None,
             timeout: None,
             account: None,
+            precondition: None,
         }
     }
 
@@ -76,6 +92,7 @@ impl HttpRequest {
             json_body: None,
             timeout: None,
             account: None,
+            precondition: None,
         }
     }
 
@@ -88,7 +105,26 @@ impl HttpRequest {
             json_body: Some(json_body),
             timeout: None,
             account: None,
+            precondition: None,
         }
+    }
+
+    pub fn put(path: impl Into<String>, json_body: Value) -> Self {
+        Self {
+            method: HttpMethod::Put,
+            path: path.into(),
+            authorization: None,
+            refresh_token: None,
+            json_body: Some(json_body),
+            timeout: None,
+            account: None,
+            precondition: None,
+        }
+    }
+
+    pub fn with_precondition(mut self, precondition: Precondition) -> Self {
+        self.precondition = Some(precondition);
+        self
     }
 
     pub fn with_timeout(mut self, timeout: Duration) -> Self {
@@ -116,6 +152,23 @@ pub struct HttpResponse {
     pub user_id: Option<String>,
     /// Present on `/v1/devices` responses.
     pub device_id: Option<String>,
+}
+
+/// The wait a `Retry-After` header asks for: whole seconds, as velvt-core
+/// sends it, or an HTTP date. A date already past is no wait.
+pub fn retry_after_delay(value: &str) -> Option<Duration> {
+    if let Ok(seconds) = value.trim().parse::<u64>() {
+        return Some(Duration::from_secs(seconds));
+    }
+    let retry_at = chrono::DateTime::parse_from_rfc2822(value.trim())
+        .ok()?
+        .with_timezone(&Utc);
+    Some(
+        retry_at
+            .signed_duration_since(Utc::now())
+            .to_std()
+            .unwrap_or_default(),
+    )
 }
 
 pub trait HttpClient: Send + Sync {
@@ -218,11 +271,21 @@ impl HttpClient for ReqwestHttpClient {
             let mut builder = match request.method {
                 HttpMethod::Get => self.client.get(url),
                 HttpMethod::Post => self.client.post(url),
+                HttpMethod::Put => self.client.put(url),
                 HttpMethod::Patch => self.client.patch(url),
                 HttpMethod::Delete => self.client.delete(url),
             };
             if let Some(timeout) = request.timeout {
                 builder = builder.timeout(timeout);
+            }
+            match &request.precondition {
+                Some(Precondition::IfMatch(tag)) => {
+                    builder = builder.header(reqwest::header::IF_MATCH, tag.as_str());
+                }
+                Some(Precondition::IfNoneMatch(tag)) => {
+                    builder = builder.header(reqwest::header::IF_NONE_MATCH, tag.as_str());
+                }
+                None => {}
             }
             if let Some(token) = request.authorization {
                 builder = builder.bearer_auth(token.expose());

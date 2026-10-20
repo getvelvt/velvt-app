@@ -254,6 +254,7 @@ Rust uses an internal `HttpClient` trait and `ReqwestHttpClient` implementation.
 | `/v1/auth/signup` | POST | `AccountAuthService` | Create account |
 | `/v1/auth/login` | POST | `AccountAuthService` | Login |
 | `/v1/devices` | POST | `AccountAuthService` | Register current device after first auth |
+| `/v1/devices/{device_id}` | PATCH | `AuthManager` | Report the running `client_version`, once per launch after a restored session is validated; any answer, a 404 or 405 included, ends it for the launch |
 | `/v1/auth/refresh` | POST | `AuthManager` | Refresh expiring device tokens |
 | `/v1/auth/devices/reissue` | POST | `AuthManager` / `AccountAuthService` | Reissue device-bound tokens |
 | `/v1/auth/logout` | POST | `AccountAuthService` | Best-effort logout |
@@ -265,12 +266,14 @@ Rust uses an internal `HttpClient` trait and `ReqwestHttpClient` implementation.
 
 Cloud DTOs must be audited against the forbidden-field list. Tests in `rust-service/tests/upload_batching.rs` are the first place to update when upload shape changes.
 
-The table above omits two requests the source also makes: `GET /v1/auth/session`
-(`AuthManager`, restoring a saved session) and
+The table above omits requests the source also makes: `GET /v1/auth/session`
+(`AuthManager`, restoring a saved session),
 `PATCH /v1/events/{event_id}/classification` (the router, syncing a
-classification correction). `src/egress/mod.rs` (`ENDPOINTS`) is the complete
-list, and `rust-service/tests/egress_ledger.rs` fails when it stops matching the
-paths the source builds.
+classification correction), and sync's five (`vault::sync::api`, which nothing
+in this build calls): `GET /v1/vault`, `GET` and `PUT /v1/vault/blobs/prefs`,
+`POST /v1/vault` and `GET /v1/devices`. `src/egress/mod.rs` (`ENDPOINTS`) is the
+complete list, and `rust-service/tests/egress_ledger.rs` fails when it stops
+matching the paths the source builds.
 
 ### Egress Ledger
 
@@ -308,6 +311,7 @@ Response handling is typed:
 |---|---|
 | `200` + JSON | Parse `id` plus the ready-to-display insight fields, push `insight_payload`, then push `notification_payload` over IPC |
 | `204` | Sleep for `VELVT_INSIGHT_POLL_IDLE_SECONDS` and poll again |
+| `429` | Wait its `Retry-After` (capped at `VELVT_INSIGHT_POLL_MAX_BACKOFF_SECONDS`), or the poll timeout plus the idle interval without one. `AuthManager` reports it as `AuthError::RateLimited { retry_after }`; before protocol 37 the header was dropped there and the poll took the exponential backoff |
 | Non-2xx | Log status/error code only, apply exponential backoff, and continue |
 | Transport/timeout | Log a safe error, apply exponential backoff, and continue |
 

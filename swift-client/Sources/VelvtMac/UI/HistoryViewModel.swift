@@ -65,6 +65,22 @@ public struct DaySummaryViewModel: Identifiable, Equatable {
         return display.string(from: date)
     }
 
+    /// A category's share of the day's active time, as a whole percentage, or
+    /// `nil` for a day with no active time.
+    ///
+    /// Not `proportion`: velvt-core merges two Macs' time (#42), so each
+    /// category's `seconds` is its own union and `proportion` is its share of
+    /// the categories' total, which on a day two Macs ran different
+    /// categories at once is more than `active_seconds`. "Focus: 1h, 50%" and
+    /// "Video: 1h, 50%" then sat beside one hour of active time. Taken from
+    /// the active time the row shows, both read 100%, which is what happened.
+    /// On a day with no overlap the two are the same number.
+    static func percentOfActiveTime(seconds: Int, activeSeconds: Int) -> Int? {
+        guard activeSeconds > 0 else { return nil }
+        let share = Double(max(seconds, 0)) / Double(activeSeconds)
+        return min(100, Int((share * 100).rounded()))
+    }
+
     /// "Xh Ym" when hours > 0; "Ym" when under an hour; "0m" for zero.
     static func formatActiveTime(_ seconds: Int) -> String {
         guard seconds > 0 else { return "0m" }
@@ -114,21 +130,14 @@ public final class HistoryViewModel: ObservableObject {
     @Published public private(set) var scrollTarget: String?
 
     /// Today's local date, as `yyyy-MM-dd`. A seam for tests; the app reads
-    /// the clock.
+    /// the clock. Only a history built on this Mac is matched against it:
+    /// synced rows are UTC days.
     var today: () -> String = { HistoryViewModel.localDateString() }
 
     public init() {}
 
     public var latestReadyDay: DaySummaryViewModel? {
         days.last { !$0.isNoData }
-    }
-
-    /// Today's synced summary, for the Today tab's day metrics. A history
-    /// built on this Mac feeds the Patterns card only, so the Today tab keeps
-    /// showing what it showed before one existed.
-    public var todayReadyDay: DaySummaryViewModel? {
-        guard source == .cloud else { return nil }
-        return readyDay(for: Self.localDateString())
     }
 
     public func readyDay(for localDate: String) -> DaySummaryViewModel? {
@@ -146,8 +155,14 @@ public final class HistoryViewModel: ObservableObject {
         )
     }
 
+    /// Synced rows are UTC calendar days: velvt-core sums every Mac's time by
+    /// UTC date until local-day summaries ship. West of UTC the row dated
+    /// today holds yesterday evening, and from late afternoon the local day
+    /// is already split across two rows, so none of them is "today"
+    /// (cross-device-10). Only a history built on this Mac, per local day, can
+    /// be described as today so far.
     public var progressiveInsight: ProgressiveInsight? {
-        ProgressiveInsight.make(from: days, today: today())
+        ProgressiveInsight.make(from: days, today: source == .thisMac ? today() : nil)
     }
 
     public func update(from payload: HistoryPayload) {
@@ -250,12 +265,13 @@ public struct ProgressiveInsight: Equatable, Sendable {
     public let recentObservedDays: Int
     public let priorObservedDays: Int
 
-    /// `today` is the local date the "Today so far" tier may describe. A single
-    /// ready day that is not today, such as yesterday on a morning with
-    /// nothing observed yet, is described as a partial week instead.
+    /// `today` is the local date the "Today so far" tier may describe, or
+    /// `nil` when the days are not local days. A single ready day that is not
+    /// today, such as yesterday on a morning with nothing observed yet, is
+    /// described as a partial week instead.
     static func make(
         from days: [DaySummaryViewModel],
-        today: String = HistoryViewModel.localDateString()
+        today: String? = HistoryViewModel.localDateString()
     ) -> ProgressiveInsight? {
         let recentWindow = Array(days.suffix(7))
         let recent = recentWindow.filter { !$0.isNoData }
@@ -271,7 +287,7 @@ public struct ProgressiveInsight: Equatable, Sendable {
         {
             return weekOverWeek(recent: recent, prior: prior)
         }
-        if recent.count == 1, recent[0].id == today {
+        if recent.count == 1, let today, recent[0].id == today {
             return todaySoFar(day: recent[0], priorObservedDays: prior.count)
         }
         return thisWeekSoFar(days: recent, priorObservedDays: prior.count)

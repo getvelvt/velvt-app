@@ -1042,13 +1042,27 @@ final class AuthIPCContractTests: XCTestCase {
     }
 
     func testAuthFailureAllCodes() throws {
-        let codes: [AuthFailureCode] = [.invalidCredentials, .networkError, .serverError]
+        let codes: [AuthFailureCode] = [.invalidCredentials, .networkError, .serverError, .rateLimited]
         for code in codes {
             let msg = ServerMessage.authFailure(AuthFailure(code: code, message: "m"))
             let data = try encoder.encode(msg)
             let decoded = try decoder.decode(ServerMessage.self, from: data)
             XCTAssertEqual(decoded, msg, "Round-trip failed for code \(code)")
         }
+    }
+
+    /// Protocol 37: the exact frame Rust sends for a sign-in refused for too
+    /// many attempts. At 36 this frame failed to decode, which drops the
+    /// connection.
+    func testARateLimitedSignInFrameFromRustDecodes() throws {
+        let frame = Data(
+            #"{"type":"auth_failure","payload":{"code":"rate_limited","message":"Too many attempts. Try again in 15 minutes."}}"#
+                .utf8)
+        XCTAssertEqual(
+            try decoder.decode(ServerMessage.self, from: frame),
+            .authFailure(
+                AuthFailure(code: .rateLimited, message: "Too many attempts. Try again in 15 minutes."))
+        )
     }
 
     func testAccountDeletionAcceptedRoundTrip() throws {

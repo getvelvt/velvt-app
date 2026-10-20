@@ -70,9 +70,15 @@ history, the router answers with daily summaries Rust builds from
 `source: this_mac`. Nothing is stored or sent. After a failed cloud read the
 router stops waiting on the cloud for history, which would hold the whole
 connection for the HTTP timeout, until the fetch scheduler's cache holds the
-cloud's history again or the session changes. The Patterns card renders
-either source; the Today tab's baseline label and day metrics read only the
-cloud's.
+cloud's history again or the session changes. The Patterns tab's coaching
+card (`WeekOverWeekCoachingView`) renders either source. Synced rows are UTC
+calendar days, so Swift never matches one against the local "today" (protocol
+37, cross-device-10): the card's "Today so far" tier describes only a history
+built on this Mac, and a synced history with one ready day reads "This week so
+far". `TodayWorkspaceView` (the baseline label and the day metrics) and
+`HistoryListView` (the UTC day labels and the bar tooltip) follow the same
+rule, but the app mounts neither: they appear only in `VelvtPopoverContentView`,
+which only `#if DEBUG` previews create.
 
 Daily insights additionally produce a `notification_payload` IPC push (see
 "IPC framing and versioning" below), consumed by

@@ -3270,8 +3270,17 @@ impl MessageRouter for R7Router {
                                     message_type = "auth_session",
                                     "restored auth session validated"
                                 );
+                                // Once per launch; any answer, a missing
+                                // route included, is fine (install-release-09).
+                                // A task of its own, so the next session's
+                                // validation is not dropped while the report
+                                // waits; `AuthManager` sends at most one at a
+                                // time.
+                                tokio::spawn(async move {
+                                    session_validator.report_client_version().await;
+                                });
                             }
-                            Err(AuthError::Transport | AuthError::RateLimited) => {
+                            Err(AuthError::Transport | AuthError::RateLimited { .. }) => {
                                 tracing::warn!(
                                     message_type = "auth_session",
                                     "restored auth session validation was deferred"
@@ -4932,6 +4941,7 @@ impl R7Router {
             abstracted.category(),
             abstracted.classification_status(),
             abstracted.classification_confidence(),
+            abstracted.classification_source(),
             occurred_at,
         ) {
             Ok(Some(outcome)) => {

@@ -98,12 +98,19 @@ where
                 HttpRequest::post("/v1/events/batches").under_account(batch.owner_user_id.clone());
             request.json_body =
                 Some(serde_json::to_value(batch).map_err(|_| BatchUploadError::Transport)?);
-            let response = self.http.send(request).await.map_err(|error| match error {
-                AuthError::NeedsReauth | AuthError::DeviceRevoked | AuthError::AccountDeleted => {
-                    BatchUploadError::AuthenticationRequired
+            let response = match self.http.send(request).await {
+                Ok(response) => response,
+                // `AuthManager` answers a 429 as an error, not a response.
+                // Mapped to `Transport`, its `Retry-After` was dropped and the
+                // queue retried on its own backoff, from 30 seconds.
+                Err(AuthError::RateLimited { retry_after }) => {
+                    return Ok(UploadOutcome::RateLimited { retry_after })
                 }
-                _ => BatchUploadError::Transport,
-            })?;
+                Err(
+                    AuthError::NeedsReauth | AuthError::DeviceRevoked | AuthError::AccountDeleted,
+                ) => return Err(BatchUploadError::AuthenticationRequired),
+                Err(_) => return Err(BatchUploadError::Transport),
+            };
             Ok(if (200..300).contains(&response.status) {
                 if response
                     .raw_body

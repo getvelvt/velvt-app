@@ -24,6 +24,9 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     public let permissionManager: PermissionManager
     public let permissionPresentation: PermissionPresentationModel
     public let accountStateManager: AccountStateManager
+    /// Keeps Sparkle alive for the app's lifetime. Nothing in the menu calls
+    /// it since 1.0.15: alpha builds leave the updater off, and "Contact
+    /// support…" took the place of its greyed-out button (docs/updates.md).
     public let updateController: AppUpdateController
     public private(set) var displayCoordinator: ConcreteDisplayDataCoordinator?
 
@@ -258,7 +261,6 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             startGuidedTour: { [weak self] in
                 self?.menuBarController?.beginGuidedTour()
             },
-            updateController: updateController,
             terminateApp: { NSApp.terminate(nil) }
         )
         menuBar.install()

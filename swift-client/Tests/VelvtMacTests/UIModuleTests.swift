@@ -1434,7 +1434,6 @@ final class MenuBarWindowSnapshotTests: XCTestCase {
             ipcClient: client,
             menuStatusViewModel: MenuStatusViewModel(ipcClient: client, messages: messages),
             simulateNotification: simulateNotification,
-            updateController: .disabled(),
             guidedTour: guidedTour,
             onEscape: {}
         )

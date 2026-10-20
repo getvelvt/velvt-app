@@ -372,7 +372,6 @@ final class CloudSyncStatusHeaderRedrawTests: XCTestCase {
             accountStateManager: account,
             ipcClient: client,
             menuStatusViewModel: menuStatus,
-            updateController: .disabled(),
             onEscape: {}
         )
     }

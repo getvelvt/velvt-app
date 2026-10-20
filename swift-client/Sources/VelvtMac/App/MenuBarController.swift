@@ -655,7 +655,6 @@ public final class MenuBarController: NSObject {
         restartLocalService: (() -> Void)? = nil,
         replayOnboarding: (() -> Void)? = nil,
         startGuidedTour: (() -> Void)? = nil,
-        updateController: AppUpdateController? = nil,
         popover: (any PopoverPresenting)? = nil,
         statusItemManager: (any StatusItemManaging)? = nil,
         windowSizeStore: MenuBarWindowSizeStore = MenuBarWindowSizeStore(),
@@ -668,7 +667,6 @@ public final class MenuBarController: NSObject {
         terminateApp: @escaping @MainActor () -> Void = { NSApp.terminate(nil) }
     ) {
         let serviceConnectionStatus = ServiceConnectionStatusModel(connectionStatus: connectionStatus)
-        let updateController = updateController ?? .disabled()
         let collectionActivityStatus = CollectionActivityStatusModel(collectionStatus: collectionStatus)
         let serviceAlertModel = serviceAlertModel ?? ServiceAlertModel(messages: Empty<ServerMessage, Never>())
         self.serviceConnectionStatus = serviceConnectionStatus
@@ -714,7 +712,6 @@ public final class MenuBarController: NSObject {
                 restartLocalService: restartLocalService,
                 replayOnboarding: replayOnboarding,
                 startGuidedTour: startGuidedTour,
-                updateController: updateController,
                 guidedTour: guidedTour,
                 metricsStore: metricsStore,
                 popoverWillOpen: popoverWillOpen.eraseToAnyPublisher(),

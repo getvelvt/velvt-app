@@ -119,7 +119,10 @@ make build-app-local-core VELVT_ALLOW_ADHOC=1
 ```
 
 Copy `dist/Velvt.app` to `/Applications` when you want it to appear in
-Launchpad.
+Launchpad. Running from there also adds Velvt to Login Items, once per Mac
+account (`App/OpenAtLogin.swift`): at the end of first run, or at the first
+launch if first run is already done. Remove it from Login Items in System
+Settings > General, and later launches leave it removed.
 
 ### Build Both Local Targets (development)
 

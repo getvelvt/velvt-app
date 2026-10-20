@@ -45,8 +45,11 @@ enum SupportDiagnostics {
     /// A `mailto:` draft to support holding `diagnostics` under a line for the
     /// person's own words.
     ///
-    /// The query is encoded by hand: `URLQueryItem` leaves `=` and `+` alone,
-    /// and every diagnostics line is `key=value`.
+    /// The query is encoded by hand, to the unreserved set. `URLQueryItem`
+    /// leaves `+` unencoded, which a mail app can read as a space, and its
+    /// handling of `=` and `&` has varied across Foundation versions; every
+    /// diagnostics line is `key=value`. Encoding by hand gives the same draft
+    /// on every macOS.
     static func mailDraftURL(diagnostics: String) -> URL? {
         let body = "\(mailPrompt)\n\n\n\n\(diagnostics)\n"
         var components = URLComponents()

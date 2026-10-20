@@ -32,6 +32,18 @@ for artifact in abstraction-model.onnx tokenizer.json abstraction-prototypes.bin
 done
 cd "$rust_dir"
 
+# A helper built for a Release app checks the code signature of the app that
+# connects to its socket; a Debug app's helper does not
+# (docs/architecture/personal-vault-and-devices.md §9.3). Set either way, so a
+# value left in the caller's environment cannot decide it.
+# `velvt-service --peer-requirement` reports the result, and verify_release.sh
+# refuses a Release app whose helper says `none`.
+if [[ "$distributable" == "YES" ]]; then
+  export VELVT_PEER_SIGNATURE_CHECK=enforce
+else
+  export VELVT_PEER_SIGNATURE_CHECK=off
+fi
+
 # Where cargo writes, asked of cargo itself: CARGO_TARGET_DIR,
 # CARGO_BUILD_TARGET_DIR and build.target-dir in any .cargo/config.toml all move
 # it. Copying from a fixed ./target bundled whatever older helper ./target still

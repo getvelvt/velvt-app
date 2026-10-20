@@ -415,6 +415,22 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
                     continue
                 }
                 guard await presentVersionMismatch(expected, got) else { return }
+            } catch IPCError.peerRejected {
+                // In a Release build an orphaned helper fails the socket peer
+                // check (`SocketPeerCheck`) before it can answer with its
+                // version: it is not this app's child, and after an update its
+                // executable on disk is no longer the code it is running
+                // either. It is the same orphan, so it gets the same reclaim.
+                // Anything this app cannot identify as its own stays refused,
+                // and the client's own reconnect keeps trying with nothing
+                // asked of the person.
+                if reclaimAttempts < maximumOrphanReclaimAttempts,
+                    await reclaimOrphanedHelper()
+                {
+                    reclaimAttempts += 1
+                    continue
+                }
+                return
             } catch {
                 // The IPC client owns retry behavior for transport failures.
                 return

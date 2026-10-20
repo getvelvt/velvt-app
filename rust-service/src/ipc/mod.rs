@@ -10,6 +10,8 @@ pub use velvt_shared_types::*;
 
 mod codec;
 mod connection;
+#[cfg(unix)]
+pub mod peer;
 mod reconnect;
 mod router;
 pub mod transport;

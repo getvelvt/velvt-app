@@ -41,6 +41,7 @@ int main(int argc, char **argv) {
   if (strcmp(argv[1], "--protocol-version") == 0) { puts(PROTOCOL); return 0; }
   if (strcmp(argv[1], "--version") == 0) { puts(VERSION); return 0; }
   if (strcmp(argv[1], "--source-commit") == 0) { puts(COMMIT); return 0; }
+  if (strcmp(argv[1], "--peer-requirement") == 0) { puts("identifier \"com.velvt.mac\""); return 0; }
   return 2;
 }
 C
@@ -91,8 +92,11 @@ make_app() {
 </dict>
 </plist>
 PLIST
-  codesign --force --sign - --options runtime "$contents/Resources/velvt-service" >/dev/null 2>&1
-  codesign --force --sign - --options runtime "$app" >/dev/null 2>&1
+  # The identifiers the socket peer check needs (socket_peer_release_test.sh
+  # tests that check); the fixture keeps a bundle identifier of its own.
+  codesign --force --sign - --options runtime --identifier com.velvt.service \
+    "$contents/Resources/velvt-service" >/dev/null 2>&1
+  codesign --force --sign - --options runtime --identifier com.velvt.mac "$app" >/dev/null 2>&1
   printf '%s' "$app"
 }
 

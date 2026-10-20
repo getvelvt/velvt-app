@@ -4,6 +4,11 @@
 The harness creates its own temporary socket and SQLite database. It never
 reads or mutates the installed app's database, account, defaults, permissions,
 or Docker environment, and it does not print the synthetic raw test activity.
+
+It needs a helper that serves any local client: one from `cargo build` or a
+Debug app. A Release app's helper checks the code signature of whatever
+connects and serves only the Velvt app (docs/architecture/ipc-contract.md,
+"Peer Code-Signature Check"), so this harness is refused there.
 """
 
 from __future__ import annotations

@@ -71,6 +71,7 @@ pub struct TokioUnixTransport<R = super::DefaultRouter> {
     write_timeout: std::time::Duration,
     shutdown: Option<tokio::sync::watch::Receiver<bool>>,
     reconnect_tracker: Option<std::sync::Arc<super::ReconnectTracker>>,
+    peer_policy: std::sync::Arc<super::peer::PeerPolicy>,
 }
 
 #[cfg(unix)]
@@ -87,6 +88,7 @@ impl TokioUnixTransport<super::DefaultRouter> {
             write_timeout: std::time::Duration::from_millis(500),
             shutdown: None,
             reconnect_tracker: None,
+            peer_policy: std::sync::Arc::new(super::peer::PeerPolicy::for_this_build()),
         }
     }
 }
@@ -105,6 +107,7 @@ impl<R: super::MessageRouter + Clone + Send + 'static> TokioUnixTransport<R> {
             write_timeout: std::time::Duration::from_millis(500),
             shutdown: None,
             reconnect_tracker: None,
+            peer_policy: std::sync::Arc::new(super::peer::PeerPolicy::for_this_build()),
         }
     }
 
@@ -159,6 +162,13 @@ impl<R: super::MessageRouter + Clone + Send + 'static> TokioUnixTransport<R> {
         self
     }
 
+    /// Replaces the check made on each connecting process, which is otherwise
+    /// [`super::peer::PeerPolicy::for_this_build`].
+    pub fn with_peer_policy(mut self, policy: super::peer::PeerPolicy) -> Self {
+        self.peer_policy = std::sync::Arc::new(policy);
+        self
+    }
+
     async fn bind(&self) -> Result<tokio::net::UnixListener, IpcError> {
         use std::os::unix::fs::PermissionsExt;
 
@@ -207,11 +217,20 @@ impl<R: super::MessageRouter + Clone + Send + 'static> IpcTransport for TokioUni
                     let write_timeout = self.write_timeout;
                     let router = self.router.clone();
                     let conn_shutdown = self.shutdown.clone();
+                    // Each connection's peer is checked in that connection's
+                    // own task, so a slow check holds up nobody else's accept.
+                    // It still comes before the push queue is acquired or a
+                    // byte is written: a refused peer never sees
+                    // `server_hello`.
+                    let peer_policy = std::sync::Arc::clone(&self.peer_policy);
 
                     if let Some(tracker) = &self.reconnect_tracker {
-                        let queue = tracker.acquire();
                         let tracker_clone = std::sync::Arc::clone(tracker);
                         join_set.spawn(async move {
+                            let Some(stream) = admit_peer(&peer_policy, stream).await else {
+                                return;
+                            };
+                            let queue = tracker_clone.acquire();
                             let result = if let Some(srx) = conn_shutdown {
                                 super::serve_connection_with_push_queue_and_shutdown(
                                     stream, router, max_errors, auth_states,
@@ -238,6 +257,9 @@ impl<R: super::MessageRouter + Clone + Send + 'static> IpcTransport for TokioUni
                         let privacy_alerts =
                             self.privacy_alerts.as_ref().map(|s| s.subscribe());
                         join_set.spawn(async move {
+                            let Some(stream) = admit_peer(&peer_policy, stream).await else {
+                                return;
+                            };
                             let result = if let Some(pq) = push_queue {
                                 if let Some(srx) = conn_shutdown {
                                     super::serve_connection_with_push_queue_and_shutdown(
@@ -284,6 +306,68 @@ impl<R: super::MessageRouter + Clone + Send + 'static> IpcTransport for TokioUni
         // Wait for all in-flight connection tasks to finish.
         while join_set.join_next().await.is_some() {}
         Ok(())
+    }
+}
+
+/// Returns the stream if the process that connected passes `policy` (the app
+/// that launched this helper, with the app's signature, in a Release build),
+/// and drops it otherwise.
+///
+/// The Security.framework calls block, so they run on the blocking pool. The
+/// stream travels with them, so it cannot be closed (and its descriptor number
+/// reused by another connection) while its peer is being checked.
+#[cfg(unix)]
+async fn admit_peer(
+    policy: &std::sync::Arc<super::peer::PeerPolicy>,
+    stream: tokio::net::UnixStream,
+) -> Option<tokio::net::UnixStream> {
+    if matches!(policy.as_ref(), super::peer::PeerPolicy::Skip) {
+        return Some(stream);
+    }
+    let stream = match stream.into_std() {
+        Ok(stream) => stream,
+        Err(error) => {
+            tracing::error!(
+                error_code = "ipc_peer_check_failed",
+                raw_os_error = ?error.raw_os_error(),
+                "IPC peer could not be checked; connection dropped"
+            );
+            return None;
+        }
+    };
+    let policy = std::sync::Arc::clone(policy);
+    let checked = tokio::task::spawn_blocking(move || {
+        let verdict = policy.verify(&stream);
+        (stream, verdict)
+    })
+    .await;
+    match checked {
+        Ok((stream, Ok(()))) => match tokio::net::UnixStream::from_std(stream) {
+            Ok(stream) => Some(stream),
+            Err(error) => {
+                tracing::error!(
+                    error_code = "ipc_peer_check_failed",
+                    raw_os_error = ?error.raw_os_error(),
+                    "IPC peer passed but its connection could not be resumed; dropped"
+                );
+                None
+            }
+        },
+        Ok((_stream, Err(refusal))) => {
+            tracing::error!(
+                error_code = refusal.code(),
+                status = refusal.status(),
+                "IPC peer is not the signed app that launched this helper; connection dropped"
+            );
+            None
+        }
+        Err(_) => {
+            tracing::error!(
+                error_code = "ipc_peer_check_failed",
+                "IPC peer check did not finish; connection dropped"
+            );
+            None
+        }
     }
 }
 

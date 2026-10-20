@@ -993,7 +993,7 @@ final class PermissionModuleTests: XCTestCase {
     func testOnboardingPrivacyCopyMatchesTheAuditedBoundary() {
         XCTAssertEqual(
             OnboardingCopy.privacySummary,
-            "Raw app names, window titles, URLs, filenames, paths, contacts, and work-block intentions stay on this Mac. Approved broad categories, coarse durations, timestamps, and safe summaries may synchronize for beta insights. Depending on the service configuration, privacy-safe derived prompts may be processed by an approved external model provider."
+            "Raw app names, window titles, URLs, filenames, paths, contacts, and work-block intentions stay on this Mac. Approved broad categories, coarse durations, timestamps, and safe summaries may synchronize for beta insights."
         )
     }
 

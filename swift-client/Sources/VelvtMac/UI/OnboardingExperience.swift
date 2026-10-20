@@ -15,7 +15,7 @@ public enum OnboardingCopy {
         "Notifications are off for Velvt, so drift nudges, daily insights and category reminders can't reach you. Turn them on in System Settings > Notifications > Velvt."
 
     public static let privacySummary =
-        "Raw app names, window titles, URLs, filenames, paths, contacts, and work-block intentions stay on this Mac. Approved broad categories, coarse durations, timestamps, and safe summaries may synchronize for beta insights. Depending on the service configuration, privacy-safe derived prompts may be processed by an approved external model provider."
+        "Raw app names, window titles, URLs, filenames, paths, contacts, and work-block intentions stay on this Mac. Approved broad categories, coarse durations, timestamps, and safe summaries may synchronize for beta insights."
 }
 
 public enum IntroStep: Int, CaseIterable, Equatable, Sendable {
@@ -896,7 +896,7 @@ public struct FocusAllowanceExperienceView: View {
                     .velvtDisplay()
                     .accessibilityAddTraits(.isHeader)
                 Text(
-                    "If you use a Focus mode while you work, you can allow Velvt through it in macOS Focus settings. Velvt spends that privilege sparingly: at most one bounded nudge inside a block you declared, and anything your Focus blocks is simply held and summarized after the block — never resent, never rerouted."
+                    "If you use a Focus, add Velvt to its Allowed Apps to receive nudges during it. Inside a block you declared, Velvt sends at most one nudge."
                 )
                 .velvtBody(15)
                 .fixedSize(horizontal: false, vertical: true)

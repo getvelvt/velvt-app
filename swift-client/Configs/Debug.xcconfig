@@ -33,4 +33,4 @@ INFOPLIST_KEY_CFBundleDisplayName = Velvt
 INFOPLIST_KEY_CFBundleIconFile = AppIcon
 INFOPLIST_KEY_CFBundleIconName = AppIcon
 INFOPLIST_KEY_LSMinimumSystemVersion = $(MACOSX_DEPLOYMENT_TARGET)
-INFOPLIST_KEY_NSFocusStatusUsageDescription = Velvt reads whether Focus is active to avoid interrupting you and report notification protection accurately.
+INFOPLIST_KEY_NSFocusStatusUsageDescription = Velvt asks macOS only whether a Focus is on, never which one.

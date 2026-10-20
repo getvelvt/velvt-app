@@ -2,7 +2,7 @@ import XCTest
 
 final class BuildConfigurationTests: XCTestCase {
     private let focusStatusUsageDescription =
-        "Velvt reads whether Focus is active to avoid interrupting you and report notification protection accurately."
+        "Velvt asks macOS only whether a Focus is on, never which one."
 
     func testAppBundleDoesNotDeclareLSUIElementSoLaunchServicesCanIndexIt() throws {
         for path in configPaths {

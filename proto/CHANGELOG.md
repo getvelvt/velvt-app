@@ -1,5 +1,42 @@
 # IPC Protocol Changelog
 
+## Version 37 - 2026-10-15
+
+A sign-up or login the cloud refused for too many attempts was reported as
+`server_error` with whatever words the server sent: "Too many requests." from
+the server deployed through 1.0.14, which said neither what happened nor how
+long to wait (1.0.14 simulation, backend-e2e-07 and helper-backend-12).
+velvt-core #41 sends `Retry-After` in whole seconds on every rate-limit 429.
+
+- Added `rate_limited` to `auth_failure.code` (Rust to Swift). Rust sends it
+  for a `429` from `POST /v1/auth/signup` or `POST /v1/auth/login`, with a
+  message it writes from `Retry-After`, rounded up to the minute: "Too many
+  attempts. Try again in 15 minutes." ("in a minute" under one; in hours from
+  120 minutes), or "Too many attempts. Try again later." when the server sent
+  no usable `Retry-After`, as the server deployed before #41 does. The server's
+  own words are not used, so the app says the same thing to either server.
+  Rust sends it too when a sign-in's device registration (`POST /v1/devices`,
+  which #41 limits to 10 an hour per user) or the reissue of the stored
+  device is refused with `429`: "This Mac could not be registered yet. Too
+  many attempts. Try again in 60 minutes." (after a sign-up, "Your account was
+  created, but ... Log in to try again in 60 minutes."). Swift shows the
+  message as it is, as it does for every `auth_failure`.
+- Swift decodes `auth_failure.code` as a closed set, so a 36 app would fail
+  the frame and drop the connection: hence the version.
+- Not on the wire, in the same release: once per launch, after a restored
+  session is validated, Rust sends `PATCH /v1/devices/{device_id}` with
+  `{"client_version"}` (install-release-09; any answer, a 404 or 405 from a
+  server without the route included, ends it for the launch); an ingestion or
+  insight-poll 429's `Retry-After` reaches the upload queue and the poll, which
+  `AuthManager` used to drop; requests refused together as
+  `device_token_revoked` share one reissue. Swift never matches a synced
+  history row (a UTC day) against the local "today": the Patterns coaching
+  card shows "This week so far", not "Today so far", for a synced history
+  with one ready day. The UTC day labels, the history tooltip's percentage
+  (now `seconds / active_seconds`) and the Today metrics changed in
+  `HistoryListView` and `TodayWorkspaceView`, which only `#if DEBUG` previews
+  create; the app does not show them.
+
 ## Version 36 - 2026-10-15
 
 A decision made during a Focus the service could not see was stored exactly

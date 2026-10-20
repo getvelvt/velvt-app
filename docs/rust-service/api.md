@@ -254,6 +254,7 @@ Rust uses an internal `HttpClient` trait and `ReqwestHttpClient` implementation.
 | `/v1/auth/signup` | POST | `AccountAuthService` | Create account |
 | `/v1/auth/login` | POST | `AccountAuthService` | Login |
 | `/v1/devices` | POST | `AccountAuthService` | Register current device after first auth |
+| `/v1/devices/{device_id}` | PATCH | `AuthManager` | Report the running `client_version`, once per launch after a restored session is validated; any answer, a 404 or 405 included, ends it for the launch |
 | `/v1/auth/refresh` | POST | `AuthManager` | Refresh expiring device tokens |
 | `/v1/auth/devices/reissue` | POST | `AuthManager` / `AccountAuthService` | Reissue device-bound tokens |
 | `/v1/auth/logout` | POST | `AccountAuthService` | Best-effort logout |
@@ -308,6 +309,7 @@ Response handling is typed:
 |---|---|
 | `200` + JSON | Parse `id` plus the ready-to-display insight fields, push `insight_payload`, then push `notification_payload` over IPC |
 | `204` | Sleep for `VELVT_INSIGHT_POLL_IDLE_SECONDS` and poll again |
+| `429` | Wait its `Retry-After` (capped at `VELVT_INSIGHT_POLL_MAX_BACKOFF_SECONDS`), or the poll timeout plus the idle interval without one. `AuthManager` reports it as `AuthError::RateLimited { retry_after }`; before protocol 37 the header was dropped there and the poll took the exponential backoff |
 | Non-2xx | Log status/error code only, apply exponential backoff, and continue |
 | Transport/timeout | Log a safe error, apply exponential backoff, and continue |
 

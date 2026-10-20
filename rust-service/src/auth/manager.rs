@@ -5,6 +5,7 @@ use super::{
 use chrono::{Duration, Utc};
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::Mutex;
@@ -17,6 +18,29 @@ pub trait SessionValidator: Send + Sync {
     fn validate_restored_session<'a>(
         &'a self,
     ) -> Pin<Box<dyn Future<Output = Result<(), AuthError>> + Send + 'a>>;
+
+    /// Tells the cloud which version this Mac runs, once a restored session
+    /// has been validated. See [`AuthManager::report_client_version`].
+    fn report_client_version<'a>(
+        &'a self,
+    ) -> Pin<Box<dyn Future<Output = ClientVersionReport> + Send + 'a>>;
+}
+
+/// What became of [`AuthManager::report_client_version`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClientVersionReport {
+    /// The cloud recorded the running version on this device's row.
+    Recorded,
+    /// The cloud answered without recording it: a server from before
+    /// `PATCH /v1/devices/{id}` took `client_version` (404, 405), or one that
+    /// refused the request. Not sent again this launch.
+    Declined { status: u16 },
+    /// This launch already has the cloud's answer; nothing was sent.
+    AlreadyAnswered,
+    /// No answer: no usable session (or a stored device id that is not
+    /// path-safe), a transport failure, a rate limit or an outage. The next
+    /// restored session tries again.
+    Deferred,
 }
 
 pub struct AuthManager<S, H> {
@@ -29,6 +53,20 @@ pub struct AuthManager<S, H> {
     /// verdict on the session, until one gets one.
     refresh_transport_failed_at: std::sync::Mutex<Option<Instant>>,
     refresh_transport_retry_after: std::time::Duration,
+    /// Device-token reissues this manager has completed. A request refused as
+    /// `device_token_revoked` compares it with the count it read before its
+    /// own tokens: a reissue that finished in between already answered it.
+    reissues_completed: AtomicU64,
+    /// Set once this launch has the cloud's answer to
+    /// `report_client_version`, or while that request is in flight.
+    client_version_claimed: AtomicBool,
+}
+
+/// What a request refused as `device_token_revoked` was sent with, so its
+/// reissue can tell whether another one already replaced those tokens.
+struct RefusedDeviceTokens {
+    access_token: super::RedactedString,
+    reissues_seen: u64,
 }
 
 impl<S, H> AuthManager<S, H>
@@ -50,6 +88,8 @@ where
             refresh_lock: Mutex::new(()),
             refresh_transport_failed_at: std::sync::Mutex::new(None),
             refresh_transport_retry_after: REFRESH_TRANSPORT_RETRY_AFTER,
+            reissues_completed: AtomicU64::new(0),
+            client_version_claimed: AtomicBool::new(false),
         }
     }
 
@@ -74,6 +114,7 @@ where
             None => self.store.load_user_id()?,
         };
         let account = account.as_deref();
+        let reissues_seen = self.reissues_completed.load(Ordering::Acquire);
         let tokens = self.tokens_for_request().await?;
         self.ensure_bound_session(account)?;
         request.authorization = Some(tokens.access_token().clone());
@@ -82,11 +123,94 @@ where
             self.ensure_bound_session(account)?;
             let fresh = self.refresh_tokens(true).await?;
             self.ensure_bound_session(account)?;
+            let reissues_seen = self.reissues_completed.load(Ordering::Acquire);
             request.authorization = Some(fresh.access_token().clone());
             let retried = self.http.send(request.clone()).await?;
-            return self.handle_response(retried, request, account).await;
+            return self
+                .handle_response(retried, request, account, reissues_seen)
+                .await;
         }
-        self.handle_response(response, request, account).await
+        self.handle_response(response, request, account, reissues_seen)
+            .await
+    }
+
+    /// Tells the cloud which version this Mac runs: `PATCH
+    /// /v1/devices/{device_id}` with `{"client_version"}`, the release
+    /// version registration and every batch already send.
+    ///
+    /// Registration records the version once, so without this a device row
+    /// went on naming the build the Mac first signed in with
+    /// (install-release-09). Called after a restored session is validated,
+    /// and sent at most once per launch: any answer the cloud gives ends it
+    /// for this process, including the 404 or 405 of a server without the
+    /// route, which is not an error. A request that gets no answer (no
+    /// usable session, a transport failure, a 429 or a 5xx) is left for the
+    /// next restored session. Nothing here changes the session or blocks the
+    /// caller beyond its own request.
+    pub async fn report_client_version(&self) -> ClientVersionReport {
+        if self.client_version_claimed.swap(true, Ordering::AcqRel) {
+            return ClientVersionReport::AlreadyAnswered;
+        }
+        let report = self.send_client_version().await;
+        if report == ClientVersionReport::Deferred {
+            self.client_version_claimed.store(false, Ordering::Release);
+        }
+        report
+    }
+
+    async fn send_client_version(&self) -> ClientVersionReport {
+        let AuthState::Authenticated { device_id } = self.state.current() else {
+            return ClientVersionReport::Deferred;
+        };
+        // The id goes into the path, so only the shape the cloud mints is
+        // sent: a stored value that could add a segment or a query is not.
+        if device_id.is_empty()
+            || !device_id
+                .chars()
+                .all(|character| character.is_ascii_alphanumeric() || "-_".contains(character))
+        {
+            tracing::warn!(
+                error_code = "client_version_report_skipped",
+                "stored device id is not a path-safe identifier; version not reported"
+            );
+            return ClientVersionReport::Deferred;
+        }
+        let request = HttpRequest::patch(
+            format!("/v1/devices/{device_id}"),
+            serde_json::json!({ "client_version": crate::build_info::SERVICE_VERSION }),
+        );
+        match self.send_authenticated(request).await {
+            Ok(response) if (200..300).contains(&response.status) => {
+                tracing::info!("device client version recorded");
+                ClientVersionReport::Recorded
+            }
+            Ok(response) if response.status >= 500 => {
+                tracing::warn!(
+                    error_code = "client_version_report_deferred",
+                    status = response.status,
+                    "device client version not recorded; tried again at the next session restore"
+                );
+                ClientVersionReport::Deferred
+            }
+            Ok(response) => {
+                tracing::info!(
+                    error_code = "client_version_report_declined",
+                    status = response.status,
+                    "the server did not take the device client version"
+                );
+                ClientVersionReport::Declined {
+                    status: response.status,
+                }
+            }
+            Err(error) => {
+                tracing::warn!(
+                    error_code = "client_version_report_deferred",
+                    error = %error,
+                    "device client version not sent; tried again at the next session restore"
+                );
+                ClientVersionReport::Deferred
+            }
+        }
     }
 
     /// Refuses to send a request under any session but its account's: the
@@ -140,7 +264,9 @@ where
                 }
                 Ok(())
             }
-            429 => Err(AuthError::RateLimited),
+            429 => Err(AuthError::RateLimited {
+                retry_after: response.retry_after,
+            }),
             _ => Err(AuthError::InvalidResponse),
         }
     }
@@ -167,7 +293,7 @@ where
             };
         }
         match self.refresh_tokens(false).await {
-            Err(AuthError::Transport | AuthError::RateLimited) if still_valid(&tokens) => {
+            Err(AuthError::Transport | AuthError::RateLimited { .. }) if still_valid(&tokens) => {
                 Ok(tokens)
             }
             result => result,
@@ -214,6 +340,7 @@ where
             }
         };
         let token_unusable = force || tokens.expires_at() <= Utc::now();
+        let reissues_seen = self.reissues_completed.load(Ordering::Acquire);
         if token_unusable {
             self.state.transition(AuthState::RefreshInFlight)?;
         }
@@ -265,7 +392,11 @@ where
                 self.state
                     .transition(AuthState::Authenticated { device_id })?;
                 drop(_guard);
-                self.reissue_device_tokens().await
+                self.reissue_device_tokens(Some(RefusedDeviceTokens {
+                    access_token: tokens.access_token().clone(),
+                    reissues_seen,
+                }))
+                .await
             }
             Refusal::SessionRejected => {
                 self.state.transition(AuthState::NeedsReauth)?;
@@ -286,7 +417,7 @@ where
                     status = response.status,
                     "token refresh was refused without a session error code; kept the session"
                 );
-                Err(transient_error(response.status))
+                Err(transient_error(&response))
             }
         }
     }
@@ -317,11 +448,20 @@ where
         response: HttpResponse,
         mut request: HttpRequest,
         account: Option<&str>,
+        reissues_seen: u64,
     ) -> Result<HttpResponse, AuthError> {
         match refusal(&response) {
             Refusal::DeviceTokenRevoked => {
                 self.ensure_bound_session(account)?;
-                let fresh = self.reissue_device_tokens().await?;
+                let refused =
+                    request
+                        .authorization
+                        .clone()
+                        .map(|access_token| RefusedDeviceTokens {
+                            access_token,
+                            reissues_seen,
+                        });
+                let fresh = self.reissue_device_tokens(refused).await?;
                 self.ensure_bound_session(account)?;
                 request.authorization = Some(fresh.access_token().clone());
                 let retried = self.http.send(request).await?;
@@ -355,7 +495,9 @@ where
                 self.state.transition(AuthState::NeedsReauth)?;
                 Err(AuthError::NeedsReauth)
             }
-            Refusal::Unattributed if response.status == 429 => Err(AuthError::RateLimited),
+            Refusal::Unattributed if response.status == 429 => Err(AuthError::RateLimited {
+                retry_after: response.retry_after,
+            }),
             Refusal::Unattributed => {
                 if response.status == 401 || response.status == 403 {
                     tracing::warn!(
@@ -377,8 +519,34 @@ where
     /// limit answers, is not tried again for `refresh_transport_retry_after`.
     /// Without that, every request answered `device_token_revoked` while the
     /// edge kept refusing POSTed one more reissue.
-    async fn reissue_device_tokens(&self) -> Result<super::TokenPair, AuthError> {
+    ///
+    /// Requests refused together each come here, one at a time behind the
+    /// refresh lock. One whose tokens a reissue has already replaced since
+    /// it read them (`refused`) is handed the stored tokens instead of
+    /// sending another reissue. velvt-core keeps every pair a burst of
+    /// reissues replaced working through its grace (#41), so the extra
+    /// reissues broke nothing; skipping them only saves the requests. The
+    /// stored tokens must differ from the refused ones: a request refused
+    /// with the very tokens the last reissue stored reissues again.
+    async fn reissue_device_tokens(
+        &self,
+        refused: Option<RefusedDeviceTokens>,
+    ) -> Result<super::TokenPair, AuthError> {
         let _guard = self.refresh_lock.lock().await;
+        if let Some(refused) = refused {
+            if self.reissues_completed.load(Ordering::Acquire) != refused.reissues_seen {
+                if let Some(current) = self.store.load_tokens()? {
+                    if current.access_token() != &refused.access_token
+                        && matches!(self.state.current(), AuthState::Authenticated { .. })
+                    {
+                        tracing::debug!(
+                            "device tokens were reissued since this request was refused; reusing them"
+                        );
+                        return Ok(current);
+                    }
+                }
+            }
+        }
         if self.refresh_recently_failed_in_transport() {
             return Err(AuthError::Transport);
         }
@@ -386,7 +554,9 @@ where
             Ok(tokens) => tokens,
             // No verdict on the session: the user-token refresh could not be
             // made, or was answered for the cloud by something else.
-            Err(error @ (AuthError::Transport | AuthError::RateLimited)) => return Err(error),
+            Err(error @ (AuthError::Transport | AuthError::RateLimited { .. })) => {
+                return Err(error)
+            }
             // `refresh_user_tokens` has already moved the state.
             Err(error @ AuthError::AccountDeleted) => return Err(error),
             Err(error) => {
@@ -437,6 +607,7 @@ where
                 self.state.transition(AuthState::NeedsReauth)?;
                 return Err(error.into());
             }
+            self.reissues_completed.fetch_add(1, Ordering::AcqRel);
             self.state
                 .transition(AuthState::Authenticated { device_id })?;
             return Ok(fresh);
@@ -472,7 +643,7 @@ where
                     status = response.status,
                     "device token reissue was refused without a session error code; kept the session"
                 );
-                Err(transient_error(response.status))
+                Err(transient_error(&response))
             }
         }
     }
@@ -522,7 +693,7 @@ where
             }
             Refusal::Unattributed => {
                 self.record_refresh_transport(true);
-                Err(transient_error(response.status))
+                Err(transient_error(&response))
             }
         }
     }
@@ -537,6 +708,12 @@ where
         &'a self,
     ) -> Pin<Box<dyn Future<Output = Result<(), AuthError>> + Send + 'a>> {
         Box::pin(self.validate_session())
+    }
+
+    fn report_client_version<'a>(
+        &'a self,
+    ) -> Pin<Box<dyn Future<Output = ClientVersionReport> + Send + 'a>> {
+        Box::pin(AuthManager::report_client_version(self))
     }
 }
 
@@ -561,8 +738,11 @@ pub enum AuthError {
     NeedsReauth,
     #[error("device revoked")]
     DeviceRevoked,
+    /// A `429`. `retry_after` is the response's `Retry-After` header as it
+    /// came, for a caller that schedules its own retry (the upload queue, the
+    /// insight poll).
     #[error("request rate limited")]
-    RateLimited,
+    RateLimited { retry_after: Option<String> },
     #[error("authentication transport unavailable")]
     Transport,
     #[error("authentication response invalid")]
@@ -613,9 +793,11 @@ fn refusal(response: &HttpResponse) -> Refusal {
 }
 
 /// The error a request that got no verdict on the session fails with.
-fn transient_error(status: u16) -> AuthError {
-    if status == 429 {
-        AuthError::RateLimited
+fn transient_error(response: &HttpResponse) -> AuthError {
+    if response.status == 429 {
+        AuthError::RateLimited {
+            retry_after: response.retry_after.clone(),
+        }
     } else {
         AuthError::Transport
     }

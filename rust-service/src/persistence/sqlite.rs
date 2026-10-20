@@ -30,8 +30,9 @@ use std::{
     sync::{Arc, Mutex, MutexGuard},
 };
 use velvt_shared_types::{
-    ClassificationConfidence, ClassificationStatus, CorrectionScope, InterventionDeliveryChannel,
-    InterventionSalience, WorkBlockIntensity, WorkBlockPhase, WorkBlockPurpose, WorkBlockResult,
+    ClassificationConfidence, ClassificationSource, ClassificationStatus, CorrectionScope,
+    InterventionDeliveryChannel, InterventionSalience, WorkBlockIntensity, WorkBlockPhase,
+    WorkBlockPurpose, WorkBlockResult,
 };
 
 struct Migration {
@@ -3391,14 +3392,15 @@ impl WorkBlockRepo for SqliteWorkBlockRepo {
         &self,
         block_id: &str,
         observation: &WorkBlockObservation,
+        source: ClassificationSource,
     ) -> Result<(), PersistenceError> {
         let mut connection = self.0.connection()?;
         let transaction = connection.transaction()?;
         transaction.execute(
             "INSERT INTO work_block_observation(
                 block_id, occurred_at, ended_at, category,
-                classification_status, classification_confidence
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                classification_status, classification_confidence, classification_source
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             params![
                 block_id,
                 observation.occurred_at.timestamp(),
@@ -3406,6 +3408,7 @@ impl WorkBlockRepo for SqliteWorkBlockRepo {
                 observation.category,
                 observation.classification_status.as_str(),
                 observation.classification_confidence.as_str(),
+                source.as_str(),
             ],
         )?;
         transaction.execute(
@@ -3413,6 +3416,27 @@ impl WorkBlockRepo for SqliteWorkBlockRepo {
             params![block_id, observation.occurred_at.timestamp()],
         )?;
         transaction.commit()?;
+        Ok(())
+    }
+
+    fn record_absorbed_source(
+        &self,
+        block_id: &str,
+        source: ClassificationSource,
+    ) -> Result<(), PersistenceError> {
+        let connection = self.0.connection()?;
+        // Both tokens are ranked here, so the order lives in one place and
+        // covers `vault_rule`, which has no Rust variant in this build. NULL
+        // (a row opened before migration 0045) ranks with the other rungs, so
+        // a rule folded into such a row still shows.
+        connection.execute(
+            "UPDATE work_block_observation SET classification_source = ?2
+             WHERE block_id = ?1 AND ended_at IS NULL
+               AND (CASE ?2 WHEN 'vault_rule' THEN 2 WHEN 'user_rule' THEN 1 ELSE 0 END)
+                 > (CASE classification_source
+                        WHEN 'vault_rule' THEN 2 WHEN 'user_rule' THEN 1 ELSE 0 END)",
+            params![block_id, source.as_str()],
+        )?;
         Ok(())
     }
 
@@ -5824,7 +5848,9 @@ mod tests {
     use chrono::Utc;
     use rusqlite::Connection;
     use std::sync::{Arc, Mutex};
-    use velvt_shared_types::{ClassificationConfidence, ClassificationStatus, CorrectionScope};
+    use velvt_shared_types::{
+        ClassificationConfidence, ClassificationSource, ClassificationStatus, CorrectionScope,
+    };
 
     /// The name the runner records for `version`. A fixture that hand-applies
     /// a prefix of the migrations has to record what the runner would have, or
@@ -6659,6 +6685,416 @@ mod tests {
             assert_eq!(DecisionFocusState::from_stored(state.as_str()), Some(state));
         }
         assert_eq!(DecisionFocusState::from_stored("dnd"), None);
+    }
+
+    /// Every source the ladder can produce. The match is exhaustive, so a new
+    /// rung does not compile here until it is listed, and the tests below then
+    /// fail until a migration accepts its token.
+    fn every_classification_source() -> [ClassificationSource; 7] {
+        let _listed = |source: ClassificationSource| match source {
+            ClassificationSource::Seed
+            | ClassificationSource::Heuristic
+            | ClassificationSource::Embedding
+            | ClassificationSource::UserRule
+            | ClassificationSource::DeclaredDocumentTypes
+            | ClassificationSource::DeclaredAppCategory
+            | ClassificationSource::Fallback => (),
+        };
+        [
+            ClassificationSource::Seed,
+            ClassificationSource::Heuristic,
+            ClassificationSource::Embedding,
+            ClassificationSource::UserRule,
+            ClassificationSource::DeclaredDocumentTypes,
+            ClassificationSource::DeclaredAppCategory,
+            ClassificationSource::Fallback,
+        ]
+    }
+
+    fn insert_active_block(database: &SqlitePersistence, block_id: &str) {
+        database
+            .connection()
+            .unwrap()
+            .execute(
+                "INSERT INTO work_block(
+                    block_id, phase, intensity, planned_duration_seconds, started_at,
+                    total_paused_seconds, recovered_after_restart,
+                    intention_expires_at, updated_at
+                 ) VALUES (?1, 'active', 'medium', 1800, 0, 0, 0, 0, 0)",
+                [block_id],
+            )
+            .unwrap();
+    }
+
+    /// Migration 0045: an observation records the rung of the ladder that
+    /// classified it. Every source the ladder produces is stored as its token,
+    /// the gate's own read of the rows is the evidence alone, and the CHECK
+    /// takes `vault_rule`, which nothing produces yet, and refuses anything
+    /// outside the vocabulary.
+    #[test]
+    fn an_observation_records_the_rung_that_classified_it() {
+        let database = SqlitePersistence::open_in_memory().unwrap();
+        insert_active_block(&database, "provenance-block");
+        let repo = database.work_block_repo();
+        let sources = every_classification_source();
+        for (offset, source) in (0_i64..).zip(sources) {
+            let at = chrono::DateTime::from_timestamp(1_800_000_000 + offset * 60, 0).unwrap();
+            repo.append_observation(
+                "provenance-block",
+                &crate::persistence::WorkBlockObservation {
+                    occurred_at: at,
+                    ended_at: Some(at + chrono::Duration::seconds(60)),
+                    category: "FOCUS_WORK".into(),
+                    classification_status: ClassificationStatus::Classified,
+                    classification_confidence: ClassificationConfidence::High,
+                },
+                source,
+            )
+            .unwrap();
+        }
+
+        let connection = database.connection().unwrap();
+        let stored: Vec<Option<String>> = connection
+            .prepare("SELECT classification_source FROM work_block_observation ORDER BY id")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(
+            stored,
+            sources
+                .iter()
+                .map(|source| Some(source.as_str().to_owned()))
+                .collect::<Vec<_>>()
+        );
+
+        assert!(connection
+            .execute(
+                "UPDATE work_block_observation SET classification_source = 'synced' WHERE id = 1",
+                [],
+            )
+            .is_err());
+        for accepted in ["'vault_rule'", "NULL"] {
+            connection
+                .execute(
+                    &format!(
+                        "UPDATE work_block_observation SET classification_source = {accepted}
+                         WHERE id = 1"
+                    ),
+                    [],
+                )
+                .unwrap();
+        }
+        drop(connection);
+
+        let read = repo.observations("provenance-block").unwrap();
+        assert_eq!(read.len(), sources.len());
+        assert!(read
+            .iter()
+            .all(|observation| observation.category == "FOCUS_WORK"
+                && observation.classification_status == ClassificationStatus::Classified
+                && observation.classification_confidence == ClassificationConfidence::High));
+    }
+
+    /// Migration 0045: a report the open row absorbs (same evidence, so it
+    /// opens no row of its own) leaves its rung on that row when a rule
+    /// produced it. The order is `vault_rule`, then `user_rule`, then every
+    /// other rung, which never replaces the rung that opened the row. Only
+    /// the block's open row changes; a closed row and another block's row do
+    /// not, and the evidence the gate reads is untouched.
+    #[test]
+    fn an_absorbed_rule_report_is_recorded_on_the_open_row() {
+        let database = SqlitePersistence::open_in_memory().unwrap();
+        insert_active_block(&database, "absorbing-block");
+        insert_active_block(&database, "other-block");
+        let repo = database.work_block_repo();
+        let observation = |seconds: i64| crate::persistence::WorkBlockObservation {
+            occurred_at: chrono::DateTime::from_timestamp(1_800_000_000 + seconds, 0).unwrap(),
+            ended_at: None,
+            category: "FOCUS_WORK".into(),
+            classification_status: ClassificationStatus::Classified,
+            classification_confidence: ClassificationConfidence::High,
+        };
+        let sources = |database: &SqlitePersistence| -> Vec<(String, Option<String>)> {
+            database
+                .connection()
+                .unwrap()
+                .prepare(
+                    "SELECT block_id, classification_source FROM work_block_observation
+                     ORDER BY id",
+                )
+                .unwrap()
+                .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+                .unwrap()
+                .collect::<Result<_, _>>()
+                .unwrap()
+        };
+        let row = |block: &str, source: Option<&str>| (block.to_owned(), source.map(str::to_owned));
+
+        // A closed seed row, then an open seed row, in one block; an open
+        // seed row in another.
+        repo.append_observation(
+            "absorbing-block",
+            &observation(0),
+            ClassificationSource::Seed,
+        )
+        .unwrap();
+        repo.close_open_observation(
+            "absorbing-block",
+            chrono::DateTime::from_timestamp(1_800_000_060, 0).unwrap(),
+        )
+        .unwrap();
+        repo.append_observation(
+            "absorbing-block",
+            &observation(60),
+            ClassificationSource::Seed,
+        )
+        .unwrap();
+        repo.append_observation("other-block", &observation(0), ClassificationSource::Seed)
+            .unwrap();
+        let evidence_before = repo.observations("absorbing-block").unwrap();
+
+        // No other rung replaces the one that opened the row.
+        for source in every_classification_source() {
+            if source != ClassificationSource::UserRule {
+                repo.record_absorbed_source("absorbing-block", source)
+                    .unwrap();
+            }
+        }
+        assert_eq!(
+            sources(&database),
+            vec![
+                row("absorbing-block", Some("seed")),
+                row("absorbing-block", Some("seed")),
+                row("other-block", Some("seed")),
+            ]
+        );
+
+        // A rule does, on the open row only, and a lower rung after it does
+        // not take it back.
+        repo.record_absorbed_source("absorbing-block", ClassificationSource::UserRule)
+            .unwrap();
+        repo.record_absorbed_source("absorbing-block", ClassificationSource::Heuristic)
+            .unwrap();
+        assert_eq!(
+            sources(&database),
+            vec![
+                row("absorbing-block", Some("seed")),
+                row("absorbing-block", Some("user_rule")),
+                row("other-block", Some("seed")),
+            ]
+        );
+
+        // `vault_rule` outranks `user_rule`. Nothing produces it yet, so it is
+        // written directly, as the rung that will produce it would.
+        database
+            .connection()
+            .unwrap()
+            .execute(
+                "UPDATE work_block_observation SET classification_source = 'vault_rule'
+                 WHERE block_id = 'other-block'",
+                [],
+            )
+            .unwrap();
+        repo.record_absorbed_source("other-block", ClassificationSource::UserRule)
+            .unwrap();
+        assert_eq!(
+            sources(&database)[2],
+            row("other-block", Some("vault_rule"))
+        );
+
+        // A row opened before migration 0045 has no source; a rule it absorbs
+        // still shows.
+        database
+            .connection()
+            .unwrap()
+            .execute(
+                "UPDATE work_block_observation SET classification_source = NULL
+                 WHERE block_id = 'absorbing-block' AND ended_at IS NULL",
+                [],
+            )
+            .unwrap();
+        repo.record_absorbed_source("absorbing-block", ClassificationSource::Fallback)
+            .unwrap();
+        assert_eq!(sources(&database)[1], row("absorbing-block", None));
+        repo.record_absorbed_source("absorbing-block", ClassificationSource::UserRule)
+            .unwrap();
+        assert_eq!(
+            sources(&database)[1],
+            row("absorbing-block", Some("user_rule"))
+        );
+
+        // With no open row there is nothing to record on.
+        repo.close_open_observation(
+            "absorbing-block",
+            chrono::DateTime::from_timestamp(1_800_000_120, 0).unwrap(),
+        )
+        .unwrap();
+        database
+            .connection()
+            .unwrap()
+            .execute(
+                "UPDATE work_block_observation SET classification_source = 'seed'
+                 WHERE block_id = 'absorbing-block'",
+                [],
+            )
+            .unwrap();
+        repo.record_absorbed_source("absorbing-block", ClassificationSource::UserRule)
+            .unwrap();
+        assert_eq!(
+            &sources(&database)[..2],
+            &[
+                row("absorbing-block", Some("seed")),
+                row("absorbing-block", Some("seed")),
+            ]
+        );
+
+        let evidence_after = repo.observations("absorbing-block").unwrap();
+        assert_eq!(evidence_before.len(), evidence_after.len());
+        for (before, after) in evidence_before.iter().zip(&evidence_after) {
+            assert_eq!(before.occurred_at, after.occurred_at);
+            assert_eq!(before.category, after.category);
+            assert_eq!(before.classification_status, after.classification_status);
+            assert_eq!(
+                before.classification_confidence,
+                after.classification_confidence
+            );
+        }
+    }
+
+    /// Migration 0045: every decision row carries `synced_rule_evidence`, and
+    /// nothing makes it anything but 0 yet. The decision writer does not name
+    /// the column, so it takes the default; the column refuses NULL, and the
+    /// CHECK refuses a negative count.
+    #[test]
+    fn a_decision_records_no_synced_rule_evidence() {
+        let database = SqlitePersistence::open_in_memory().unwrap();
+        insert_active_block(&database, "evidence-block");
+        database
+            .work_block_repo()
+            .record_decision(&InterventionDecision {
+                decision_id: "evidence-decision".into(),
+                occurred_at: chrono::DateTime::from_timestamp(1_800_000_000, 0).unwrap(),
+                block_id: Some("evidence-block".into()),
+                policy_version: 6,
+                anchor_category: Some("FOCUS_WORK".into()),
+                switch_count: 3,
+                elapsed_seconds: 600,
+                remaining_seconds: 1_200,
+                gate_verdict: GateVerdict::Offered,
+                propensity: 1.0,
+                anchor_seen_within_600s: None,
+                outcome_at: None,
+                focus_state: Some(DecisionFocusState::Unknown),
+            })
+            .unwrap();
+
+        let connection = database.connection().unwrap();
+        let evidence: i64 = connection
+            .query_row(
+                "SELECT synced_rule_evidence FROM intervention_decision_log",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(evidence, 0);
+        for refused in ["-1", "NULL"] {
+            assert!(
+                connection
+                    .execute(
+                        &format!(
+                            "UPDATE intervention_decision_log SET synced_rule_evidence = {refused}"
+                        ),
+                        [],
+                    )
+                    .is_err(),
+                "synced_rule_evidence accepted {refused}"
+            );
+        }
+    }
+
+    /// Migration 0045 on a database that already holds observations and
+    /// decisions, the upgrade every tester's Mac takes. An observation written
+    /// before it records no source (NULL, never a guess at one), a decision
+    /// written before it has no synced-rule evidence, which is true, and the
+    /// gate reads the old rows exactly as before.
+    #[test]
+    fn migration_0045_leaves_rows_already_on_disk_without_a_source() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE schema_migration (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    version INTEGER NOT NULL UNIQUE,
+                    name TEXT NOT NULL,
+                    created_at INTEGER NOT NULL DEFAULT (unixepoch())
+                );",
+            )
+            .unwrap();
+        for migration in super::EMBEDDED_MIGRATIONS
+            .iter()
+            .filter(|migration| migration.version < 45)
+        {
+            connection.execute_batch(migration.sql).unwrap();
+            connection
+                .execute(
+                    "INSERT INTO schema_migration(version, name) VALUES (?1, ?2)",
+                    rusqlite::params![migration.version, migration.name],
+                )
+                .unwrap();
+        }
+        // Written directly, in the columns 0001 to 0044 define: the writers
+        // now fill the columns this migration adds.
+        connection
+            .execute_batch(
+                "INSERT INTO work_block(
+                    block_id, phase, intensity, planned_duration_seconds, started_at,
+                    total_paused_seconds, recovered_after_restart,
+                    intention_expires_at, updated_at
+                 ) VALUES ('legacy-block', 'active', 'medium', 1800, 1800000000, 0, 0, 0, 1800000000);
+                 INSERT INTO work_block_observation(
+                    block_id, occurred_at, ended_at, category,
+                    classification_status, classification_confidence
+                 ) VALUES ('legacy-block', 1800000010, 1800000200, 'FOCUS_WORK', 'classified', 'high');
+                 INSERT INTO intervention_decision_log(
+                    decision_id, occurred_at, block_id, policy_version, anchor_category,
+                    switch_count, elapsed_seconds, remaining_seconds, gate_verdict,
+                    propensity, focus_state
+                 ) VALUES ('legacy-decision', 1800000200, 'legacy-block', 6, 'FOCUS_WORK',
+                           1, 200, 1600, 'abstained_min_switches', 1.0, 'unknown');",
+            )
+            .unwrap();
+        let database = SqlitePersistence {
+            connection: Arc::new(Mutex::new(connection)),
+        };
+
+        database.run_migrations().unwrap();
+
+        let connection = database.connection().unwrap();
+        let source: Option<String> = connection
+            .query_row(
+                "SELECT classification_source FROM work_block_observation",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(source, None);
+        let evidence: i64 = connection
+            .query_row(
+                "SELECT synced_rule_evidence FROM intervention_decision_log",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(evidence, 0);
+        drop(connection);
+        let observations = database
+            .work_block_repo()
+            .observations("legacy-block")
+            .unwrap();
+        assert_eq!(observations.len(), 1);
+        assert_eq!(observations[0].category, "FOCUS_WORK");
     }
 
     /// Migration 0030 widens a CHECK, which SQLite can only do by rebuilding.

@@ -20,7 +20,8 @@
 # 3. The export must still run on the databases testers actually have. Every
 #    fixture is built by replaying the shipped migrations up to a real build's
 #    schema: protocol 30 (1.0.11), protocol 35 and 36 upgrades (what became of
-#    a notification, what was known about Focus), protocol 28 (1.0.9, no `card_seen_at`), a
+#    a notification, what was known about Focus), the 0045 provenance upgrade
+#    (which must change nothing the export writes), protocol 28 (1.0.9, no `card_seen_at`), a
 #    28 -> 30 upgrade (rows from before migration 0032 are "unknown", not
 #    "unseen"), protocol 25 (1.0.1, no decision log at all), 1.0.0 (no
 #    app-scoped corrections), protocol 31 (no site rules) and policy v5
@@ -602,6 +603,46 @@ assert delivered == {"not_recorded": 1, "unknown": 1, "off": 1}, delivered
 assert withheld == {"on": {"delivery_suppressed_dnd": 1},
                     "unknown": {"withheld_demotion": 1}}, withheld
 PY
+
+# ===========================================================================
+# A4. Migration 0045 (classification provenance, no protocol change). The
+#     exporter names every column it selects, so the two columns 0045 adds
+#     change nothing it writes, even set to values no build writes yet: every
+#     file is byte-identical to the export of the same rows before the
+#     upgrade, except the meta file's export time and schema version.
+# ===========================================================================
+db44="$work/p44.sqlite3"
+migrate_fixture_db "$db44" "$FIXTURE_MIGRATIONS_PROTOCOL_36" "$INSTALLED_AT"
+seed_blocks_and_offers "$db44"
+seed_invitations_and_probe "$db44"
+seed_sentinels "$db44"
+db45="$work/p45.sqlite3"
+cp "$db44" "$db45"
+migrate_fixture_db "$db45" "$FIXTURE_MIGRATIONS_PROVENANCE" "$((T0 + 90000))"
+sqlite3 "$db45" "UPDATE work_block_observation SET classification_source = 'vault_rule';
+                 UPDATE intervention_decision_log SET synced_rule_evidence = 7;"
+mkdir -p "$work/p44" "$work/p45"
+run_export "$db44" "$work/p44/export.csv" "$work/p44/log.txt"
+run_export "$db45" "$work/p45/export.csv" "$work/p45/log.txt"
+[[ "$(meta_of "$work/p45/export-meta.csv" schema_version)" == "$FIXTURE_MIGRATIONS_PROVENANCE" ]] \
+  || fail "the provenance fixture is not at migration $FIXTURE_MIGRATIONS_PROVENANCE"
+for before in "$work/p44"/export*.csv; do
+  name="$(basename "$before")"
+  if [[ "$name" == "export-meta.csv" ]]; then
+    continue
+  fi
+  cmp -s "$before" "$work/p45/$name" || {
+    diff "$before" "$work/p45/$name" >&2 || true
+    fail "migration 0045 changed $name"
+  }
+done
+diff <(grep -v -e '^exported_at,' -e '^schema_version,' "$work/p44/export-meta.csv") \
+     <(grep -v -e '^exported_at,' -e '^schema_version,' "$work/p45/export-meta.csv") >&2 \
+  || fail "migration 0045 changed the meta file beyond its schema version"
+if grep -q -e classification_source -e synced_rule_evidence -e vault_rule "$work/p45"/*.csv; then
+  fail "the export carries a provenance column"
+fi
+assert_no_sentinel "$work/p45"/*.csv
 
 # ===========================================================================
 # B. Protocol 28 (1.0.9): no card_seen_at column. The export must still work

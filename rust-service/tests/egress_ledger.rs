@@ -697,7 +697,7 @@ fn every_request_construction_site_is_accounted_for() {
             .sum::<usize>();
     }
     assert_eq!(
-        sites, 16,
+        sites, 17,
         "the number of HttpRequest constructions in shipped code changed. Check \
          the new or removed request against egress::ENDPOINTS, then update this count"
     );

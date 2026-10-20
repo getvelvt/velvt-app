@@ -22,6 +22,14 @@
 //! computes can reach a copy surface, and the database's own trigger makes
 //! surfacing an unconfirmed finding an `ABORT` rather than a review comment.
 //!
+//! [`returns`] is the same again: a per-person ledger of how often a person
+//! came back to their work on their own after a departure the gate did not act
+//! on, with a withhold candidate declared for offline evaluation. It writes
+//! nothing, and its own test fails if anything outside it names it. Under
+//! policy v5 it can say nothing about what a nudge or a silence does; see its
+//! module docs for why, and `docs/architecture/personal-learning-framework.md`
+//! for the path that could.
+//!
 //! # The two models have different jobs, and collapsing them is the mistake
 //!
 //! [`bocpd`] is online, per work block, and answers "did the regime change in
@@ -44,6 +52,7 @@ pub mod candidates;
 pub mod features;
 pub mod hmm;
 pub mod retention;
+pub mod returns;
 
 pub use retention::OutOfBlockRunRetentionTarget;
 

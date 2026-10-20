@@ -30,7 +30,8 @@ fail() { echo "FAIL: $*" >&2; exit 1; }
 "$generator" --out "$work/first" >/dev/null
 "$generator" --out "$work/second" >/dev/null
 for name in SYNTHETIC-suite-a-recovery.jsonl SYNTHETIC-suite-b-null.jsonl \
-            SYNTHETIC-suite-b-null-compressed.jsonl SYNTHETIC-manifest.json; do
+            SYNTHETIC-suite-b-null-compressed.jsonl SYNTHETIC-suite-e-returns.jsonl \
+            SYNTHETIC-manifest.json; do
   cmp -s "$work/first/$name" "$work/second/$name" \
     || fail "$name is not reproducible from the seed"
 done
@@ -40,6 +41,10 @@ done
 if cmp -s "$work/first/SYNTHETIC-suite-b-null.jsonl" \
           "$work/other/SYNTHETIC-suite-b-null.jsonl"; then
   fail "changing the seed did not change the null traces"
+fi
+if cmp -s "$work/first/SYNTHETIC-suite-e-returns.jsonl" \
+          "$work/other/SYNTHETIC-suite-e-returns.jsonl"; then
+  fail "changing the seed did not change the return-ledger traces"
 fi
 # Suite A is hand-authored, so it must NOT move with the seed.
 cmp -s "$work/first/SYNTHETIC-suite-a-recovery.jsonl" \
@@ -159,6 +164,57 @@ assert len(negatives) > len(positives), (len(negatives), len(positives))
 assert any(t["family"] == "TRAP" for t in traces), "no backdated trap trace"
 for trace in traces:
     assert trace["expect_reason"].strip(), f"{trace['trace_id']} has no stated reason"
+PY
+
+# ---------------------------------------------------------------------------
+# 7. Suite E: every planted departure is an observation the replay will make,
+#    every label is from the closed set, blocks never overlap, and every pause
+#    resumes before the observation after it. A label on an offset the replay
+#    never observes would be checked against nothing.
+# ---------------------------------------------------------------------------
+python3 - "$traces/SYNTHETIC-suite-e-returns.jsonl" <<'PY' || fail "return-ledger suite integrity"
+import json, sys
+lines = open(sys.argv[1]).read().splitlines()
+header = json.loads(lines[0])
+assert header["kind"] == "header", header
+assert "real ingestion path" in header["injection_method"], header["injection_method"]
+traces = [json.loads(line) for line in lines[1:]]
+assert len(traces) == header["traces"], (len(traces), header["traces"])
+families = {trace["family"] for trace in traces}
+assert families == {"PLANTED", "NULL", "SPARSE", "REGIME", "CORRECTED",
+                    "INFORMATIVE", "GAPS"}, families
+labels = {"returned", "not_returned", "censored", "observer_gap", "treated"}
+seen = set()
+for trace in traces:
+    previous_end = None
+    for block in trace["blocks"]:
+        start = block["start_offset_seconds"]
+        offsets = [o["t"] for o in block["observations"]]
+        assert offsets == sorted(offsets) and len(set(offsets)) == len(offsets), trace["trace_id"]
+        assert offsets[-1] < block["planned_duration_seconds"], trace["trace_id"]
+        end = block.get("end_offset_seconds", offsets[-1] + 1)
+        assert offsets[-1] < end < block["planned_duration_seconds"], trace["trace_id"]
+        for pause in block.get("pauses", []):
+            after = [t for t in offsets if t > pause["at"]]
+            assert after and pause["at"] < pause["resume"] < after[0], (trace["trace_id"], pause)
+        if previous_end is not None:
+            assert start > previous_end, f"{trace['trace_id']}: blocks overlap"
+        previous_end = start + end
+        observed = set(offsets)
+        for departure in block["departures"]:
+            assert departure["t"] in observed, (trace["trace_id"], departure)
+            assert departure["label"] in labels, departure
+            assert departure["cell"].startswith("departure."), departure
+            assert departure.get("outcome") in (None, "returned", "not_returned"), departure
+            if departure["label"] in ("observer_gap", "treated") and trace["family"] in (
+                    "INFORMATIVE", "GAPS"):
+                assert "outcome" in departure, (trace["trace_id"], departure)
+            seen.add(departure["label"])
+    if trace["family"] in ("NULL", "INFORMATIVE", "GAPS"):
+        assert trace["truth"]["planted_cell"] is None, trace["trace_id"]
+    else:
+        assert trace["truth"]["planted_cell"] == "departure.communication", trace["trace_id"]
+assert seen == labels, f"a label is never planted: {labels - seen}"
 PY
 
 echo "generate_traces_test.sh: OK"

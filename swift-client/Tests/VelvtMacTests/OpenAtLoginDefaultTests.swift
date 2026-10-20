@@ -30,6 +30,36 @@ final class OpenAtLoginDefaultTests: XCTestCase {
         XCTAssertTrue(defaults.bool(forKey: OpenAtLoginDefault.appliedDefaultsKey))
     }
 
+    /// A new install is added on the last first-run screen, which says so, not
+    /// at a launch before it: someone who quits partway through first run has
+    /// not been told. An install that finished first run gets it at launch.
+    func testLaunchAppliesItOnlyOnceFirstRunIsFinished() {
+        let item = FakeLoginItem(status: .notRegistered)
+        let sut = makeSUT(item, bundle: "/Applications/Velvt.app")
+
+        XCTAssertEqual(sut.applyAtLaunch(hasCompletedOnboarding: false), .awaitingOnboarding)
+        XCTAssertEqual(item.registerCalls, 0)
+        XCTAssertFalse(defaults.bool(forKey: OpenAtLoginDefault.appliedDefaultsKey))
+
+        XCTAssertEqual(sut.applyAtLaunch(hasCompletedOnboarding: true), .registered)
+        XCTAssertEqual(item.registerCalls, 1)
+        XCTAssertTrue(defaults.bool(forKey: OpenAtLoginDefault.appliedDefaultsKey))
+    }
+
+    /// After the first-run screen applied it, no launch registers again.
+    func testALaunchAfterTheFirstRunScreenAppliedItRegistersNothing() {
+        let item = FakeLoginItem(status: .notRegistered)
+        makeSUT(item, bundle: "/Applications/Velvt.app").apply()
+        item.status = .notRegistered
+
+        XCTAssertEqual(
+            makeSUT(item, bundle: "/Applications/Velvt.app")
+                .applyAtLaunch(hasCompletedOnboarding: true),
+            .alreadyApplied
+        )
+        XCTAssertEqual(item.registerCalls, 1)
+    }
+
     /// The off switch: once someone removes Velvt from Login Items, no later
     /// launch puts it back.
     func testALaterLaunchLeavesAnItemThePersonRemovedAlone() {

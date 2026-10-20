@@ -90,10 +90,12 @@ Swift persists only lightweight UI/session state:
 No raw event buffer is persisted by Swift. Captured events are held in memory by `EventRelay` only.
 
 Open at login is deliberately not a setting. Since 1.0.15 Velvt adds itself to
-Login Items once, on the first launch from an Applications folder, and the last
-onboarding screen says so while it is true. Removing Velvt in System Settings >
-General > Login Items turns it off for good, because the key above records that
-the default was applied and no later launch registers again.
+Login Items once per Mac account, from an Applications folder. A new install
+does it on the last first-run screen, which says so while it is true; an
+install that finished first run before 1.0.15 does it at its first 1.0.15
+launch. Removing Velvt from Login Items in System Settings > General turns it
+off for good, because the key above records that the default was applied and no
+later launch registers again.
 
 ## Configuration Sources
 

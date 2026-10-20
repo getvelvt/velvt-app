@@ -16,9 +16,11 @@ public enum OnboardingCopy {
 
     /// Shown at the end of first run only while macOS will in fact open Velvt
     /// at login (`OpenAtLoginDefault`). It is the only place the app says so;
-    /// the Login Items list it names is the off switch.
+    /// the Login Items list it names is the off switch. "Login Items in
+    /// System Settings > General" holds on macOS 13 and 14 ("Login Items")
+    /// and on 15 and later ("Login Items & Extensions").
     public static let opensAtLogin =
-        "Velvt opens when you log in; to stop that, remove it in System Settings > General > Login Items."
+        "Velvt opens when you log in; to stop that, remove it from Login Items in System Settings > General."
 
     public static let privacySummary =
         "Raw app names, window titles, URLs, filenames, paths, contacts, and work-block intentions stay on this Mac. Approved broad categories, coarse durations, timestamps, and safe summaries may synchronize for beta insights. Depending on the service configuration, privacy-safe derived prompts may be processed by an approved external model provider."
@@ -1403,9 +1405,14 @@ public final class OnboardingWindowController: NSObject, NSWindowDelegate {
     }
 
     private func presentTourInvitationStage() {
+        // A new install is added to Login Items here, on the screen that says
+        // so, rather than at launch: someone who stops partway through first
+        // run has not been told.
+        let openAtLogin = OpenAtLoginDefault()
+        openAtLogin.apply()
         presentWindow(
             TourInvitationExperienceView(
-                opensAtLogin: OpenAtLoginDefault().opensAtLogin,
+                opensAtLogin: openAtLogin.opensAtLogin,
                 onContinue: { [weak self] in self?.finishWithoutTour() },
                 onStartTour: { [weak self] in self?.finishWithTour() }
             ),

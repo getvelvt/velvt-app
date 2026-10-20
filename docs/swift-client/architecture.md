@@ -40,10 +40,12 @@ NotificationResponseRouter
 WorkBlockCoordinator
 ```
 
-`OpenAtLoginDefault.apply()` adds Velvt to Login Items through
-`SMAppService.mainApp` on the first launch from an Applications folder, records
-that it did, and never touches the registration again. It is a default with no
-Velvt setting: the Login Items list in System Settings is the off switch.
+`OpenAtLoginDefault` adds Velvt to Login Items through `SMAppService.mainApp`
+once per Mac account, from an Applications folder, records that it did, and
+never touches the registration again. At launch (`applyAtLaunch`) it acts only
+for an install that has finished first run; a new install is added on the last
+first-run screen, which says so. It is a default with no Velvt setting: the
+Login Items list in System Settings > General is the off switch.
 
 The ordering matters:
 

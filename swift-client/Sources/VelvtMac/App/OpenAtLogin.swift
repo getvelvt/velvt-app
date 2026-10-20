@@ -21,16 +21,22 @@ struct MainAppLoginItem: LoginItemRegistering {
 ///
 /// A menu-bar app that has to be reopened by hand after every restart stops
 /// at the first one, and nothing tells the person. So Velvt adds itself to
-/// Login Items once per Mac, on the first launch from an Applications folder,
-/// and never touches the registration again. macOS's own list in System
-/// Settings > General > Login Items is the off switch: the record that the
-/// default was applied outlives the registration, so a later launch cannot
-/// undo someone removing Velvt there. There is no Velvt setting for it and no
-/// question about it.
+/// Login Items once per Mac account, from an Applications folder, and never
+/// touches the registration again. A new install does it on the last
+/// first-run screen, the one that says so; an install that finished first run
+/// before this existed does it at launch (`applyAtLaunch`). macOS's own Login
+/// Items list in System Settings > General is the off switch: the record that
+/// the default was applied outlives the registration, so a later launch
+/// cannot undo someone removing Velvt there. There is no Velvt setting for it
+/// and no question about it.
 struct OpenAtLoginDefault {
     static let appliedDefaultsKey = "velvt.open_at_login.default_applied"
 
     enum Outcome: Equatable {
+        /// At launch, before first run is finished. Nothing is recorded: the
+        /// last first-run screen applies it, next to the sentence that says
+        /// so, and someone who stops partway through has not been told.
+        case awaitingOnboarding
         /// Applied on an earlier launch. The Login Items list decides now.
         case alreadyApplied
         /// Not running from an Applications folder: a mounted DMG, a
@@ -72,6 +78,16 @@ struct OpenAtLoginDefault {
         loginItem.status == .enabled
     }
 
+    /// The launch-time call. Only an install that has already finished first
+    /// run (an upgrade from 1.0.14 or earlier) gets the default here.
+    @discardableResult
+    func applyAtLaunch(hasCompletedOnboarding: Bool) -> Outcome {
+        guard hasCompletedOnboarding else { return .awaitingOnboarding }
+        return apply()
+    }
+
+    /// Applies the default if it never has been. The last first-run screen
+    /// calls this directly, just before it reads `opensAtLogin`.
     @discardableResult
     func apply() -> Outcome {
         guard !defaults.bool(forKey: Self.appliedDefaultsKey) else { return .alreadyApplied }

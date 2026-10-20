@@ -54,7 +54,7 @@ Velvt does not add product analytics or telemetry. Diagnostics copied from **Set
 
 ## Uninstall
 
-First sign out or request account deletion as appropriate, then quit Velvt and move `/Applications/Velvt.app` to the Trash. Remove Velvt from **System Settings → Privacy & Security → Accessibility** and **Notifications**. App removal does not itself erase local service data or Keychain state. For a complete local reset, remove `~/.velvt` only after quitting Velvt and only if permanent deletion of local history is intended; contact beta support before doing so if evidence is needed for an open bug.
+First sign out or request account deletion as appropriate, then quit Velvt and move `/Applications/Velvt.app` to the Trash. Remove Velvt from **Login Items in System Settings → General** (Velvt adds itself there by default since 1.0.15), and from **System Settings → Privacy & Security → Accessibility** and **Notifications**. App removal does not itself erase local service data or Keychain state. For a complete local reset, remove `~/.velvt` only after quitting Velvt and only if permanent deletion of local history is intended; contact beta support before doing so if evidence is needed for an open bug.
 
 ## Support and known limitations
 

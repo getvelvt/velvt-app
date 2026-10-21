@@ -17,6 +17,19 @@ public enum OnboardingCopy {
     public static let privacySummary =
         "Raw app names, window titles, URLs, filenames, paths, contacts, and work-block intentions stay on this Mac. Approved broad categories, coarse durations, timestamps, and safe summaries may synchronize for beta insights."
 
+    /// The first screen. "Velvt learns how your attention breaks" was once the
+    /// first sentence a new user read, and it claimed a capability the
+    /// shipped product does not have. Its replacement, "notices the moment you
+    /// leave ... offers one way back before the block is lost", promised an
+    /// offer at every departure. The drift gate in
+    /// `rust-service/src/work_block/mod.rs` (`evaluate_drift`) offers only
+    /// after three departures in ten minutes, and at most once per block.
+    /// "Before the block is lost" claimed an effect nobody has measured.
+    public static let welcomeTitle =
+        "Velvt notices when you keep leaving the work you sat down to do."
+    public static let welcomeBody =
+        "Then it offers one way back. Raw work context never leaves your Mac."
+
     /// The page used to say Velvt counts "the times you came back, never the
     /// times you did not". The end-of-block sentence (`block_result_copy` in
     /// `rust-service/src/work_block/mod.rs`) says how often you left, and that
@@ -448,15 +461,8 @@ public struct FirstRunExperienceView: View {
         case .welcome:
             IntroPage(
                 systemImage: "hand.raised.fill",
-                // "Velvt learns how your attention breaks" was the first
-                // sentence a new user read, and it claimed a capability the
-                // shipped product does not have — banned outright by
-                // GOAL.md. What Velvt actually does is notice one thing, and
-                // that is a better promise than the one it was overstating.
-                title:
-                    "Velvt notices the moment you leave the work you sat down to do.",
-                body:
-                    "When it does, it offers one way back before the block is lost. Raw work context never leaves your Mac."
+                title: OnboardingCopy.welcomeTitle,
+                body: OnboardingCopy.welcomeBody
             )
         case .privacy:
             VStack(alignment: .leading, spacing: VelvtMetrics.spaceLG) {

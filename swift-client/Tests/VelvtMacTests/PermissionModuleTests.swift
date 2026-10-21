@@ -997,10 +997,19 @@ final class PermissionModuleTests: XCTestCase {
         )
     }
 
-    // Pinned to what the service does: one offer per block
-    // (`evaluate_drift`'s block cap) and an end-of-block sentence that reports
-    // the departures as well as the returns (`block_result_copy`).
-    func testOnboardingCapabilitiesCopyMatchesTheBlockCapAndTheEndOfBlockSentence() {
+    // Pinned to what the service does: an offer only after repeated
+    // departures (`evaluate_drift`'s three-in-ten-minutes gate), one offer per
+    // block (its block cap), and an end-of-block sentence that reports the
+    // departures as well as the returns (`block_result_copy`).
+    func testOnboardingIntroCopyMatchesTheDriftGateAndTheEndOfBlockSentence() {
+        XCTAssertEqual(
+            OnboardingCopy.welcomeTitle,
+            "Velvt notices when you keep leaving the work you sat down to do."
+        )
+        XCTAssertEqual(
+            OnboardingCopy.welcomeBody,
+            "Then it offers one way back. Raw work context never leaves your Mac."
+        )
         XCTAssertEqual(OnboardingCopy.capabilitiesTitle, "At most one nudge per block.")
         XCTAssertEqual(
             OnboardingCopy.capabilitiesBody,

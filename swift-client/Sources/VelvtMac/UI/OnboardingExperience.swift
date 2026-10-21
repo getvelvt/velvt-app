@@ -15,7 +15,28 @@ public enum OnboardingCopy {
         "Notifications are off for Velvt, so drift nudges, daily insights and category reminders can't reach you. Turn them on in System Settings > Notifications > Velvt."
 
     public static let privacySummary =
-        "Raw app names, window titles, URLs, filenames, paths, contacts, and work-block intentions stay on this Mac. Approved broad categories, coarse durations, timestamps, and safe summaries may synchronize for beta insights. Depending on the service configuration, privacy-safe derived prompts may be processed by an approved external model provider."
+        "Raw app names, window titles, URLs, filenames, paths, contacts, and work-block intentions stay on this Mac. Approved broad categories, coarse durations, timestamps, and safe summaries may synchronize for beta insights."
+
+    /// The first screen. "Velvt learns how your attention breaks" was once the
+    /// first sentence a new user read, and it claimed a capability the
+    /// shipped product does not have. Its replacement, "notices the moment you
+    /// leave ... offers one way back before the block is lost", promised an
+    /// offer at every departure. The drift gate in
+    /// `rust-service/src/work_block/mod.rs` (`evaluate_drift`) offers only
+    /// after three departures in ten minutes, and at most once per block.
+    /// "Before the block is lost" claimed an effect nobody has measured.
+    public static let welcomeTitle =
+        "Velvt notices when you keep leaving the work you sat down to do."
+    public static let welcomeBody =
+        "Then it offers one way back. Raw work context never leaves your Mac."
+
+    /// The page used to say Velvt counts "the times you came back, never the
+    /// times you did not". The end-of-block sentence (`block_result_copy` in
+    /// `rust-service/src/work_block/mod.rs`) says how often you left, and that
+    /// the block "ended somewhere else" when you did not come back.
+    public static let capabilitiesTitle = "At most one nudge per block."
+    public static let capabilitiesBody =
+        "When a block ends, Velvt says how often you left and how often you came back."
 }
 
 public enum IntroStep: Int, CaseIterable, Equatable, Sendable {
@@ -440,15 +461,8 @@ public struct FirstRunExperienceView: View {
         case .welcome:
             IntroPage(
                 systemImage: "hand.raised.fill",
-                // "Velvt learns how your attention breaks" was the first
-                // sentence a new user read, and it claimed a capability the
-                // shipped product does not have — banned outright by
-                // GOAL.md. What Velvt actually does is notice one thing, and
-                // that is a better promise than the one it was overstating.
-                title:
-                    "Velvt notices the moment you leave the work you sat down to do.",
-                body:
-                    "When it does, it offers one way back before the block is lost. Raw work context never leaves your Mac."
+                title: OnboardingCopy.welcomeTitle,
+                body: OnboardingCopy.welcomeBody
             )
         case .privacy:
             VStack(alignment: .leading, spacing: VelvtMetrics.spaceLG) {
@@ -466,9 +480,8 @@ public struct FirstRunExperienceView: View {
             VStack(alignment: .leading, spacing: VelvtMetrics.spaceLG) {
                 IntroPage(
                     systemImage: "sparkles",
-                    title: "One nudge, at the moment it helps.",
-                    body:
-                        "Velvt interrupts at most once per block, and only when the evidence is unambiguous. It counts the times you came back, never the times you did not."
+                    title: OnboardingCopy.capabilitiesTitle,
+                    body: OnboardingCopy.capabilitiesBody
                 )
                 capability(
                     "timer", "Start a meaningful work block with an optional local intention.")
@@ -896,7 +909,7 @@ public struct FocusAllowanceExperienceView: View {
                     .velvtDisplay()
                     .accessibilityAddTraits(.isHeader)
                 Text(
-                    "If you use a Focus mode while you work, you can allow Velvt through it in macOS Focus settings. Velvt spends that privilege sparingly: at most one bounded nudge inside a block you declared, and anything your Focus blocks is simply held and summarized after the block — never resent, never rerouted."
+                    "If you use a Focus, add Velvt to its Allowed Apps to receive nudges during it. Inside a block you declared, Velvt sends at most one nudge."
                 )
                 .velvtBody(15)
                 .fixedSize(horizontal: false, vertical: true)

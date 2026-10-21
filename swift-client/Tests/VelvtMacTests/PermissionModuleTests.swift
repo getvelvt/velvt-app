@@ -993,7 +993,27 @@ final class PermissionModuleTests: XCTestCase {
     func testOnboardingPrivacyCopyMatchesTheAuditedBoundary() {
         XCTAssertEqual(
             OnboardingCopy.privacySummary,
-            "Raw app names, window titles, URLs, filenames, paths, contacts, and work-block intentions stay on this Mac. Approved broad categories, coarse durations, timestamps, and safe summaries may synchronize for beta insights. Depending on the service configuration, privacy-safe derived prompts may be processed by an approved external model provider."
+            "Raw app names, window titles, URLs, filenames, paths, contacts, and work-block intentions stay on this Mac. Approved broad categories, coarse durations, timestamps, and safe summaries may synchronize for beta insights."
+        )
+    }
+
+    // Pinned to what the service does: an offer only after repeated
+    // departures (`evaluate_drift`'s three-in-ten-minutes gate), one offer per
+    // block (its block cap), and an end-of-block sentence that reports the
+    // departures as well as the returns (`block_result_copy`).
+    func testOnboardingIntroCopyMatchesTheDriftGateAndTheEndOfBlockSentence() {
+        XCTAssertEqual(
+            OnboardingCopy.welcomeTitle,
+            "Velvt notices when you keep leaving the work you sat down to do."
+        )
+        XCTAssertEqual(
+            OnboardingCopy.welcomeBody,
+            "Then it offers one way back. Raw work context never leaves your Mac."
+        )
+        XCTAssertEqual(OnboardingCopy.capabilitiesTitle, "At most one nudge per block.")
+        XCTAssertEqual(
+            OnboardingCopy.capabilitiesBody,
+            "When a block ends, Velvt says how often you left and how often you came back."
         )
     }
 

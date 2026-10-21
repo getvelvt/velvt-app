@@ -16,6 +16,14 @@ public enum OnboardingCopy {
 
     public static let privacySummary =
         "Raw app names, window titles, URLs, filenames, paths, contacts, and work-block intentions stay on this Mac. Approved broad categories, coarse durations, timestamps, and safe summaries may synchronize for beta insights."
+
+    /// The page used to say Velvt counts "the times you came back, never the
+    /// times you did not". The end-of-block sentence (`block_result_copy` in
+    /// `rust-service/src/work_block/mod.rs`) says how often you left, and that
+    /// the block "ended somewhere else" when you did not come back.
+    public static let capabilitiesTitle = "At most one nudge per block."
+    public static let capabilitiesBody =
+        "When a block ends, Velvt says how often you left and how often you came back."
 }
 
 public enum IntroStep: Int, CaseIterable, Equatable, Sendable {
@@ -466,9 +474,8 @@ public struct FirstRunExperienceView: View {
             VStack(alignment: .leading, spacing: VelvtMetrics.spaceLG) {
                 IntroPage(
                     systemImage: "sparkles",
-                    title: "One nudge, at the moment it helps.",
-                    body:
-                        "Velvt interrupts at most once per block, and only when the evidence is unambiguous. It counts the times you came back, never the times you did not."
+                    title: OnboardingCopy.capabilitiesTitle,
+                    body: OnboardingCopy.capabilitiesBody
                 )
                 capability(
                     "timer", "Start a meaningful work block with an optional local intention.")

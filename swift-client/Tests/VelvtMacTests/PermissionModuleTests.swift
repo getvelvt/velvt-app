@@ -997,6 +997,17 @@ final class PermissionModuleTests: XCTestCase {
         )
     }
 
+    // Pinned to what the service does: one offer per block
+    // (`evaluate_drift`'s block cap) and an end-of-block sentence that reports
+    // the departures as well as the returns (`block_result_copy`).
+    func testOnboardingCapabilitiesCopyMatchesTheBlockCapAndTheEndOfBlockSentence() {
+        XCTAssertEqual(OnboardingCopy.capabilitiesTitle, "At most one nudge per block.")
+        XCTAssertEqual(
+            OnboardingCopy.capabilitiesBody,
+            "When a block ends, Velvt says how often you left and how often you came back."
+        )
+    }
+
     func testPresentationSavesGoalChoicesWhenCompletingOnboarding() {
         let store = InMemoryOnboardingStateStore()
         let presentation = PermissionPresentationModel(
